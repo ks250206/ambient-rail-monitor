@@ -1,0 +1,226 @@
+@import 'tailwindcss';
+
+@theme {
+  /* Science Tokyo Brand & Sub Colors */
+  --color-science-blue: #1c3177;
+  --color-science-sub: #7f96c2;
+  --color-brand-tertiary: #cfdbed;
+  --color-brand-quaternary: #f9fbff;
+
+  /* Navy Primitive Scale (same hue as Science Blue) */
+  --color-navy-50: #f9fbff;
+  --color-navy-100: #e4ebf6;
+  --color-navy-200: #cfdbed;
+  --color-navy-300: #bac9e2;
+  --color-navy-400: #a5b7d6;
+  --color-navy-500: #7f96c2;
+  --color-navy-600: #5f7ab6;
+  --color-navy-700: #435ea5;
+  --color-navy-800: #2d4590;
+  --color-navy-900: #1c3177;
+  --color-navy-1000: #11215b;
+  --color-navy-1100: #0a1541;
+  --color-navy-1200: #060d2b;
+
+  /* Extended Surface & Semantic Tokens (WCAG 2.1 AA compliant) */
+  --color-bg-1: #e8eaf1;
+  --color-bg-2: #f2f4f9;
+  --color-ink: #333333;
+  --color-ink-muted: #595959;
+  --color-eyebrow: #435ea5;
+  --color-line: #cfdbed;
+
+  --color-st-green: #2c9a4a;
+  --color-st-green-dark: #145e18;
+  --color-st-green-bg: #f4feee;
+
+  --color-st-orange: #fb5b01;
+  --color-st-orange-dark: #6d2700;
+  --color-st-orange-bg: #ffeee2;
+
+  --color-st-red: #f02b2b;
+  --color-st-red-dark: #6b1502;
+  --color-st-red-bg: #ffe4e4;
+
+  --color-st-cyan: #00a3bf;
+  --color-st-cyan-dark: #004c59;
+  --color-st-cyan-bg: #e6fcff;
+
+  /* Typography */
+  --font-sans: 'Noto Sans JP', 'Yu Gothic Medium', 'YuGothic', sans-serif;
+  --font-en: 'Hind', 'Noto Sans JP', sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    font-family: var(--font-sans);
+    color: var(--color-ink);
+    background-color: #ffffff;
+  }
+
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+.font-en {
+  font-family: var(--font-en);
+}
+
+.trace-grid-bg {
+  background-image: repeating-linear-gradient(
+    90deg,
+    #cfdbed 0,
+    #cfdbed 1px,
+    transparent 1px,
+    transparent 25%
+  );
+}
+
+@keyframes st-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.animate-st-pulse {
+  animation: st-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.page-width {
+  width: min(100% - 2rem, 88rem);
+  margin-inline: auto;
+}
+
+/* Keep the arch at the edge, clear of the title and controls. */
+.monitor-hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: white;
+}
+
+.hero-arches {
+  position: absolute;
+  z-index: -1;
+  inset: 0 0 0 auto;
+  width: 36%;
+  overflow: hidden;
+}
+
+.hero-arches::before,
+.hero-arches::after {
+  content: '';
+  position: absolute;
+  left: -70%;
+  width: 230%;
+  height: 95%;
+  border-radius: 50%;
+  border-top: clamp(3rem, 5vw, 6rem) solid var(--color-science-sub);
+  top: 30%;
+  transform: rotate(13deg);
+}
+
+.hero-arches::after {
+  top: 54%;
+  border-top-color: var(--color-science-blue);
+  transform: rotate(-16deg);
+}
+
+.hero-copy {
+  max-width: 60%;
+}
+
+.monitor-button {
+  display: inline-flex;
+  min-height: 48px;
+  min-width: 9rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 1.5rem;
+  border: 1px solid var(--color-science-blue);
+  border-radius: 6px;
+  background: white;
+  color: var(--color-science-blue);
+  font-weight: 700;
+}
+
+.monitor-button:hover {
+  background: var(--color-bg-2);
+}
+
+.section-link {
+  padding: 0.75rem 0.5rem;
+  border-bottom: 3px solid transparent;
+  color: var(--color-science-blue);
+  text-align: center;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.section-link:hover,
+.section-link[aria-current] {
+  border-bottom-color: currentColor;
+  background: var(--color-bg-2);
+}
+
+.section-heading {
+  color: var(--color-science-blue);
+  font-size: clamp(1.25rem, 2vw, 1.75rem);
+  font-weight: 700;
+  line-height: 1.45;
+  font-feature-settings: 'palt';
+}
+
+:where(a, button, input):focus-visible {
+  outline: 3px solid var(--color-navy-700);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px white;
+}
+
+@media (min-width: 48rem) {
+  .page-width {
+    width: min(100% - 5rem, 88rem);
+  }
+  .section-link {
+    padding-inline: 1.5rem;
+  }
+  html {
+    scroll-padding-top: 3.25rem;
+  }
+}
+
+@media (max-width: 47.99rem) {
+  .hero-copy {
+    max-width: none;
+  }
+  .monitor-hero {
+    padding-bottom: 2rem;
+  }
+  .hero-arches {
+    inset: auto 0 0 auto;
+    width: 54%;
+    height: 2.75rem;
+  }
+  .hero-arches::before,
+  .hero-arches::after {
+    border-top-width: 0.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .animate-st-pulse,
+  .animate-spin,
+  .animate-pulse {
+    animation: none;
+  }
+}

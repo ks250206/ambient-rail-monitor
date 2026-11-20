@@ -1,16 +1,45 @@
 {
   "name": "ambient-rail-monitor",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
+  "description": "Pull-based ambient AI agent workflow monitor with Kanban, railway and traces (Science Tokyo design)",
   "type": "module",
-  "description": "Pull-based ambient AI agent workflow monitor with Kanban, railway and traces",
   "scripts": {
-    "start": "node server.mjs",
-    "worker:demo": "node worker.mjs --mode=demo",
-    "worker:codex": "node worker.mjs --mode=codex",
-    "worker:claude": "node worker.mjs --mode=claude",
-    "demo": "node start-demo.mjs",
-    "test": "node --test tests/*.test.mjs"
+    "dev": "vp dev",
+    "dev:server": "node server.ts",
+    "build": "vp build",
+    "preview": "vp preview",
+    "start": "node server.ts",
+    "worker:demo": "node worker.ts --mode=demo",
+    "worker:codex": "node worker.ts --mode=codex",
+    "worker:claude": "node worker.ts --mode=claude",
+    "demo": "vp build && node start-demo.ts",
+    "check": "vp check",
+    "lint": "vp lint",
+    "fmt": "vp fmt",
+    "test": "vp test run"
   },
-  "engines": { "node": ">=20" }
+  "dependencies": {
+    "@fontsource/hind": "^5.3.0",
+    "@fontsource/noto-sans-jp": "^5.3.1",
+    "lucide-react": "^1.76.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "tailwindcss": "^4.3.5",
+    "typescript": "^7.0.2",
+    "vite": "npm:@voidzero-dev/vite-plus-core@8.3.8000",
+    "vite-plus": "1.7.0"
+  },
+  "engines": {
+    "node": ">=26",
+    "pnpm": ">=12"
+  },
+  "packageManager": "pnpm@12.21.0"
 }
