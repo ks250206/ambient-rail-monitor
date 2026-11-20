@@ -71,6 +71,14 @@ Arguments and HTTP URL/body also support the prompt variables. New variables are
 not template-expanded: read environment variables to avoid source-code injection
 from filenames. Command arguments are not joined into a shell string.
 
+HTTP variables are encoded for their position: URL values are percent-encoded and
+must keep the template's origin; body values are JSON-string escaped (place them
+inside `"..."`), and the expanded body must parse as JSON. HTTP stages never
+connect to link-local or cloud-metadata addresses (including IPv4-mapped/NAT64
+IPv6 spellings and `fd00:ec2::254`); every DNS answer is checked when the socket
+connects. Loopback, the worker's `RAILFLOW_URL` host and local interface
+addresses on the control API's port are refused as well.
+
 ## Input and output contracts
 
 The form editor sets file patterns, minimum/maximum counts and JSON types. Object

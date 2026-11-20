@@ -88,7 +88,7 @@ scripts/             Science Tokyo-styled quicklook HTML/PPTX report generator
 tests/               Vitest API, event-replay, and helper tests
 ```
 
-Set `PORT`, `HOST`, `RAILFLOW_HOME`, `RAILFLOW_URL`, `RAILFLOW_AGENT_TIMEOUT_MS`, and `RAILFLOW_PYTHON` for deployment differences. The demo is designed for **localhost only** (default bind `127.0.0.1`), and has **no authentication**.
+Set `PORT`, `HOST`, `RAILFLOW_HOME`, `RAILFLOW_URL`, `RAILFLOW_AGENT_TIMEOUT_MS`, and `RAILFLOW_PYTHON` for deployment differences. The demo is designed for **localhost only** (default bind `127.0.0.1`), and has **no authentication**. As a DNS-rebinding guard the API only accepts `localhost`, `127.0.0.1`, `::1` and a concrete `HOST` bind address as the `Host` header. When binding `HOST=0.0.0.0` for remote workers or browsers, list the names or IPs they connect with in `RAILFLOW_ALLOWED_HOSTS` (comma-separated, no wildcards), and expose the port only on a trusted network.
 
 ### Reliable execution
 

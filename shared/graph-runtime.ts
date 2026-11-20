@@ -14,6 +14,13 @@ import { prepareTaskInputs, verifyOutput } from './task-files.ts';
 import { buildStagePrompt, expandTemplate, type PromptVariables } from './prompts.ts';
 import { ExecutionFailure, runCommand } from './process-runner.ts';
 import { publishAgentReports } from './publish-reports.ts';
+import {
+  assertAllowedUrl,
+  BlockedHttpTarget,
+  guardedRequest,
+  selfTargetFor,
+  type SelfTarget,
+} from './http-guard.ts';
 import type {
   ClaimPaths,
   JobStage,
@@ -89,31 +96,13 @@ function filteredProcessEnv(): NodeJS.ProcessEnv {
   return result;
 }
 
-function isBlockedHttpHost(hostname: string): boolean {
-  const lower = hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (
-    lower === '0.0.0.0' ||
-    lower === '::' ||
-    lower === 'metadata.google.internal' ||
-    lower === 'metadata'
-  )
-    return true;
-  if (
-    lower.startsWith('169.254.') ||
-    lower.startsWith('fe80:') ||
-    lower.startsWith('::ffff:169.254.')
-  )
-    return true;
-  return false;
-}
-
-function expandSafeUrl(template: string, variables: PromptVariables, apiOrigin?: string): string {
+/** Expand URL variables percent-encoded and keep the template's own origin. */
+function expandSafeUrl(template: string, variables: PromptVariables, self?: SelfTarget): URL {
   const baseUrl = new URL(template);
   const encodedVariables = Object.fromEntries(
     Object.entries(variables).map(([key, value]) => [key, encodeURIComponent(value)]),
   ) as PromptVariables;
-  const expanded = expandTemplate(template, encodedVariables);
-  const resolved = new URL(expanded);
+  const resolved = new URL(expandTemplate(template, encodedVariables));
   if (
     !['http:', 'https:'].includes(resolved.protocol) ||
     resolved.username ||
@@ -124,17 +113,37 @@ function expandSafeUrl(template: string, variables: PromptVariables, apiOrigin?:
       'execution_error',
       'テンプレート展開後のHTTP URLが元のオリジンまたはプロトコル制約に違反しています。',
     );
-  if (isBlockedHttpHost(resolved.hostname))
-    throw new ExecutionFailure(
-      'execution_error',
-      'リンクローカルまたはメタデータURLには接続できません。',
-    );
-  if (apiOrigin && resolved.origin === apiOrigin)
-    throw new ExecutionFailure(
-      'execution_error',
-      'HTTPステージからRailflow自身のコントロールAPIには接続できません。',
-    );
-  return resolved.toString();
+  try {
+    assertAllowedUrl(resolved, self);
+  } catch (error) {
+    if (error instanceof BlockedHttpTarget)
+      throw new ExecutionFailure('execution_error', error.message);
+    throw error;
+  }
+  return resolved;
+}
+
+/**
+ * Expand a JSON request body. Variable values are JSON-string escaped so a value
+ * placed inside a JSON string literal cannot close it and inject fields, and the
+ * result must still parse as JSON because the request is sent as application/json.
+ */
+export function expandJsonBody(template: string, variables: PromptVariables): string {
+  const escaped = Object.fromEntries(
+    Object.entries(variables).map(([key, value]) => [key, JSON.stringify(value).slice(1, -1)]),
+  ) as PromptVariables;
+  const body = expandTemplate(template, escaped);
+  if (body.trim()) {
+    try {
+      JSON.parse(body);
+    } catch {
+      throw new ExecutionFailure(
+        'execution_error',
+        'HTTPリクエスト本文が変数展開後に有効なJSONではありません。変数は文字列リテラル内に置いてください。',
+      );
+    }
+  }
+  return body;
 }
 
 async function delay(ms: number, signal: AbortSignal) {
@@ -183,38 +192,31 @@ async function runTyped(
       : undefined;
     const requestSignal = timeout ? AbortSignal.any([signal, timeout]) : signal;
     try {
-      const targetUrl = expandSafeUrl(runner.url, variables, apiOrigin);
+      const self = selfTargetFor(apiOrigin);
+      const targetUrl = expandSafeUrl(runner.url, variables, self);
       const headers: Record<string, string> = {
         ...(runner.method === 'POST' ? { 'content-type': 'application/json' } : {}),
         ...(runner.idempotencyKey
           ? { 'Idempotency-Key': `${variables['job.id']}/${variables['task.id']}` }
           : {}),
       };
-      const response = await fetch(targetUrl, {
+      const response = await guardedRequest(targetUrl, {
         method: runner.method,
         signal: requestSignal,
-        redirect: 'error',
         headers,
-        ...(runner.method === 'POST' ? { body: expandTemplate(runner.body, variables) } : {}),
+        ...(runner.method === 'POST' ? { body: expandJsonBody(runner.body, variables) } : {}),
+        maxBytes: 2 * 1024 * 1024,
+        expectStatus: runner.successStatus,
+        self,
+      }).catch((error: unknown) => {
+        if (error instanceof BlockedHttpTarget)
+          throw new ExecutionFailure('execution_error', error.message);
+        throw error;
       });
-      if (response.status !== runner.successStatus) {
-        await response.body?.cancel();
-        throw new Error(`HTTP ${response.status}（期待 ${runner.successStatus}）`);
-      }
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      if (response.body)
-        for await (const chunk of response.body) {
-          size += chunk.byteLength;
-          if (size > 2 * 1024 * 1024) {
-            await response.body.cancel();
-            throw new Error('HTTPレスポンスの上限は2 MiBです。');
-          }
-          chunks.push(chunk);
-        }
+      const size = response.body.byteLength;
       const output = path.join(work, runner.output);
       mkdirSync(path.dirname(output), { recursive: true });
-      writeFileSync(output, Buffer.concat(chunks));
+      writeFileSync(output, response.body);
       return `HTTP ${response.status} · ${size} bytes → ${runner.output}`;
     } catch (error) {
       if (timeout?.aborted && !signal.aborted)
@@ -295,6 +297,17 @@ export async function executeGraph(
         kind: (job <= stage ? 'job_timeout' : 'stage_timeout') as FailureKind,
       };
     };
+    /**
+     * Record budget exhaustion on the server before giving up on this task. A local-only
+     * status change would be overwritten by the next reload (the server still says
+     * pending/retry), making the scheduler pick the task again in a tight loop, so an
+     * emit failure propagates and fails the job instead of being swallowed.
+     */
+    const failForStageBudget = async (message: string) => {
+      await emit('stage.failed', task.key, message, { failureKind: 'stage_timeout' });
+      task.status = 'failed';
+      task.failureKind = 'stage_timeout';
+    };
     if (task.status === 'retry' && (task.retryAt || task.retryRemainingMs !== undefined)) {
       if (task.retryRemainingMs !== undefined) {
         task.retryAt = (
@@ -307,10 +320,7 @@ export async function executeGraph(
       if (wait >= budgetLeft.left) {
         if (budgetLeft.kind === 'job_timeout')
           throw new ExecutionFailure('job_timeout', 'リトライ待機の時間予算がありません。');
-        await emit('stage.failed', task.key, 'リトライ待機が工程の時間上限を超えるため停止', {
-          failureKind: 'stage_timeout',
-        }).catch(() => undefined);
-        task.status = 'failed';
+        await failForStageBudget('リトライ待機が工程の時間上限を超えるため停止');
         return;
       }
       const start = performance.now();
@@ -326,7 +336,7 @@ export async function executeGraph(
       if (budgetLeft.left <= 0) {
         if (budgetLeft.kind === 'job_timeout')
           throw new ExecutionFailure('job_timeout', 'ジョブ全体の時間上限に達しました。');
-        task.status = 'failed';
+        await failForStageBudget('工程の時間上限に達したため開始せずに停止');
         return;
       }
       const left = budgetLeft.left;
@@ -565,6 +575,8 @@ export async function executeGraph(
           if (updated) job.stages[i] = updated;
         }
       }
+      // A failed task must stop the lease before anything (including itself) is rescheduled.
+      if (taskError) throw taskError;
       const available = job.stages.filter((task) => !active.has(task.key) && readyTask(job, task));
       for (const task of available.slice(0, project.graph!.maxParallelTasks - active.size)) {
         const promise = runTask(task)

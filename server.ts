@@ -687,6 +687,8 @@ function rebuild(event: WorkflowEvent): void {
       if (step) {
         step.status = 'failed';
         step.endedAt = event.at;
+        step.retryAt = undefined;
+        step.retryRemainingMs = undefined;
         if (event.summary) {
           step.summary = event.summary;
         } else if (event.message) {
@@ -1105,6 +1107,27 @@ function readBody(req: IncomingMessage, limit = 100_000): Promise<Buffer> {
   });
 }
 
+function normalizeHostName(value: string): string | null {
+  try {
+    return new URL(`http://${value.trim()}`).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extra Host header names accepted in addition to loopback and a concrete HOST bind
+ * address (e.g. a LAN IP or hostname used by remote workers when HOST=0.0.0.0).
+ * Wildcards are intentionally unsupported so the DNS-rebinding guard stays explicit.
+ */
+const ALLOWED_HOSTS = new Set(
+  (process.env.RAILFLOW_ALLOWED_HOSTS ?? '')
+    .split(/[\s,]+/)
+    .filter((item) => item && !item.includes('*') && !item.includes('/') && !item.includes('@'))
+    .map(normalizeHostName)
+    .filter((item): item is string => !!item),
+);
+
 function isAllowedHostHeader(hostHeader: string | undefined): boolean {
   if (!hostHeader) return true;
   const trimmed = hostHeader.trim();
@@ -1124,7 +1147,8 @@ function isAllowedHostHeader(hostHeader: string | undefined): boolean {
     normalized === '127.0.0.1' ||
     normalized === 'localhost' ||
     normalized === '::1' ||
-    (configured !== '0.0.0.0' && configured !== '::' && normalized === configured)
+    (configured !== '0.0.0.0' && configured !== '::' && normalized === configured) ||
+    ALLOWED_HOSTS.has(normalized)
   );
 }
 
@@ -2370,6 +2394,18 @@ const server = http.createServer(async (req, res) => {
                 ))
             )
               throw new HttpError(409, 'この失敗は例外承認の対象ではありません。');
+          } else if (input.type === 'stage.failed' && step.status !== 'running') {
+            // v2 workers record a task whose stage budget is already spent (e.g. after a
+            // recovered crash or a retry wait that would overrun it) without starting it.
+            if (
+              job.workflow.version !== 2 ||
+              !['pending', 'retry'].includes(step.status) ||
+              input.failureKind !== 'stage_timeout' ||
+              !(policy.stageTimeoutMs > 0) ||
+              input.elapsedMs !== undefined ||
+              input.workspace !== undefined
+            )
+              throw new HttpError(409, 'この工程は実行中ではありません。');
           } else if (step.status !== 'running')
             throw new HttpError(409, 'この工程は実行中ではありません。');
         }

@@ -597,3 +597,66 @@ it('blocks cross-origin/non-JSON CSRF attempts, detects added unreviewed files, 
     await f.close();
   }
 });
+
+it('fails a recovered task whose stage budget was spent by a crash instead of looping', async () => {
+  const f = await workflowFixture(undefined, { RAILFLOW_LEASE_MS: '1000' });
+  try {
+    await f.json('/api/projects', {
+      id: 'spent',
+      name: 'Spent budget',
+      graph: { mode: 'dag', maxParallelTasks: 2, publishStage: 'publish' },
+      execution: { maxRetries: 0, stageTimeoutMs: 300 },
+      stages: [{ key: 'publish', dependsOn: [], runner: command(`process.exit(0);`) }],
+    });
+    const { job } = await f.json<{ job: WorkflowJob }>('/api/demo', { projectId: 'spent' });
+    // A worker starts the attempt and dies without heartbeats; the expired lease
+    // charges the elapsed time (> stageTimeoutMs) and requeues the task as pending.
+    const claim = await f.json<ClaimResponse>('/api/jobs/claim', { protocol: 2 });
+    await f.json(`/api/jobs/${job.id}/events`, {
+      type: 'stage.started',
+      stage: 'publish',
+      attempt: 1,
+      workspace: '.attempts/publish/1',
+      leaseToken: claim.lease!.token,
+    });
+    await f.until(job.id, 'queued');
+    f.worker('process.exit(99)');
+    const failed = await f.until(job.id, 'failed');
+    const task = failed.stages[0];
+    expect(task.status).toBe('failed');
+    expect(task.failureKind).toBe('stage_timeout');
+    expect(task.attempts).toBe(1);
+    expect(
+      failed.events.filter((event) => event.type === 'stage.started' && event.stage === 'publish'),
+    ).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
+
+it('accepts extra Host names only when listed in RAILFLOW_ALLOWED_HOSTS', async () => {
+  const f = await workflowFixture(undefined, { RAILFLOW_ALLOWED_HOSTS: 'railflow.lan, *.evil' });
+  const port = new URL(f.url).port;
+  const statusFor = (host: string) =>
+    new Promise<number>((resolve, reject) => {
+      const request = http.get({
+        host: '127.0.0.1',
+        port,
+        path: '/api/projects',
+        headers: { host },
+      });
+      request.on('response', (response) => {
+        response.resume();
+        resolve(response.statusCode ?? 0);
+      });
+      request.on('error', reject);
+    });
+  try {
+    expect(await statusFor(`railflow.lan:${port}`)).toBe(200);
+    expect(await statusFor(`RAILFLOW.LAN:${port}`)).toBe(200);
+    expect(await statusFor(`attacker.example:${port}`)).toBe(403);
+    expect(await statusFor(`x.evil:${port}`)).toBe(403);
+  } finally {
+    await f.close();
+  }
+});

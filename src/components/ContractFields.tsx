@@ -20,7 +20,7 @@ export function ContractFields({
   onChange: (next: FileContract[]) => void;
   input?: boolean;
 }) {
-  const [keyError, setKeyError] = useState('');
+  const [keyError, setKeyError] = useState<{ contract: number; message: string } | null>(null);
   const update = (index: number, patch: Partial<FileContract>) =>
     onChange(value.map((item, i) => (i === index ? { ...item, ...patch } : item)));
   return (
@@ -100,14 +100,21 @@ export function ContractFields({
           </div>
           {contract.schema?.type === 'object' && (
             <div className="schema-fields">
-              {Object.entries(contract.schema.properties ?? {}).map(([name, rule]) => {
-                const replace = (nextName: string, nextRule: JsonSchema) => {
+              {Object.entries(contract.schema.properties ?? {}).map(([name, rule], position) => {
+                const replace = (nextName: string, nextRule: JsonSchema): boolean => {
                   const entries = Object.entries(contract.schema!.properties ?? {});
-                  if (nextName !== name && entries.some(([key]) => key === nextName)) {
-                    setKeyError(`同じ名前のJSONキー「${nextName}」が既に存在します。`);
-                    return;
+                  if (!nextName.trim()) {
+                    setKeyError({ contract: index, message: 'JSONキー名を入力してください。' });
+                    return false;
                   }
-                  setKeyError('');
+                  if (nextName !== name && entries.some(([key]) => key === nextName)) {
+                    setKeyError({
+                      contract: index,
+                      message: `同じ名前のJSONキー「${nextName}」が既に存在します。`,
+                    });
+                    return false;
+                  }
+                  setKeyError(null);
                   update(index, {
                     schema: {
                       ...contract.schema!,
@@ -127,16 +134,16 @@ export function ContractFields({
                         : undefined,
                     },
                   });
+                  return true;
                 };
                 return (
-                  <div className="condition-toolbar" key={name}>
-                    <label>
-                      キー
-                      <input
-                        defaultValue={name}
-                        onBlur={(event) => replace(event.target.value, rule)}
-                      />
-                    </label>
+                  // Position keys stay stable while a property is renamed, so the row
+                  // (and the focused input) is not remounted on every committed rename.
+                  <div className="condition-toolbar" key={position}>
+                    <PropertyNameInput
+                      name={name}
+                      onCommit={(nextName) => nextName === name || replace(nextName, rule)}
+                    />
                     <label>
                       型
                       <select
@@ -212,9 +219,9 @@ export function ContractFields({
               >
                 JSONキーを追加
               </button>
-              {keyError && (
+              {keyError?.contract === index && (
                 <p className="condition-error" role="alert">
-                  {keyError}
+                  {keyError.message}
                 </p>
               )}
             </div>
@@ -230,5 +237,41 @@ export function ContractFields({
         ファイル契約を追加
       </button>
     </div>
+  );
+}
+
+/**
+ * Key names are edited as a local draft and validated only when committed (blur or
+ * Enter), so intermediate spellings that collide with another key, or an empty field,
+ * never interrupt typing. An invalid commit reverts the field to the saved name.
+ */
+function PropertyNameInput({
+  name,
+  onCommit,
+}: {
+  name: string;
+  onCommit: (next: string) => boolean;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    onCommit(draft.trim());
+    setDraft(null);
+  };
+  return (
+    <label>
+      キー
+      <input
+        value={draft ?? name}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            commit();
+          } else if (event.key === 'Escape') setDraft(null);
+        }}
+      />
+    </label>
   );
 }
