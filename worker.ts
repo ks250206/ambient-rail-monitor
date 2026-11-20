@@ -16,6 +16,7 @@ import {
 import type { ExecutionPolicy, FailureKind } from './shared/execution-policy.ts';
 import { buildStagePrompt } from './shared/prompts.ts';
 import { ExecutionFailure, isDeterministicFailure, runCommand } from './shared/process-runner.ts';
+import { LeaseGuard } from './shared/lease-guard.ts';
 import { publishAgentReports } from './shared/publish-reports.ts';
 import type {
   ClaimPaths,
@@ -932,6 +933,7 @@ console.log(
 async function workLoop() {
   while (!stopping) {
     try {
+      const claimSentAt = Date.now();
       const response = await req<ClaimResponse>('/api/jobs/claim', {
         agent: MODE,
         worker: WORKER_ID,
@@ -946,11 +948,17 @@ async function workLoop() {
       const control = new AbortController();
       const signal = AbortSignal.any([shutdown.signal, control.signal]);
       const ctx: JobContext = { token: lease.token, signal };
-      let leaseDeadline = Date.now() + (lease.ttlMs ?? lease.heartbeatMs * 4);
+      const guard = new LeaseGuard({
+        sentAt: claimSentAt,
+        ttlMs: lease.ttlMs ?? lease.heartbeatMs * 4,
+        heartbeatMs: lease.heartbeatMs,
+        onStop: () => control.abort(),
+      });
       let heartbeatBusy = false;
       const heartbeat = setInterval(() => {
         if (heartbeatBusy || signal.aborted) return;
         heartbeatBusy = true;
+        const sentAt = Date.now();
         void req<{ action: string; ttlMs?: number }>(
           `/api/jobs/${job.id}/heartbeat`,
           { leaseToken: lease.token },
@@ -958,15 +966,10 @@ async function workLoop() {
         )
           .then((result) => {
             if (result.action !== 'continue') control.abort();
-            else
-              leaseDeadline = Date.now() + (result.ttlMs ?? lease.ttlMs ?? lease.heartbeatMs * 4);
+            else guard.renewed(sentAt, result.ttlMs);
           })
-          .catch((error: unknown) => {
-            const status = (error as { status?: number })?.status;
-            // Authoritative lease rejection or approaching lease expiry fails closed immediately.
-            if (status === 409 || status === 404 || Date.now() + lease.heartbeatMs >= leaseDeadline)
-              control.abort();
-          })
+          // Authoritative rejection, or no time left to renew before expiry, fails closed.
+          .catch((error: unknown) => guard.failed((error as { status?: number })?.status))
           .finally(() => {
             heartbeatBusy = false;
           });
@@ -988,9 +991,16 @@ async function workLoop() {
         }
       } finally {
         clearInterval(heartbeat);
+        guard.dispose();
         // Also releases a claim interrupted between stage transitions. Terminal events
         // already release atomically; a resulting 409 is expected in that case.
-        await req(`/api/jobs/${job.id}/release`, { leaseToken: lease.token }).catch(
+        // A planned shutdown (SIGINT/SIGTERM) does not spend the job's recovery budget.
+        const reason = control.signal.aborted
+          ? 'control'
+          : shutdown.signal.aborted
+            ? 'shutdown'
+            : 'interrupted';
+        await req(`/api/jobs/${job.id}/release`, { leaseToken: lease.token, reason }).catch(
           () => undefined,
         );
         rmSync(paths.artifacts, { recursive: true, force: true });

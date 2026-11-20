@@ -25,12 +25,34 @@ the same review; it never implies approval.
 
 Every claim returns an opaque lease token. Worker events, heartbeat and release
 require it. The default lease lasts 30 seconds; heartbeat is every quarter of
-that period. `RAILFLOW_LEASE_MS` changes it (1–300 seconds). The worker stops its
-processes if heartbeat fails. A separate process supervisor watches a pipe from
+that period. `RAILFLOW_LEASE_MS` changes it (1–300 seconds).
+
+The worker fails closed _before_ the server-side lease can expire. Its local
+deadline is measured from when the claim or last accepted heartbeat request was
+**sent** (`sentAt + ttl`), never from when the response arrived, so it cannot
+outlive the server's renewal. It reserves a stop budget (the supervisor's TERM →
+KILL grace plus the runner's kill fallback, 2 s by default; reduced to
+`ttl − 2 × heartbeat` for very short leases) and stops its processes when:
+
+- the server rejects the lease (409/404) — immediately;
+- a heartbeat fails and the next one could not renew in time, i.e.
+  `now + heartbeat + reserve ≥ deadline` (a single transient error, such as a
+  server restart, is tolerated while the lease still has room);
+- a watchdog reaches `deadline − reserve`, even if a heartbeat request hangs.
+
+With the defaults, failing heartbeats stop the worker about 22.5 s after its last
+successful heartbeat was sent, and the watchdog guarantees it by 28 s, leaving the
+whole process stop budget before the 30 s expiry.
+
+A separate process supervisor watches a pipe from
 the worker, so even SIGKILL of the worker closes the pipe and terminates the CLI
 process group (TERM, then KILL). Windows uses `taskkill /T /F`.
 
-Expired claims are returned to the queue, up to the recovery limit. Successful
+Expired claims, crashed workers and other unplanned stops are returned to the
+queue, up to the recovery limit (`recoveryCount`). A planned worker shutdown
+(SIGINT/SIGTERM) still interrupts the running attempt, but the worker acknowledges
+it with `release` `{ reason: "shutdown" }`, so the job is requeued without spending
+the recovery budget; restarting or redeploying workers never fails a job. Successful
 and approved stages survive; interrupted output is never inherited. Actual
 attempt numbers only increase, while application `retryCount` is separate:
 pause/crash recovery does not spend an execution-error retry. A crash after a
@@ -67,9 +89,12 @@ database. Do not edit JSONL to alter current state or run old/new servers togeth
 - `POST /api/jobs/:id/pause`, `/resume`, `/cancel`: explicit job controls.
 - `POST /api/jobs/:id/priority`: `{ priority }`, only queued/paused jobs.
 - `POST /api/jobs/:id/heartbeat`: `{ leaseToken }`, returns a control action.
-- `POST /api/jobs/:id/release`: `{ leaseToken }`, after local processes have stopped.
+- `POST /api/jobs/:id/release`: `{ leaseToken, reason? }`, after local processes have stopped;
+  `reason: "shutdown"` marks a planned stop that does not count as a recovery.
 - `POST /api/jobs/:id/events`: adds `leaseToken` and optional UUID `requestId`.
-- `/api/state` includes queue limits and currently leased workers.
+- `/api/state` includes queue limits and currently leased workers. The `/api/stream`
+  change carries `queueUpdated: true` on queue setting changes and on every claim or
+  release, so every project's monitor refreshes the shared queue panel.
 
 Limits do not sandbox command execution or authenticate remote clients. The
 existing default remains a trusted local server bound to `127.0.0.1`.

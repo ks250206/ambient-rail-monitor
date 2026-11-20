@@ -19,6 +19,11 @@ export function isDeterministicFailure(error: unknown): boolean {
   return error instanceof ExecutionFailure && !error.retryable;
 }
 
+/** Grace between TERM and KILL of the CLI process group (supervisor side). */
+export const DEFAULT_PROCESS_GRACE_MS = 500;
+/** Extra time before the runner force-kills a supervisor that did not exit after TERM. */
+export const PROCESS_KILL_FALLBACK_MS = 1500;
+
 /** Own the process group so a timed-out attempt cannot keep writing during a retry. */
 export async function runCommand(
   command: string,
@@ -39,7 +44,10 @@ export async function runCommand(
     [fileURLToPath(new URL('./process-supervisor.ts', import.meta.url)), command, ...args],
     {
       cwd: options.cwd,
-      env: { ...process.env, RAILFLOW_SUPERVISOR_GRACE_MS: String(options.graceMs ?? 500) },
+      env: {
+        ...process.env,
+        RAILFLOW_SUPERVISOR_GRACE_MS: String(options.graceMs ?? DEFAULT_PROCESS_GRACE_MS),
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
     },
   );
@@ -67,7 +75,10 @@ export async function runCommand(
     if (closed) return;
     child.stdin.end();
     killTree('SIGTERM');
-    killTimer ??= setTimeout(() => killTree('SIGKILL'), (options.graceMs ?? 500) + 1500);
+    killTimer ??= setTimeout(
+      () => killTree('SIGKILL'),
+      (options.graceMs ?? DEFAULT_PROCESS_GRACE_MS) + PROCESS_KILL_FALLBACK_MS,
+    );
   };
   const onAbort = () => stop('interrupted');
   options.signal?.addEventListener('abort', onAbort, { once: true });

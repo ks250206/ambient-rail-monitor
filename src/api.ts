@@ -57,7 +57,7 @@ function subscribeStream(notify: () => void) {
     if (!change.sequence && !change.inputsUpdated && !change.queueUpdated)
       void queryClient.invalidateQueries({ queryKey: ['projects'] });
     const targetProject = change.projectId ?? change.deletedProjectId;
-    // Queue updates or cross-project lease changes affect all monitor views.
+    // Queue settings and lease claims/releases (queueUpdated) affect every monitor view.
     void queryClient.invalidateQueries({
       queryKey: change.queueUpdated || !targetProject ? ['monitor'] : ['monitor', targetProject],
     });

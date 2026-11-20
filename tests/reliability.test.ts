@@ -362,3 +362,116 @@ it('fails immediately on missing executable (ENOENT) without hanging in process-
   ).rejects.toMatchObject({ kind: 'execution_error' });
   expect(performance.now() - start).toBeLessThan(3000);
 });
+
+it('broadcasts queueUpdated when a claim or release changes the shared queue', async () => {
+  const f = await workflowFixture();
+  const abort = new AbortController();
+  try {
+    const stream = await fetch(f.url + '/api/stream', { signal: abort.signal });
+    const reader = stream.body!.getReader();
+    const changes: Array<Record<string, unknown>> = [];
+    let buffer = '';
+    void (async () => {
+      const decoder = new TextDecoder();
+      while (true) {
+        const { value, done } = await reader.read().catch(() => ({ value: undefined, done: true }));
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop()!;
+        for (const part of parts)
+          for (const line of part.split('\n'))
+            if (line.startsWith('data:')) changes.push(JSON.parse(line.slice(5)));
+      }
+    })();
+    const { job } = await f.json<{ job: WorkflowJob }>('/api/demo');
+    const claim = await f.json<ClaimResponse>('/api/jobs/claim');
+    await expect
+      .poll(() =>
+        changes.find((change) => change.queueUpdated && change.projectId === job.projectId),
+      )
+      .toBeTruthy();
+    const before = changes.length;
+    await f.json(`/api/jobs/${job.id}/events`, {
+      type: 'stage.started',
+      stage: 'ingest',
+      attempt: 1,
+      leaseToken: claim.lease!.token,
+    });
+    await expect.poll(() => changes.length).toBeGreaterThan(before);
+    // An ordinary stage event does not touch the lease.
+    expect(changes.slice(before).some((change) => change.queueUpdated)).toBe(false);
+    const beforeRelease = changes.length;
+    await f.json(`/api/jobs/${job.id}/release`, { leaseToken: claim.lease!.token });
+    await expect
+      .poll(() => changes.slice(beforeRelease).some((change) => change.queueUpdated))
+      .toBe(true);
+  } finally {
+    abort.abort();
+    await f.close();
+  }
+});
+
+it('requeues a planned worker shutdown without spending the recovery budget', async () => {
+  const f = await workflowFixture();
+  try {
+    await f.json(
+      '/api/queue',
+      { maxConcurrentJobs: 4, maxJobsPerWorker: 2, maxRecoveries: 0 },
+      'PUT',
+    );
+    const { job } = await f.json<{ job: WorkflowJob }>('/api/demo');
+    const claim = await f.json<ClaimResponse>('/api/jobs/claim');
+    await f.json(`/api/jobs/${job.id}/release`, {
+      leaseToken: claim.lease!.token,
+      reason: 'shutdown',
+    });
+    const requeued = await f.job(job.id);
+    expect(requeued.status).toBe('queued');
+    expect(requeued.recoveryCount ?? 0).toBe(0);
+    // An unplanned stop still counts against the (here zero) recovery budget.
+    const next = await f.json<ClaimResponse>('/api/jobs/claim');
+    await f.json(`/api/jobs/${job.id}/release`, { leaseToken: next.lease!.token });
+    expect((await f.job(job.id)).status).toBe('failed');
+  } finally {
+    await f.close();
+  }
+});
+
+it.skipIf(process.platform === 'win32')(
+  'a SIGTERM-stopped worker requeues its job with an unchanged recovery count',
+  async () => {
+    const f = await workflowFixture();
+    try {
+      await f.json(
+        '/api/queue',
+        { maxConcurrentJobs: 4, maxJobsPerWorker: 2, maxRecoveries: 0 },
+        'PUT',
+      );
+      await f.json('/api/projects', {
+        id: 'planned',
+        name: 'Planned',
+        execution: { maxRetries: 0 },
+        stages: [{ key: 'report' }],
+      });
+      const { job } = await f.json<{ job: WorkflowJob }>('/api/demo', { projectId: 'planned' });
+      const script =
+        cliPrelude +
+        `
+if (attempt === 1) setInterval(() => {}, 1000);
+else fs.writeFileSync('report.html', 'after restart');`;
+      const worker = f.worker(script);
+      await expect.poll(async () => (await f.job(job.id)).stages[0].status).toBe('running');
+      await worker.close(); // SIGTERM
+      const requeued = await f.until(job.id, 'queued');
+      expect(requeued.recoveryCount ?? 0).toBe(0);
+      expect(requeued.stages[0].status).toBe('pending');
+      f.worker(script);
+      const done = await f.until(job.id, 'done');
+      expect(done.stages[0].attempts).toBe(2);
+      expect(done.recoveryCount ?? 0).toBe(0);
+    } finally {
+      await f.close();
+    }
+  },
+);

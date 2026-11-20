@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   closeSync,
   constants,
+  copyFileSync,
   createReadStream,
   existsSync,
   fstatSync,
@@ -775,23 +776,28 @@ function appendEvent(
     at: new Date().toISOString(),
     sequence: ++eventSerial,
   };
-  journal.append(
-    event,
+  const leaseChange =
     lease === undefined &&
-      [
-        'review.required',
-        'job.completed',
-        'job.failed',
-        'job.paused',
-        'job.cancelled',
-        'job.recovered',
-      ].includes(event.type)
+    [
+      'review.required',
+      'job.completed',
+      'job.failed',
+      'job.paused',
+      'job.cancelled',
+      'job.recovered',
+    ].includes(event.type)
       ? null
-      : lease,
-    request,
-  );
+      : lease;
+  const hadLease = leaseChange === null && !!journal.lease(event.jobId);
+  journal.append(event, leaseChange, request);
   rebuild(event);
-  broadcastUpdate({ sequence: event.sequence, projectId: event.projectId });
+  // Claims and releases change the server-wide queue (active slots, workers), which
+  // every project's monitor shows, so they invalidate all monitor views.
+  broadcastUpdate({
+    sequence: event.sequence,
+    projectId: event.projectId,
+    ...(leaseChange || hadLease ? { queueUpdated: true } : {}),
+  });
   return event;
 }
 
@@ -824,7 +830,17 @@ function cleanupPublication(job: WorkflowJob, leaseToken?: string) {
   });
 }
 
-function settleLease(job: WorkflowJob, reason: string, cutoff = Date.now()) {
+/**
+ * Return a leased job to a stable state. `planned` marks a worker that stopped on
+ * purpose (SIGINT/SIGTERM) and acknowledged it: the job is requeued without spending
+ * the automatic recovery budget, which only counts crashes and lease expiry.
+ */
+function settleLease(
+  job: WorkflowJob,
+  reason: string,
+  cutoff = Date.now(),
+  { planned = false }: { planned?: boolean } = {},
+) {
   const stoppingStatus = job.status;
   const activeLease = journal.lease(job.id);
   try {
@@ -869,7 +885,7 @@ function settleLease(job: WorkflowJob, reason: string, cutoff = Date.now()) {
       });
       return;
     }
-    if ((job.recoveryCount ?? 0) >= queueSettings.maxRecoveries) {
+    if (!planned && (job.recoveryCount ?? 0) >= queueSettings.maxRecoveries) {
       appendEvent({
         type: 'job.failed',
         jobId: job.id,
@@ -884,7 +900,7 @@ function settleLease(job: WorkflowJob, reason: string, cutoff = Date.now()) {
       type: 'job.recovered',
       jobId: job.id,
       projectId: job.projectId,
-      recoveryCount: (job.recoveryCount ?? 0) + 1,
+      recoveryCount: (job.recoveryCount ?? 0) + (planned ? 0 : 1),
       message: reason + '。合格済み工程を保持してキューに戻しました。',
     });
   } finally {
@@ -1848,13 +1864,18 @@ const server = http.createServer(async (req, res) => {
       if (!job) throw new HttpError(404, 'Job not found');
       const lease = requireLease(job, body.leaseToken);
       if (leaseMatch[2] === 'release') {
+        const planned = body.reason === 'shutdown';
         settleLease(
           job,
           job.status === 'pausing'
             ? '一時停止しました'
             : job.status === 'cancelling'
               ? 'キャンセルしました'
-              : 'ワーカーが処理を中断',
+              : planned
+                ? 'ワーカーが計画停止しました'
+                : 'ワーカーが処理を中断',
+          Date.now(),
+          { planned },
         );
         return deliverJSON(res, { ok: true });
       }
