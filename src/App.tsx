@@ -8,7 +8,7 @@ import {
   useConnection,
   useClock,
 } from './api.ts';
-import { FolderOpen, SlidersHorizontal, Upload } from 'lucide-react';
+import { ArrowRight, Upload } from 'lucide-react';
 import { type ChangeEvent, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import type { AppStateResponse, ProjectSpec, StageKey, WorkflowJob } from '../shared/types.ts';
@@ -75,11 +75,13 @@ function Monitor({ project }: { project: ProjectSpec }) {
   const [chosenStage, setChosenStage] = useState<StageKey | null>(null);
   const selectedJob = state.jobs.find((job) => job.id === chosenJob) ?? state.jobs[0] ?? null;
   const selectedJobId = selectedJob?.id ?? null;
+  // Keep the open job and its comparison stable when a newer run arrives over SSE.
+  if (chosenJob === null && selectedJobId) setChosenJob(selectedJobId);
   const selectedStage =
     selectedJob?.stages.find((stage) => stage.key === chosenStage)?.key ??
     pickDefaultStage(selectedJob);
   const [showAllLogs, setShowAllLogs] = useState(false);
-  const activeHash = useSyncExternalStore(subscribeHash, () => window.location.hash || '#board');
+  const activeHash = useSyncExternalStore(subscribeHash, () => window.location.hash || '#workflow');
   const nowMs = useClock();
   const { toast, showToast } = useToast();
   const [reviewDemo, setReviewDemo] = useState(false);
@@ -162,101 +164,98 @@ function Monitor({ project }: { project: ProjectSpec }) {
       }}
     >
       <main>
-        <div className="monitor-hero">
-          <div aria-hidden="true" className="hero-arches" />
-          <div className="page-width relative py-7 sm:py-10">
-            <div className="hero-copy">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-bold text-eyebrow">
-                  {state.project.name}（{state.project.stages.length}工程）
-                </span>
-                <a
-                  href={pageHref('/workflow', selectedProjectId)}
-                  className="inline-flex items-center gap-1 rounded border border-line bg-white px-2 py-0.5 text-[11px] font-semibold text-science-blue hover:bg-bg-2"
-                >
-                  <SlidersHorizontal className="h-3 w-3" />
-                  定義・工程・LLM を編集
-                </a>
-              </div>
-              <h1
-                lang="en"
-                className="font-en mt-1 text-4xl font-bold leading-tight text-science-blue sm:text-5xl"
+        <header className="page-width py-8 sm:py-12">
+          <h1 className="max-w-5xl break-words text-3xl font-bold leading-tight text-science-blue sm:text-4xl">
+            {project.name}
+          </h1>
+          {project.purpose && (
+            <p className="mt-3 max-w-3xl whitespace-pre-line break-words text-sm leading-7 text-ink-muted sm:text-base">
+              {project.purpose}
+            </p>
+          )}
+        </header>
+        <SectionNavigation activeHash={activeHash === '#job-detail' ? '#actions' : activeHash} />
+        <section className="page-width pb-10" aria-labelledby="workflow-title">
+          <div id="workflow" className="scroll-mt-6 py-6 sm:py-8">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 id="workflow-title" className="section-heading">
+                ワークフロー
+              </h2>
+              <a
+                href={pageHref('/workflow', selectedProjectId)}
+                className="inline-flex items-center gap-1.5 text-sm font-semibold text-science-blue hover:underline"
               >
-                Ambient workflows
-              </h1>
-              <p className="mt-2 max-w-xl text-base leading-7">
-                {state.project.purpose ||
-                  'ファイル投入から解析、検証、成果物の生成まで、ジョブごとの実行状況を確認できます。'}
-              </p>
-              <p className="mt-2 inline-flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-muted">
-                <span className="inline-flex items-center gap-1">
-                  <FolderOpen className="h-3.5 w-3.5 text-eyebrow" />
-                  Inbox: <code className="font-mono text-ink">{state.project.inboxDir}</code>
-                </span>
-                <span>
-                  Artifacts:{' '}
-                  <code className="font-mono text-ink">{state.project.artifactsDir}</code>
-                </span>
-              </p>
-              <div className="mt-5 flex flex-wrap gap-3">
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="monitor-button"
-                >
-                  ファイル投入
-                </button>
-                <button
-                  type="button"
-                  onClick={(event) => enqueue.mutate(reviewDemo || event.shiftKey)}
-                  title="Shift + Click で人間のレビュー承認ゲートを有効にして実行"
-                  lang="en"
-                  className="monitor-button font-en"
-                >
-                  Demo run
-                </button>
-                <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={reviewDemo}
-                    onChange={(event) => setReviewDemo(event.target.checked)}
-                    className="size-4 accent-science-blue"
-                  />
-                  デモをレビューで一時停止
-                </label>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".csv,.tsv,.txt,.json,.dat"
-                  onChange={handleFileChange}
-                  hidden
-                />
-              </div>
+                定義を編集 <ArrowRight size={15} />
+              </a>
             </div>
+            <ol aria-label="ワークフローの工程順" className="workflow-sequence">
+              {project.stages.map((stage, index) => (
+                <li key={stage.key}>
+                  <span aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
+                  {stage.label}
+                </li>
+              ))}
+            </ol>
           </div>
-        </div>
-
-        <SectionNavigation activeHash={activeHash} projectId={selectedProjectId} />
-
-        <div className="page-width pb-10">
-          {/* KPI Metrics */}
           {query.isError && (
             <p role="alert" className="py-2 text-st-red-dark">
               ジョブの取得に失敗しました。ジョブボードから再読み込みできます。
             </p>
           )}
-          <MetricsGrid jobs={state.jobs} loading={query.isPending} />
 
-          {/* 01 / Kanban Job Board (First!) */}
           <KanbanSection
             jobs={state.jobs}
             selectedJobId={selectedJobId}
             nowMs={nowMs}
-            onSelectJob={selectJob}
+            onSelectJob={(id) => {
+              selectJob(id);
+              if (window.location.hash === '#job-detail')
+                document.getElementById('job-detail')?.scrollIntoView();
+              else window.location.hash = 'job-detail';
+              document.getElementById('job-detail')?.focus({ preventScroll: true });
+            }}
             onRefresh={() => void query.refetch()}
-          />
+          >
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="wf-primary"
+              >
+                ファイル投入
+              </button>
+              <button
+                type="button"
+                onClick={(event) => enqueue.mutate(reviewDemo || event.shiftKey)}
+                title="Shift + Click で人間のレビュー承認ゲートを有効にして実行"
+                lang="en"
+                className="wf-secondary font-en"
+              >
+                Demo run
+              </button>
+              <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={reviewDemo}
+                  onChange={(event) => setReviewDemo(event.target.checked)}
+                  className="size-4 accent-science-blue"
+                />
+                デモをレビューで一時停止
+              </label>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,.tsv,.txt,.json,.dat"
+                onChange={handleFileChange}
+                hidden
+              />
+            </div>
+            <details className="mb-4 text-sm text-ink-muted">
+              <summary className="w-fit cursor-pointer py-2">ジョブの集計</summary>
+              <MetricsGrid jobs={state.jobs} loading={query.isPending} />
+            </details>
+          </KanbanSection>
 
-          {/* 02 / Unified Execution History & Tabbed Summary/Logs */}
           <ActionsSection
             jobs={state.jobs}
             selectedJob={selectedJob}
@@ -270,22 +269,20 @@ function Monitor({ project }: { project: ProjectSpec }) {
             onApproveReview={(jobId) => approve.mutate(jobId)}
           />
 
-          {/* 03 / Trace Explorer */}
           <TraceSection job={selectedJob} nowMs={nowMs} onSelectStage={handleSelectStage} />
 
-          {/* 04 / Recent Events & Artifacts */}
-          <BottomGrid job={selectedJob} />
+          <BottomGrid key={selectedJobId} job={selectedJob} jobs={state.jobs} />
+        </section>
 
-          <footer className="mt-10 flex flex-wrap justify-between gap-3 border-t-2 border-science-blue pt-4 text-sm text-ink-muted">
-            <span lang="en" className="font-en font-semibold text-science-blue">
-              Institute of Science Tokyo
-            </span>
-            <span>
-              実行履歴のエージェント　
-              {agentNames || '記録なし'}
-            </span>
-          </footer>
-        </div>
+        <footer className="page-width mb-10 mt-4 flex flex-wrap justify-between gap-3 border-t-2 border-science-blue pt-4 text-sm text-ink-muted">
+          <span lang="en" className="font-en font-semibold text-science-blue">
+            Institute of Science Tokyo
+          </span>
+          <span>
+            実行履歴のエージェント　
+            {agentNames || '記録なし'}
+          </span>
+        </footer>
       </main>
 
       {/* Toast Notification */}

@@ -26,7 +26,7 @@ export function TraceSection({ job, nowMs, onSelectStage }: TraceSectionProps) {
     <section id="trace" className="mt-5 scroll-mt-6 border-t-2 border-science-sub bg-white pt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="section-heading">トレース</h2>
+          <h3 className="section-heading">トレース</h3>
         </div>
 
         <span className="font-mono text-xs text-ink-muted tabular-nums">

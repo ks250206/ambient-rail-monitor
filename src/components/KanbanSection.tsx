@@ -1,9 +1,11 @@
+import type { ReactNode } from 'react';
 import { RefreshCw } from 'lucide-react';
 
 import type { WorkflowJob } from '../../shared/types.ts';
 import { dateMs, elapsed, KANBAN_COLUMNS } from '../utils/workflow.ts';
 
 interface KanbanSectionProps {
+  children: ReactNode;
   jobs: WorkflowJob[];
   selectedJobId: string | null;
   nowMs: number;
@@ -12,6 +14,7 @@ interface KanbanSectionProps {
 }
 
 export function KanbanSection({
+  children,
   jobs,
   selectedJobId,
   nowMs,
@@ -19,10 +22,10 @@ export function KanbanSection({
   onRefresh,
 }: KanbanSectionProps) {
   return (
-    <section id="board" className="mt-9 scroll-mt-6">
+    <section id="board" className="scroll-mt-6 border-t border-line pt-5">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="section-heading">ジョブボード</h2>
+          <h3 className="section-heading">ジョブボード</h3>
         </div>
 
         <div className="flex items-center gap-2.5">
@@ -32,11 +35,12 @@ export function KanbanSection({
             className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-semibold text-science-blue transition-colors hover:bg-bg-1"
           >
             <RefreshCw className="h-3.5 w-3.5" />
-            Refresh
+            更新
           </button>
         </div>
       </div>
 
+      {children}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {KANBAN_COLUMNS.map((column) => {
           const columnJobs = jobs.filter((job) =>
@@ -48,9 +52,9 @@ export function KanbanSection({
           return (
             <div key={column.id} className="flex min-w-0 flex-col bg-bg-2 p-4 sm:min-h-48">
               <div className="mb-3 flex items-baseline justify-between gap-2">
-                <h3 lang="en" className="font-en text-base font-semibold text-ink">
+                <h4 lang="en" className="font-en text-base font-semibold text-ink">
                   {column.label}
-                </h3>
+                </h4>
                 <span className="font-en text-sm text-ink-muted tabular-nums">
                   {columnJobs.length}
                 </span>

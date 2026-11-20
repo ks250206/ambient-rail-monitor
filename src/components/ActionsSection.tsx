@@ -188,10 +188,7 @@ export function ActionsSection({
       className="mt-8 scroll-mt-6 border-t-2 border-science-sub pt-4"
     >
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="section-heading">実行履歴・工程詳細</h2>
-        <span className="text-xs text-ink-muted">
-          ステップを選ぶと、右ペインで「Summary」と「Logs」を切り替えて確認できます
-        </span>
+        <h3 className="section-heading">ジョブ詳細</h3>
       </div>
 
       <div className="grid min-h-[540px] grid-cols-1 overflow-hidden rounded-md border border-line bg-white xl:grid-cols-[minmax(285px,0.72fr)_minmax(0,1.68fr)]">
@@ -203,7 +200,7 @@ export function ActionsSection({
                 <Play className="h-3.5 w-3.5 fill-current" />
               </span>
               <strong className="font-en text-[13px] font-bold text-science-blue">
-                Workflow runs
+                ジョブの実行履歴
               </strong>
               <span className="rounded-full bg-bg-1 px-2 py-0.5 font-mono text-xs font-bold text-science-blue">
                 {jobs.length}
@@ -223,7 +220,7 @@ export function ActionsSection({
                   setPage(0);
                 }}
                 placeholder="Search runs or files…"
-                aria-label="Search workflow runs"
+                aria-label="ジョブを検索"
                 className="w-full min-w-0 bg-transparent text-xs text-ink outline-none placeholder:text-ink-muted"
               />
             </label>
@@ -259,7 +256,7 @@ export function ActionsSection({
 
           <div
             className="max-h-[340px] flex-1 overflow-y-auto xl:max-h-[520px]"
-            aria-label="Workflow runs"
+            aria-label="ジョブの実行履歴"
           >
             {pageJobs.length === 0 ? (
               <div className="flex min-h-[220px] flex-col items-center justify-center gap-2 p-6 text-center">
@@ -316,7 +313,7 @@ export function ActionsSection({
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <strong className="truncate text-xs font-bold text-ink">{job.file}</strong>
                       <span className="truncate text-xs text-ink-muted">
-                        {project.name} · {(job.agent || 'unassigned').toUpperCase()}
+                        {(job.agent || 'unassigned').toUpperCase()}
                       </span>
                       <span className="truncate font-mono text-xs text-ink-muted">
                         {job.id} · {clockDate(job.createdAt)}
@@ -372,7 +369,12 @@ export function ActionsSection({
         </div>
 
         {/* Right pane: Run header + Vertical Steps Tabs + Unified Summary/Logs Grid */}
-        <div className="flex min-w-0 flex-col">
+        <div
+          id="job-detail"
+          tabIndex={-1}
+          aria-label="選択中のジョブ"
+          className="flex min-w-0 scroll-mt-6 flex-col"
+        >
           {/* Run Header */}
           <div className="border-b border-line bg-white px-5 py-4">
             {!selectedJob ? (
@@ -416,19 +418,10 @@ export function ActionsSection({
                     )}
                     {selectedJob.artifacts.length > 0 && (
                       <a
-                        href={
-                          selectedJob.artifacts.length === 1
-                            ? selectedJob.artifacts[0].uri
-                            : '#artifacts'
-                        }
-                        target={selectedJob.artifacts.length === 1 ? '_blank' : undefined}
-                        rel="noopener noreferrer"
+                        href="#artifacts"
                         className="inline-flex items-center gap-1 rounded-lg border border-line bg-white px-2.5 py-1.5 text-xs font-semibold text-science-blue transition-colors hover:bg-bg-1"
                       >
-                        {selectedJob.artifacts.length === 1
-                          ? '1 artifact'
-                          : `${selectedJob.artifacts.length} artifacts`}
-                        <ExternalLink className="h-3 w-3" />
+                        成果物を見る（{selectedJob.artifacts.length}）
                       </a>
                     )}
                     <a
@@ -525,7 +518,7 @@ export function ActionsSection({
 
               {!selectedJob ? (
                 <div className="flex flex-1 items-center justify-center p-6 text-xs text-ink-muted">
-                  No workflow selected.
+                  ジョブを選択してください。
                 </div>
               ) : (
                 <div className="flex-1 divide-y divide-line/60">
@@ -847,7 +840,7 @@ export function ActionsSection({
                   >
                     {!selectedJob ? (
                       <div className="px-4 py-10 text-center font-sans text-xs text-ink-muted">
-                        Run a workflow to see step output.
+                        ジョブが実行されるとログが表示されます。
                       </div>
                     ) : filteredEvents.length === 0 ? (
                       <div className="px-4 py-10 text-center font-sans text-xs text-ink-muted">
