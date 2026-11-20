@@ -118,12 +118,11 @@ export function WorkflowSpecSection({
     <section
       id="workflow"
       aria-label="ワークフロー定義と LLM・工程別カスタム指示"
-      className="mt-8 scroll-mt-6 border-t-2 border-science-sub bg-white pt-4"
+      className="mt-4 scroll-mt-6 border-t-2 border-science-sub bg-white pt-4"
     >
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="section-heading">ワークフロー定義・LLM 設定・カスタム指示</h2>
-          <p className="mt-1 text-xs text-ink-muted">
+          <p className="text-sm text-ink-muted">
             このワークフローの目的・受け入れ要件・使用するモデルとエフォート・各工程のカスタム指示を保存できます。次回ワーカーがジョブを取得したときの実行引数とプロンプトに反映されます。
           </p>
         </div>

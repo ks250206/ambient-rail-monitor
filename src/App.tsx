@@ -1,15 +1,15 @@
-import { Upload } from 'lucide-react';
+import { SlidersHorizontal, Upload } from 'lucide-react';
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { AppStateResponse, StageKey, WorkflowJob, WorkflowSpec } from '../shared/types.ts';
 import { ActionsSection } from './components/ActionsSection.tsx';
+import { AppHeader } from './components/AppHeader.tsx';
 import { BottomGrid } from './components/BottomGrid.tsx';
 import { KanbanSection } from './components/KanbanSection.tsx';
 import { MetricsGrid } from './components/MetricsGrid.tsx';
 import { SectionNavigation } from './components/SectionNavigation.tsx';
 import { TraceSection } from './components/TraceSection.tsx';
-import { WorkflowSpecSection } from './components/WorkflowSpecSection.tsx';
-import { clock, pickDefaultStage } from './utils/workflow.ts';
+import { pickDefaultStage } from './utils/workflow.ts';
 
 interface ToastState {
   text: string;
@@ -40,9 +40,9 @@ const EMPTY_WORKFLOW: WorkflowSpec = {
   updatedAt: '',
 };
 
-async function sendJson<T>(route: string, method: 'POST' | 'PUT', payload: unknown): Promise<T> {
+async function postJson<T>(route: string, payload: unknown): Promise<T> {
   const res = await fetch(route, {
-    method,
+    method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
   });
@@ -71,11 +71,10 @@ export function App() {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [selectedStage, setSelectedStage] = useState<StageKey>('ingest');
   const [showAllLogs, setShowAllLogs] = useState(false);
-  const [activeHash, setActiveHash] = useState<string>(() => window.location.hash || '#overview');
+  const [activeHash, setActiveHash] = useState<string>(() => window.location.hash || '#board');
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [toast, setToast] = useState<ToastState | null>(null);
   const [reviewDemo, setReviewDemo] = useState(false);
-  const [savingWorkflow, setSavingWorkflow] = useState(false);
   const [dragVisible, setDragVisible] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -156,7 +155,7 @@ export function App() {
 
   useEffect(() => {
     const onHashChange = () => {
-      setActiveHash(window.location.hash || '#overview');
+      setActiveHash(window.location.hash || '#board');
     };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
@@ -253,7 +252,7 @@ export function App() {
   const handleDemoRun = useCallback(
     async (review: boolean) => {
       try {
-        const answer = await sendJson<{ job: WorkflowJob }>('/api/demo', 'POST', { review });
+        const answer = await postJson<{ job: WorkflowJob }>('/api/demo', { review });
         setSelectedJobId(answer.job.id);
         setSelectedStage('ingest');
         setShowAllLogs(false);
@@ -271,7 +270,7 @@ export function App() {
   const handleApproveReview = useCallback(
     async (jobId: string) => {
       try {
-        await sendJson(`/api/jobs/${jobId}/approve`, 'POST', {});
+        await postJson(`/api/jobs/${jobId}/approve`, {});
         showToast('レビューを承認しました。Workerの次回claimで再開します。');
         await refresh();
       } catch (err) {
@@ -281,22 +280,6 @@ export function App() {
     [refresh, showToast],
   );
 
-  const handleSaveWorkflow = useCallback(
-    async (next: Omit<WorkflowSpec, 'updatedAt'>) => {
-      setSavingWorkflow(true);
-      try {
-        const answer = await sendJson<{ workflow: WorkflowSpec }>('/api/workflow', 'PUT', next);
-        setState((prev) => ({ ...prev, workflow: answer.workflow }));
-        showToast('ワークフロー定義とカスタム指示を保存しました');
-      } catch (err) {
-        showToast(err instanceof Error ? err.message : '保存に失敗しました', true);
-      } finally {
-        setSavingWorkflow(false);
-      }
-    },
-    [showToast],
-  );
-
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     void uploadFile(event.target.files?.[0]);
     event.target.value = '';
@@ -304,44 +287,23 @@ export function App() {
 
   return (
     <div id="overview" className="min-h-screen bg-white text-ink">
-      <header className="border-t-4 border-science-blue">
-        <div className="page-width flex min-h-16 flex-wrap items-center justify-between gap-x-4 gap-y-1 py-2">
-          <div className="flex items-baseline gap-3 text-science-blue sm:gap-5">
-            <span lang="en" className="font-en text-xl font-semibold sm:text-2xl">
-              Science Tokyo
-            </span>
-            <a
-              href="#overview"
-              className="border-l border-science-sub pl-3 font-en text-sm font-bold tracking-wide sm:pl-5"
-            >
-              RAILFLOW
-            </a>
-          </div>
-          <div className="flex items-center gap-2 text-xs text-ink-muted">
-            <span
-              aria-hidden="true"
-              className={`size-2 rounded-full ${connection === 'online' ? 'bg-st-green' : 'bg-st-orange'}`}
-            />
-            <span>
-              {connection === 'online'
-                ? 'オンライン'
-                : connection === 'connecting'
-                  ? '接続を開始しています'
-                  : '再接続中'}
-            </span>
-            <time className="hidden border-l border-line pl-3 font-mono sm:inline">
-              {clock(new Date(nowMs).toISOString())}
-            </time>
-          </div>
-        </div>
-      </header>
+      <AppHeader currentPage="monitor" connection={connection} nowMs={nowMs} />
 
       <main>
         <div className="monitor-hero">
           <div aria-hidden="true" className="hero-arches" />
           <div className="page-width relative py-7 sm:py-10">
             <div className="hero-copy">
-              <p className="text-xs font-bold text-eyebrow">{state.workflow.title}</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-bold text-eyebrow">{state.workflow.title}</span>
+                <a
+                  href="/workflow"
+                  className="inline-flex items-center gap-1 rounded border border-line bg-white px-2 py-0.5 text-[11px] font-semibold text-science-blue hover:bg-bg-2"
+                >
+                  <SlidersHorizontal className="h-3 w-3" />
+                  定義・LLM 設定を編集
+                </a>
+              </div>
               <h1
                 lang="en"
                 className="font-en mt-1 text-4xl font-bold leading-tight text-science-blue sm:text-5xl"
@@ -389,7 +351,9 @@ export function App() {
             </div>
           </div>
         </div>
+
         <SectionNavigation activeHash={activeHash} />
+
         <div className="page-width pb-10">
           {/* KPI Metrics */}
           <MetricsGrid jobs={state.jobs} loading={initialLoading} />
@@ -403,7 +367,7 @@ export function App() {
             onRefresh={() => void refresh()}
           />
 
-          {/* 02 / Unified Execution History & Stage Details (includes per-step result summaries) */}
+          {/* 02 / Unified Execution History & Tabbed Step Summary/Logs */}
           <ActionsSection
             jobs={state.jobs}
             selectedJob={selectedJob}
@@ -417,18 +381,10 @@ export function App() {
             onApproveReview={(jobId) => void handleApproveReview(jobId)}
           />
 
-          {/* 03 / Workflow Specification, Acceptance Criteria & Stage Custom Instructions */}
-          <WorkflowSpecSection
-            workflow={state.workflow}
-            stages={state.stages}
-            saving={savingWorkflow}
-            onSave={handleSaveWorkflow}
-          />
-
-          {/* 04 / Trace Explorer */}
+          {/* 03 / Trace Explorer */}
           <TraceSection job={selectedJob} nowMs={nowMs} onSelectStage={handleSelectStage} />
 
-          {/* 05 / Recent Events & Artifacts */}
+          {/* 04 / Recent Events & Artifacts */}
           <BottomGrid job={selectedJob} />
 
           <footer className="mt-10 flex flex-wrap justify-between gap-3 border-t-2 border-science-blue pt-4 text-sm text-ink-muted">

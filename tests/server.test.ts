@@ -259,6 +259,11 @@ describe('API integration', () => {
         expect(html.headers.get('content-security-policy')).toMatch(/script-src 'self'/);
         expect(html.headers.get('content-security-policy')).not.toMatch(/sandbox/);
         expect(await html.text()).toMatch(/RAILFLOW/);
+
+        const wfHtml = await fetch(`${api}/workflow`);
+        expect(wfHtml.status).toBe(200);
+        expect(wfHtml.headers.get('content-security-policy')).toMatch(/script-src 'self'/);
+        expect(await wfHtml.text()).toMatch(/ワークフロー定義/);
       }
 
       writeFileSync(path.join(temp, 'inbox', 'watch_test.csv'), 'x,y\n1,2\n2,3\n');

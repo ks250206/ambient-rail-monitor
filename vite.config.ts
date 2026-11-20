@@ -1,11 +1,29 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite-plus';
 
+const root = path.dirname(fileURLToPath(import.meta.url));
 const apiTarget = process.env.RAILFLOW_URL || 'http://127.0.0.1:4173';
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    {
+      name: 'railflow-workflow-route',
+      configureServer(server) {
+        server.middlewares.use((req, _res, next) => {
+          if (req.url === '/workflow' || req.url === '/workflow/') {
+            req.url = '/workflow.html';
+          }
+          next();
+        });
+      },
+    },
+  ],
   server: {
     port: 5173,
     proxy: {
@@ -22,6 +40,12 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: path.resolve(root, 'index.html'),
+        workflow: path.resolve(root, 'workflow.html'),
+      },
+    },
   },
   test: {
     include: ['tests/**/*.test.ts'],
