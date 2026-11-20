@@ -1,0 +1,94 @@
+@import 'tailwindcss';
+
+@theme {
+  /* Science Tokyo Brand & Sub Colors */
+  --color-science-blue: #1c3177;
+  --color-science-sub: #7f96c2;
+  --color-brand-tertiary: #cfdbed;
+  --color-brand-quaternary: #f9fbff;
+
+  /* Navy Primitive Scale (same hue as Science Blue) */
+  --color-navy-50: #f9fbff;
+  --color-navy-100: #e4ebf6;
+  --color-navy-200: #cfdbed;
+  --color-navy-300: #bac9e2;
+  --color-navy-400: #a5b7d6;
+  --color-navy-500: #7f96c2;
+  --color-navy-600: #5f7ab6;
+  --color-navy-700: #435ea5;
+  --color-navy-800: #2d4590;
+  --color-navy-900: #1c3177;
+  --color-navy-1000: #11215b;
+  --color-navy-1100: #0a1541;
+  --color-navy-1200: #060d2b;
+
+  /* Extended Surface & Semantic Tokens (WCAG 2.1 AA compliant) */
+  --color-bg-1: #e8eaf1;
+  --color-bg-2: #f2f4f9;
+  --color-ink: #333333;
+  --color-ink-muted: #595959;
+  --color-eyebrow: #435ea5;
+  --color-line: #cfdbed;
+
+  --color-st-green: #2c9a4a;
+  --color-st-green-dark: #145e18;
+  --color-st-green-bg: #f4feee;
+
+  --color-st-orange: #fb5b01;
+  --color-st-orange-dark: #6d2700;
+  --color-st-orange-bg: #ffeee2;
+
+  --color-st-red: #f02b2b;
+  --color-st-red-dark: #6b1502;
+  --color-st-red-bg: #ffe4e4;
+
+  --color-st-cyan: #00a3bf;
+  --color-st-cyan-dark: #004c59;
+  --color-st-cyan-bg: #e6fcff;
+
+  /* Typography */
+  --font-sans: 'Noto Sans JP', 'Yu Gothic Medium', 'YuGothic', sans-serif;
+  --font-en: 'Hind', 'Noto Sans JP', sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    font-family: var(--font-sans);
+    color: var(--color-ink);
+    background-color: #ffffff;
+  }
+
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+.font-en {
+  font-family: var(--font-en);
+}
+
+.trace-grid-bg {
+  background-image: repeating-linear-gradient(
+    90deg,
+    #cfdbed 0,
+    #cfdbed 1px,
+    transparent 1px,
+    transparent 25%
+  );
+}
+
+@keyframes st-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.animate-st-pulse {
+  animation: st-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
