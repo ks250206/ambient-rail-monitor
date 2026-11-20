@@ -48,6 +48,17 @@ import type { FailureKind } from './shared/execution-policy.ts';
 import { findRegisteredOnce, observeInput } from './shared/inbox-observation.ts';
 import type { InboxObservation } from './shared/inbox-observation.ts';
 import { validateTemplate } from './shared/prompts.ts';
+import { parseStageGraph, parseGraph, taskSpec, readyTask, downstream } from './shared/graph.ts';
+import { planWorkflow } from './shared/plan.ts';
+import {
+  checkContracts,
+  checkInputContracts,
+  ownOutputs,
+  outputManifest,
+  verifyOutput,
+  copyOutput,
+  verifyTaskInputs,
+} from './shared/task-files.ts';
 import { Journal, type Lease } from './shared/journal.ts';
 import { DEFAULT_QUEUE, parseQueue, parsePriority, type QueueSettings } from './shared/queue.ts';
 
@@ -162,6 +173,7 @@ const WORKER_EVENT_TYPES = new Set<WorkerEventType>([
   'stage.retry',
   'stage.retry.ready',
   'stage.retry.resumed',
+  'job.waiting',
   'review.required',
   'artifact.created',
   'job.completed',
@@ -240,17 +252,21 @@ function normalizeLlmConfig(raw: unknown): LlmConfig {
   return { model, effort };
 }
 
-function normalizeStages(raw: unknown, fallback: WorkflowStageSpec[]): WorkflowStageSpec[] {
+function normalizeStages(
+  raw: unknown,
+  fallback: WorkflowStageSpec[],
+  strict = false,
+): WorkflowStageSpec[] {
   if (raw === undefined) {
     return fallback.map((stage) => ({ ...stage, llm: { ...stage.llm } }));
   }
 
-  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 20)
-    throw new Error('工程は1〜20件で指定してください。');
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 50)
+    throw new Error('工程は1〜50件で指定してください。');
   const seen = new Set<string>();
   const normalized: WorkflowStageSpec[] = [];
 
-  for (const [index, entry] of raw.slice(0, 20).entries()) {
+  for (const [index, entry] of raw.slice(0, 50).entries()) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry))
       throw new Error('工程の形式が不正です。');
     const item = entry as Record<string, unknown>;
@@ -266,6 +282,8 @@ function normalizeStages(raw: unknown, fallback: WorkflowStageSpec[]): WorkflowS
       typeof item.key === 'string' && item.key.trim() ? item.key : short,
       `stage_${index + 1}`,
     );
+    if (strict && (baseKey !== item.key || seen.has(baseKey)))
+      throw new Error('工程キーの形式または重複を確認してください。');
     let key = baseKey;
     let suffix = 2;
     while (seen.has(key)) {
@@ -281,6 +299,7 @@ function normalizeStages(raw: unknown, fallback: WorkflowStageSpec[]): WorkflowS
       instruction: typeof item.instruction === 'string' ? item.instruction.slice(0, 8000) : '',
       llm: normalizeLlmConfig(item.llm),
       ...stageAutomation(item),
+      ...parseStageGraph(item),
     });
   }
 
@@ -327,14 +346,33 @@ function buildProjectSpec(
   const baseStages = existing?.stages ?? defaultStages();
   let stages: WorkflowStageSpec[];
   let automation: ReturnType<typeof projectAutomation>;
+  let graph: ProjectSpec['graph'];
   try {
-    stages = normalizeStages(raw.stages, baseStages);
+    stages = normalizeStages(raw.stages, baseStages, !!(raw.graph ?? existing?.graph));
+    graph = parseGraph(raw.graph === undefined ? existing?.graph : raw.graph, stages);
+    if (
+      !graph &&
+      stages.some(
+        (stage) =>
+          (stage.runner?.kind ?? 'ai') !== 'ai' ||
+          stage.map ||
+          stage.contracts?.inputs.length ||
+          stage.contracts?.outputs.length,
+      )
+    )
+      throw new Error('工程の種類・map・入出力契約を使うにはWorkflow v2を有効にしてください。');
     automation = projectAutomation(raw, existing);
     if (options.strictTemplates !== false) {
       validateTemplate(automation.prompt ?? '');
       for (const stage of stages) {
         validateTemplate(stage.instruction);
         validateTemplate(stage.acceptanceCriteria ?? '');
+        if (stage.runner?.kind === 'command' || stage.runner?.kind === 'python')
+          for (const arg of stage.runner.args) validateTemplate(arg);
+        if (stage.runner?.kind === 'http') {
+          validateTemplate(stage.runner.url);
+          validateTemplate(stage.runner.body);
+        }
       }
     }
   } catch (error) {
@@ -365,6 +403,7 @@ function buildProjectSpec(
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : existing?.createdAt || now,
     updatedAt: now,
     ...automation,
+    graph,
   };
 }
 
@@ -531,6 +570,7 @@ function isWorkerEventType(value: unknown): value is WorkerEventType {
 }
 
 function resolveJobStageDefs(event: WorkflowEvent): StageDefinition[] {
+  if (event.workflow?.version === 2 && event.workflow.plan) return event.workflow.plan;
   if (Array.isArray(event.stages) && event.stages.length > 0) {
     return event.stages.map((stage) => ({
       key: stage.key,
@@ -560,6 +600,8 @@ function rebuild(event: WorkflowEvent): void {
       status: 'queued',
       priority: event.priority ?? event.workflow?.project.queue?.priority ?? 0,
       recoveryCount: 0,
+      parentJobId: event.parentJobId,
+      activeMs: 0,
       agent: null,
       worker: null,
       startedAt: null,
@@ -589,9 +631,12 @@ function rebuild(event: WorkflowEvent): void {
   if (!job) return;
   job.events.push(event);
   if (event.message) job.lastMessage = event.message;
+  if (event.jobElapsedMs !== undefined) job.activeMs = (job.activeMs ?? 0) + event.jobElapsedMs;
   const step = job.stages.find((stage) => stage.key === event.stage);
   if (step && event.elapsedMs !== undefined) step.activeMs = (step.activeMs ?? 0) + event.elapsedMs;
   if (step && event.workspace) step.workspace = event.workspace;
+  if (step && event.output) step.output = event.output;
+  if (step && event.completion) step.completion = event.completion;
   if (step && event.failureKind) step.failureKind = event.failureKind;
 
   switch (event.type) {
@@ -626,6 +671,7 @@ function rebuild(event: WorkflowEvent): void {
         step.summary = event.summary;
       }
       break;
+    case 'stage.reused':
     case 'stage.succeeded':
       if (step) {
         step.status = 'success';
@@ -674,7 +720,7 @@ function rebuild(event: WorkflowEvent): void {
       }
       break;
     case 'review.required':
-      job.status = 'review';
+      if (job.workflow?.version !== 2) job.status = 'review';
       if (step) {
         step.status = 'review';
         step.endedAt ||= event.at;
@@ -688,7 +734,7 @@ function rebuild(event: WorkflowEvent): void {
       break;
     case 'review.approved':
       job.reviewApproved = true;
-      job.status = 'queued';
+      if (job.status !== 'running') job.status = 'queued';
       if (step) {
         step.status = 'success';
         step.approvedAttempt = step.attempts;
@@ -727,7 +773,11 @@ function rebuild(event: WorkflowEvent): void {
       job.worker = null;
       break;
     case 'job.resumed':
-      job.status = job.stages.some((item) => item.status === 'review') ? 'review' : 'queued';
+      job.status =
+        job.stages.some((item) => item.status === 'review') &&
+        !(job.workflow?.version === 2 && job.stages.some((item) => readyTask(job, item)))
+          ? 'review'
+          : 'queued';
       break;
     case 'job.recovered':
       job.status = 'queued';
@@ -736,6 +786,9 @@ function rebuild(event: WorkflowEvent): void {
       break;
     case 'job.priority':
       job.priority = event.priority ?? 0;
+      break;
+    case 'job.waiting':
+      job.status = 'review';
       break;
     case 'artifact.created':
       if (event.artifact && !job.artifacts.some((item) => item.name === event.artifact?.name)) {
@@ -771,24 +824,36 @@ function appendEvent(
   lease?: Lease | null,
   request?: { id: string; token: string },
 ): WorkflowEvent {
+  const releases =
+    lease === null ||
+    (lease === undefined &&
+      ([
+        'job.completed',
+        'job.failed',
+        'job.paused',
+        'job.cancelled',
+        'job.recovered',
+        'job.waiting',
+      ].includes(data.type) ||
+        (data.type === 'review.required' && jobs.get(data.jobId)?.workflow?.version !== 2)));
+  const activeLease = releases ? journal.lease(data.jobId) : undefined;
+  const claimed =
+    activeLease && jobs.get(data.jobId)?.events.findLast((event) => event.type === 'job.claimed');
   const event: WorkflowEvent = {
     ...data,
+    ...(claimed
+      ? {
+          jobElapsedMs: Math.max(
+            0,
+            Math.min(Date.now(), activeLease!.expiresAt) - Date.parse(claimed.at),
+          ),
+        }
+      : {}),
     at: new Date().toISOString(),
     sequence: ++eventSerial,
   };
-  const leaseChange =
-    lease === undefined &&
-    [
-      'review.required',
-      'job.completed',
-      'job.failed',
-      'job.paused',
-      'job.cancelled',
-      'job.recovered',
-    ].includes(event.type)
-      ? null
-      : lease;
-  const hadLease = leaseChange === null && !!journal.lease(event.jobId);
+  const leaseChange = releases ? null : lease;
+  const hadLease = !!activeLease;
   journal.append(event, leaseChange, request);
   rebuild(event);
   // Claims and releases change the server-wide queue (active slots, workers), which
@@ -911,7 +976,9 @@ function settleLease(
 function recoverFailures(job: WorkflowJob): boolean {
   // A crash after recording a real failure must not grant a free retry.
   for (const stage of job.stages.filter((item) => item.status === 'failed')) {
-    const spec = job.workflow?.project.stages.find((item) => item.key === stage.key);
+    const spec = job.workflow?.project.stages.find(
+      (item) => item.key === (stage.stageKey ?? stage.key),
+    );
     const policy = resolveExecution(job.workflow?.project.execution, spec?.execution);
     if (stage.failureKind && canRetry(policy, stage.failureKind, (stage.retryCount ?? 0) + 1)) {
       const delay = retryDelay(policy, (stage.retryCount ?? 0) + 1);
@@ -937,15 +1004,33 @@ function recoverFailures(job: WorkflowJob): boolean {
       policy.onFailure === 'review' &&
       ['execution_error', 'timeout', 'acceptance_failed'].includes(stage.failureKind ?? '')
     ) {
+      let output: WorkflowEvent['output'];
+      if (job.workflow?.version === 2) {
+        try {
+          if (!stage.workspace) throw new Error('試行の作業場所がありません。');
+          output = outputManifest(ownOutputs(path.join(jobWorkspace(job), stage.workspace)));
+        } catch (error) {
+          appendEvent({
+            type: 'job.failed',
+            jobId: job.id,
+            projectId: job.projectId,
+            failureKind: 'acceptance_failed',
+            message: '復旧時の出力を検証できません: ' + (error as Error).message,
+          });
+          return false;
+        }
+      }
       appendEvent({
         type: 'review.required',
         jobId: job.id,
         projectId: job.projectId,
         stage: stage.key,
         attempt: stage.attempts,
+        output,
+        ...(output ? { completion: { mode: 'executed' as const } } : {}),
         message: '失敗後にワーカーが停止しました。出力の確認が必要です。',
       });
-      return false;
+      if (job.workflow?.version !== 2) return false;
     } else {
       appendEvent({
         type: 'job.failed',
@@ -1081,6 +1166,7 @@ function enqueueInventory(
     needsReview?: boolean;
     quietMs: number;
     bypassTrigger?: boolean;
+    parentJobId?: string;
   },
 ): WorkflowJob {
   let id: string;
@@ -1122,9 +1208,17 @@ function enqueueInventory(
     rmSync(inputDir, { recursive: true, force: true });
     throw error;
   }
+  let plan: WorkflowSnapshot['plan'];
+  try {
+    plan = project.graph ? planWorkflow(project, dataset) : undefined;
+  } catch (error) {
+    rmSync(inputDir, { recursive: true, force: true });
+    throw new HttpError(422, (error as Error).message);
+  }
   const definition = structuredClone(project);
   const workflow: WorkflowSnapshot = {
-    version: 1,
+    version: project.graph ? 2 : 1,
+    ...(plan ? { plan } : {}),
     hash: createHash('sha256').update(JSON.stringify(definition)).digest('hex'),
     project: definition,
   };
@@ -1140,6 +1234,7 @@ function enqueueInventory(
   );
   appendEvent({
     type: 'job.created',
+    parentJobId: options.parentJobId,
     jobId: id,
     projectId: project.id,
     file: name,
@@ -1399,6 +1494,7 @@ interface ClaimRequestBody {
   worker?: string;
   projectId?: string;
   capacity?: number;
+  protocol?: number;
 }
 
 interface EventRequestBody {
@@ -1799,6 +1895,7 @@ const server = http.createServer(async (req, res) => {
         .filter(
           (item) =>
             item.status === 'queued' &&
+            (item.workflow?.version !== 2 || body.protocol === 2) &&
             (!requestedProject || item.projectId === requestedProject) &&
             leases.filter((lease) => jobs.get(lease.jobId)?.projectId === item.projectId).length <
               (projects.get(item.projectId)?.queue?.maxConcurrentJobs ?? 4),
@@ -1857,6 +1954,115 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    const jobMatch = pathname.match(/^\/api\/jobs\/(run_[a-f0-9]{8})$/);
+    if (jobMatch && req.method === 'GET') {
+      const job = jobs.get(jobMatch[1]);
+      if (!job) throw new HttpError(404, 'Job not found');
+      return deliverJSON(res, { job });
+    }
+    const rerunMatch = pathname.match(/^\/api\/jobs\/(run_[a-f0-9]{8})\/rerun$/);
+    if (rerunMatch && req.method === 'POST') {
+      const body = await readJSON(req);
+      const original = jobs.get(rerunMatch[1]);
+      if (!original?.workflow || !original.dataset)
+        throw new HttpError(400, '定義と入力を保存したジョブが必要です。');
+      if (!['done', 'failed', 'cancelled', 'paused', 'review'].includes(original.status))
+        throw new HttpError(409, '実行を停止してから再実行してください。');
+      const selected = original.stages.find((task) => task.key === body.task);
+      if (!selected) throw new HttpError(400, '再実行するタスクを選択してください。');
+      const plan = original.stages.map((task, index) => ({
+        key: task.key,
+        dependsOn: task.dependsOn ?? (index ? [original.stages[index - 1].key] : []),
+      }));
+      const affected = downstream(plan, selected.key);
+      // Unfinished tasks also need execution; successful unrelated branches can be reused.
+      const reusable = original.stages.filter(
+        (task) => !affected.has(task.key) && task.status === 'success',
+      );
+      if (body.preview === true)
+        return deliverJSON(res, {
+          rerun: original.stages
+            .filter((task) => affected.has(task.key) || task.status !== 'success')
+            .map((task) => task.key),
+          reuse: reusable.map((task) => task.key),
+        });
+      if (original.workflow.version !== 2)
+        throw new HttpError(400, '選択工程の再実行にはWorkflow v2を有効にしたジョブが必要です。');
+      for (const task of reusable)
+        if (
+          !task.workspace ||
+          !task.output ||
+          !verifyOutput(path.join(jobWorkspace(original), task.workspace), task.output)
+        )
+          throw new HttpError(409, '再利用元の出力が変更または削除されています。');
+      if (!verifyDataset(path.join(DATA, 'inputs', original.id), original.dataset))
+        throw new HttpError(409, '元の入力が変更されています。');
+      const created = enqueueInventory(
+        original.workflow.project,
+        inventory(path.join(DATA, 'inputs', original.id)),
+        original.file,
+        original.dataset.kind,
+        'rerun:' + randomUUID(),
+        {
+          quietMs: Infinity,
+          bypassTrigger: true,
+          parentJobId: original.id,
+          demo: original.demo,
+          needsReview: original.needsReview,
+        },
+      );
+      appendEvent({
+        type: 'job.paused',
+        jobId: created.id,
+        projectId: created.projectId,
+        message: '再実行のチェックポイントを準備',
+      });
+      try {
+        for (const task of reusable) {
+          const workspace = '.reused/' + task.key;
+          copyOutput(
+            path.join(jobWorkspace(original), task.workspace!),
+            path.join(jobWorkspace(created), workspace),
+            task.output!,
+          );
+          appendEvent({
+            type: 'stage.reused',
+            jobId: created.id,
+            projectId: created.projectId,
+            stage: task.key,
+            workspace,
+            output: task.output,
+            completion: {
+              mode: 'reused',
+              jobId: original.id,
+              task: task.key,
+              attempt: task.attempts,
+            },
+            summary: task.summary ?? undefined,
+            message: '元ジョブの合格済み出力をハッシュ検証して再利用',
+          });
+        }
+        appendEvent({
+          type: 'job.resumed',
+          jobId: created.id,
+          projectId: created.projectId,
+          message: '選択したタスクと後続を再実行します。',
+        });
+      } catch (error) {
+        appendEvent({
+          type: 'job.failed',
+          jobId: created.id,
+          projectId: created.projectId,
+          message: (error as Error).message,
+        });
+        throw new HttpError(
+          409,
+          'チェックポイントを再利用できませんでした。元ジョブは変更されていません。',
+        );
+      }
+      return deliverJSON(res, { job: created }, 201);
+    }
+
     const leaseMatch = pathname.match(/^\/api\/jobs\/(run_[a-f0-9]{8})\/(heartbeat|release)$/);
     if (leaseMatch && req.method === 'POST') {
       const body = await readJSON(req);
@@ -1908,7 +2114,14 @@ const server = http.createServer(async (req, res) => {
       } else if (action === 'resume') {
         if (job.status !== 'paused') throw new HttpError(409, '一時停止中ではありません。');
         appendEvent({ ...base, type: 'job.resumed', message: '一時停止を解除しました。' });
-        if (!job.stages.some((stage) => stage.status === 'review')) recoverFailures(job);
+        if (job.workflow?.version === 2 || !job.stages.some((stage) => stage.status === 'review')) {
+          if (recoverFailures(job) && job.workflow?.version === 2)
+            appendEvent({
+              ...base,
+              type: 'job.resumed',
+              message: '残りのタスクの開始条件を確認しました。',
+            });
+        }
       } else {
         if (
           ['done', 'failed', 'cancelled', 'cancelling'].includes(job.status) ||
@@ -1992,7 +2205,11 @@ const server = http.createServer(async (req, res) => {
       }
 
       const step = job.stages.find((stage) => stage.key === stageKey);
-      const spec = job.workflow?.project.stages.find((stage) => stage.key === stageKey);
+      const spec = step && job.workflow ? taskSpec(job.workflow.project, step) : undefined;
+      const finalStep =
+        job.workflow?.version === 2
+          ? step?.key === job.workflow.project.graph?.publishStage
+          : step === job.stages.at(-1);
       const policy = resolveExecution(job.workflow?.project.execution, spec?.execution);
       const extras: Partial<WorkflowEvent> = {};
       const stageEvent =
@@ -2008,7 +2225,16 @@ const server = http.createServer(async (req, res) => {
           if (input.attempt !== attempt) throw new HttpError(409, '試行番号が一致しません。');
           extras.attempt = attempt;
           if (input.type === 'stage.started') {
-            const previous = job.stages.slice(0, job.stages.indexOf(step));
+            if (
+              job.workflow.version === 2 &&
+              job.stages.filter((task) => task.status === 'running').length >=
+                job.workflow.project.graph!.maxParallelTasks
+            )
+              throw new HttpError(409, 'タスクの並列実行数の上限に達しています。');
+            const previous =
+              job.workflow.version === 2
+                ? job.stages.filter((candidate) => step.dependsOn?.includes(candidate.key))
+                : job.stages.slice(0, job.stages.indexOf(step));
             if (
               !['pending', 'retry'].includes(step.status) ||
               (step.status === 'retry' &&
@@ -2052,7 +2278,7 @@ const server = http.createServer(async (req, res) => {
         }
         if (
           step &&
-          (input.type === 'gate.evaluated' ||
+          ((input.type === 'gate.evaluated' && input.gate?.scope !== 'input') ||
             input.type === 'stage.succeeded' ||
             (input.type === 'review.required' && step.status === 'running'))
         ) {
@@ -2071,11 +2297,19 @@ const server = http.createServer(async (req, res) => {
             (input.type === 'review.required' && step?.status === 'running')) &&
           step
         ) {
-          const gates = [
-            spec?.gate,
-            ...(step === job.stages.at(-1) ? [job.workflow.project.finalGate] : []),
-          ];
-          if (input.type === 'stage.succeeded' && gates.some((gate) => gate?.requireReview))
+          if (
+            job.workflow.version === 2 &&
+            ['input', 'output', ...(finalStep ? ['final'] : [])].some(
+              (scope) =>
+                !step.gates?.some((gate) => gate.scope === scope && gate.result.status === 'pass'),
+            )
+          )
+            throw new HttpError(409, '入出力契約が合格していません。');
+          const gates = [spec?.gate, ...(finalStep ? [job.workflow.project.finalGate] : [])];
+          if (
+            input.type === 'stage.succeeded' &&
+            (spec?.runner?.kind === 'human' || gates.some((gate) => gate?.requireReview))
+          )
             throw new HttpError(409, '人間の承認が必要です。');
           if (
             gates.some(
@@ -2141,35 +2375,91 @@ const server = http.createServer(async (req, res) => {
           extras[key] = input[key];
         }
       }
+      if (
+        input.type === 'job.waiting' &&
+        (job.workflow?.version !== 2 ||
+          !job.stages.some((item) => item.status === 'review') ||
+          job.stages.some((item) => item.status === 'running' || readyTask(job, item)))
+      )
+        throw new HttpError(409, '実行できる工程が残っています。');
+      if (
+        job.workflow?.version === 2 &&
+        input.type === 'stage.executed' &&
+        !step?.gates?.some((gate) => gate.scope === 'input' && gate.result.status === 'pass')
+      )
+        throw new HttpError(409, '入力契約を確認してから実行してください。');
       if (input.type === 'gate.evaluated') {
         const scope = input.gate?.scope;
         if (
           !step ||
-          (scope !== 'stage' && scope !== 'final') ||
-          (scope === 'final' && step !== job.stages.at(-1))
+          !['stage', 'final', ...(job.workflow?.version === 2 ? ['input', 'output'] : [])].includes(
+            String(scope),
+          ) ||
+          (scope === 'final' && !finalStep)
         )
           throw new HttpError(400, '判定対象が不正です。');
         if (job.workflow) {
           if (!step.workspace) throw new HttpError(400, '判定する作業場所がありません。');
-          const condition =
-            (scope === 'stage' ? spec?.gate : job.workflow.project.finalGate)?.condition ?? null;
+          const work = path.join(jobWorkspace(job), step.workspace);
           let result: ConditionResult;
           try {
-            result = checkCondition(
-              inventory(path.join(jobWorkspace(job), step.workspace), undefined, true),
-              job.file,
-              0,
-              condition,
-            );
+            if (
+              job.workflow.version === 2 &&
+              (!verifyTaskInputs(job, step, work) ||
+                (job.dataset && !verifyDataset(path.join(DATA, 'inputs', job.id), job.dataset)))
+            )
+              throw new Error('入力または依存出力が変更されています。');
+            const list =
+              job.workflow.version === 2 ? ownOutputs(work) : inventory(work, undefined, true);
+            if (scope === 'input')
+              result = checkInputContracts(
+                path.join(DATA, 'inputs', job.id),
+                work,
+                step,
+                spec?.contracts?.inputs ?? [],
+              );
+            else if (scope === 'output')
+              result = checkContracts(list, spec?.contracts?.outputs ?? []);
+            else
+              result = checkCondition(
+                list,
+                job.file,
+                0,
+                (scope === 'stage' ? spec?.gate : job.workflow.project.finalGate)?.condition ??
+                  null,
+              );
+            if (
+              job.workflow.version === 2 &&
+              scope === 'final' &&
+              !list.files.some(
+                (file) => ['report.html', 'report.pptx'].includes(file.path) && file.bytes > 0,
+              )
+            )
+              result = {
+                status: 'fail',
+                label: '最終レポート',
+                message: '公開工程自身の非空の report.html または report.pptx が必要です。',
+                children: [result],
+              };
           } catch (error) {
             result = {
               status: 'error',
-              label: '出力ファイルの検証',
+              label: '入力・出力の検証',
               message: (error as Error).message,
             };
           }
-          extras.gate = { scope, result };
+          extras.gate = { scope: scope as 'input' | 'output' | 'stage' | 'final', result };
         }
+      }
+      if (
+        job.workflow?.version === 2 &&
+        step &&
+        ['stage.succeeded', 'review.required'].includes(input.type)
+      ) {
+        if (!step.workspace) throw new HttpError(400, '作業場所がありません。');
+        const list = ownOutputs(path.join(jobWorkspace(job), step.workspace));
+        extras.output = outputManifest(list);
+        extras.completion = { mode: 'executed' };
       }
 
       let artifact: ArtifactInfo | undefined;
@@ -2270,8 +2560,12 @@ const server = http.createServer(async (req, res) => {
     const previewMatch = pathname.match(/^\/api\/jobs\/(run_[a-f0-9]{8})\/review(?:\/(file))?$/);
     if (previewMatch && req.method === 'GET') {
       const job = jobs.get(previewMatch[1]);
-      const stage = job?.stages.find((item) => item.status === 'review');
-      if (!job || !stage?.workspace || job.status !== 'review')
+      const stage = job?.stages.find(
+        (item) =>
+          item.status === 'review' &&
+          (!url.searchParams.get('task') || item.key === url.searchParams.get('task')),
+      );
+      if (!job || !stage?.workspace || !['review', 'running'].includes(job.status))
         throw new HttpError(404, 'レビュー中の出力がありません。');
       const root = path.join(jobWorkspace(job), stage.workspace);
       const list = validate(() => inventory(root, undefined, true));
@@ -2296,8 +2590,11 @@ const server = http.createServer(async (req, res) => {
       const body = await readJSON(req, 10_000);
       const job = jobs.get(reviewMatch[1]);
       if (!job) return deliverJSON(res, { error: 'Job not found' }, 404);
-      if (job.status !== 'review') return deliverJSON(res, { error: 'Not in review' }, 409);
-      const step = job.stages.find((stage) => stage.status === 'review');
+      if (!['review', ...(job.workflow?.version === 2 ? ['running'] : [])].includes(job.status))
+        return deliverJSON(res, { error: 'Not in review' }, 409);
+      const step = job.stages.find(
+        (stage) => stage.status === 'review' && (!body.stage || stage.key === body.stage),
+      );
       if (
         job.workflow &&
         (!step ||
@@ -2309,6 +2606,13 @@ const server = http.createServer(async (req, res) => {
           409,
           'レビュー対象が更新されています。画面を更新して再確認してください。',
         );
+      if (
+        job.workflow?.version === 2 &&
+        step?.output &&
+        step.workspace &&
+        !verifyOutput(path.join(jobWorkspace(job), step.workspace), step.output)
+      )
+        throw new HttpError(409, 'レビュー中の出力が変更されています。');
       appendEvent({
         type: 'review.approved',
         jobId: job.id,

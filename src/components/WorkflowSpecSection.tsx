@@ -1,3 +1,7 @@
+import { parseGraph, parseStageGraph, dependencies } from '../../shared/graph.ts';
+import { ContractFields } from './ContractFields.tsx';
+import { StageRunnerFields } from './StageRunnerFields.tsx';
+import { WorkflowGraph } from './WorkflowGraph.tsx';
 import { ArrowDown, ArrowUp, ChevronDown, Plus, RotateCcw, Save, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
@@ -35,6 +39,7 @@ export type WorkflowUpdatePayload = Pick<
   | 'finalGate'
   | 'prompt'
   | 'queue'
+  | 'graph'
 >;
 
 interface WorkflowSpecSectionProps {
@@ -77,6 +82,7 @@ export function WorkflowSpecSection({
   onSave,
   onDirtyChange,
 }: WorkflowSpecSectionProps) {
+  const [graph, setGraph] = useState(project.graph);
   const [automation, setAutomation] = useState(() => projectAutomation({}, project));
   const monitor = useProjectJobs(project.id);
   const [candidate, setCandidate] = useState('');
@@ -108,11 +114,13 @@ export function WorkflowSpecSection({
   }
   const payload: WorkflowUpdatePayload = {
     ...automation,
+    graph,
     acceptanceCriteria,
     llm,
     stages: stages.map(({ rowId: _id, ...spec }) => spec),
   };
   const dirty =
+    JSON.stringify(graph) !== JSON.stringify(baseline.graph) ||
     acceptanceCriteria !== baseline.acceptanceCriteria ||
     JSON.stringify(llm) !== JSON.stringify(baseline.llm) ||
     JSON.stringify(payload.stages) !== JSON.stringify(baseline.stages) ||
@@ -129,15 +137,17 @@ export function WorkflowSpecSection({
     validateTemplate(automation.prompt ?? '');
     for (const item of payload.stages) {
       stageAutomation({ ...item });
+      parseStageGraph({ ...item });
       validateTemplate(item.instruction);
       validateTemplate(item.acceptanceCriteria ?? '');
     }
+    parseGraph(graph, payload.stages);
     const draftProject = { ...project, ...payload };
     promptPreview = buildStagePrompt(
       draftProject,
       stage,
       previewVariables(draftProject, stage),
-      index === stages.length - 1,
+      graph ? stage.key === graph.publishStage : index === stages.length - 1,
     );
   } catch (error) {
     validation = (error as Error).message;
@@ -163,6 +173,7 @@ export function WorkflowSpecSection({
   }
   function loadVersion(version: ProjectSpec) {
     setBaseline(version);
+    setGraph(version.graph);
     setAutomation(projectAutomation({}, version));
     setTestResult(null);
     setTestError('');
@@ -180,8 +191,18 @@ export function WorkflowSpecSection({
   if (externalUpdate && !dirty) loadVersion(project);
   function update(patch: Partial<WorkflowStageSpec>) {
     setStages((prev) =>
-      prev.map((item) => (item.rowId === stage.rowId ? { ...item, ...patch } : item)),
+      prev.map((item) => {
+        const next = item.rowId === stage.rowId ? { ...item, ...patch } : item;
+        return {
+          ...next,
+          dependsOn: next.dependsOn?.map((key) =>
+            patch.key && key === stage.key ? patch.key : key,
+          ),
+        };
+      }),
     );
+    if (patch.key && graph?.publishStage === stage.key)
+      setGraph({ ...graph, publishStage: patch.key });
   }
   function add() {
     const rowId = Math.max(nextId.current, ...stages.map((item) => item.rowId + 1));
@@ -197,6 +218,7 @@ export function WorkflowSpecSection({
         short: `Stage ${n}`,
         instruction: '',
         llm: { model: '', effort: '' },
+        dependsOn: graph?.mode === 'dag' ? [stages.at(-1)!.key] : undefined,
       },
     ]);
     setActive(rowId);
@@ -209,7 +231,13 @@ export function WorkflowSpecSection({
   }
   function remove() {
     const items = stages.filter((item) => item.rowId !== stage.rowId);
-    setStages(items);
+    setStages(
+      items.map((item) => ({
+        ...item,
+        dependsOn: item.dependsOn?.filter((key) => key !== stage.key),
+      })),
+    );
+    if (graph?.publishStage === stage.key) setGraph({ ...graph, publishStage: items.at(-1)!.key });
     setActive(items[Math.min(index, items.length - 1)].rowId);
   }
   return (
@@ -474,11 +502,80 @@ export function WorkflowSpecSection({
             公開前に人間のレビューを必須にする
           </label>
         </details>
+        <details open className="wf-disclosure">
+          <summary>工程の接続・並列実行</summary>
+          <div className="wf-fields">
+            <label>
+              実行モデル
+              <select
+                value={graph?.mode ?? 'legacy'}
+                onChange={(event) => {
+                  if (event.target.value === 'legacy') {
+                    setGraph(undefined);
+                    return;
+                  }
+                  const mode = event.target.value as 'sequential' | 'dag';
+                  if (mode === 'dag' && graph?.mode !== 'dag')
+                    setStages(
+                      stages.map((item, i) => ({
+                        ...item,
+                        dependsOn: i ? [stages[i - 1].key] : [],
+                      })),
+                    );
+                  setGraph({
+                    mode,
+                    maxParallelTasks: graph?.maxParallelTasks ?? 2,
+                    publishStage: graph?.publishStage ?? stages.at(-1)!.key,
+                  });
+                }}
+              >
+                <option value="legacy">従来の順次実行</option>
+                <option value="sequential">Workflow v2 · 順次接続</option>
+                <option value="dag">Workflow v2 · 依存関係で接続（DAG）</option>
+              </select>
+            </label>
+            {graph && (
+              <>
+                <label>
+                  同時実行するタスク数
+                  <input
+                    type="number"
+                    min={1}
+                    max={8}
+                    value={graph.maxParallelTasks}
+                    onChange={(event) =>
+                      setGraph({ ...graph, maxParallelTasks: Number(event.target.value) })
+                    }
+                  />
+                </label>
+                <label>
+                  公開工程
+                  <select
+                    value={graph.publishStage}
+                    onChange={(event) => setGraph({ ...graph, publishStage: event.target.value })}
+                  >
+                    {stages
+                      .filter((item) => !item.map && item.runner?.kind !== 'human')
+                      .map((item) => (
+                        <option value={item.key} key={item.rowId}>
+                          {item.label}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              </>
+            )}
+          </div>
+          <p className="wf-help">
+            v2では工程の種類・ファイルごとの実行・入出力契約を使えます。DAGでは並べ替えは表示順だけを変えます。公開工程は全工程の結果を受け取るように接続してください。
+          </p>
+        </details>
+        {graph && <WorkflowGraph project={{ ...project, ...payload }} />}
         <div className="wf-section-title">
           <h2>
             工程 <span>{stages.length}</span>
           </h2>
-          <button className="wf-secondary" onClick={add} disabled={stages.length >= 20}>
+          <button className="wf-secondary" onClick={add} disabled={stages.length >= 50}>
             <Plus size={15} />
             工程を追加
           </button>
@@ -541,6 +638,97 @@ export function WorkflowSpecSection({
                 </button>
               </div>
             </div>
+            {graph && (
+              <>
+                <StageRunnerFields value={stage.runner} onChange={(runner) => update({ runner })} />
+                {graph.mode === 'dag' && (
+                  <fieldset className="wf-disclosure">
+                    <legend>この工程の開始前に合格が必要な工程</legend>
+                    <div className="dependency-options">
+                      {stages
+                        .filter((item) => item.key !== stage.key)
+                        .map((item) => (
+                          <label className="wf-check" key={item.rowId}>
+                            <input
+                              type="checkbox"
+                              checked={stage.dependsOn?.includes(item.key) ?? false}
+                              onChange={(event) =>
+                                update({
+                                  dependsOn: event.target.checked
+                                    ? [...(stage.dependsOn ?? []), item.key]
+                                    : stage.dependsOn?.filter((key) => key !== item.key),
+                                })
+                              }
+                            />
+                            {item.label}
+                          </label>
+                        ))}
+                    </div>
+                  </fieldset>
+                )}
+                <p className="wf-help">
+                  開始条件:{' '}
+                  {dependencies({ stages, graph }, stage).join(' ＋ ') || '入力がそろったら開始'}
+                </p>
+                <label className="wf-check">
+                  <input
+                    type="checkbox"
+                    disabled={graph.publishStage === stage.key}
+                    checked={!!stage.map}
+                    onChange={(event) =>
+                      update({
+                        map: event.target.checked ? { pattern: '**/*.csv', maxItems: 100 } : null,
+                      })
+                    }
+                  />
+                  入力ファイルごとに独立して実行（map）
+                </label>
+                {stage.map && (
+                  <div className="wf-fields">
+                    <label>
+                      対象パターン
+                      <input
+                        value={stage.map.pattern}
+                        onChange={(event) =>
+                          update({ map: { ...stage.map!, pattern: event.target.value } })
+                        }
+                      />
+                    </label>
+                    <label>
+                      対象の最大件数
+                      <input
+                        type="number"
+                        min={1}
+                        max={128}
+                        value={stage.map.maxItems}
+                        onChange={(event) =>
+                          update({ map: { ...stage.map!, maxItems: Number(event.target.value) } })
+                        }
+                      />
+                    </label>
+                  </div>
+                )}
+                <details className="wf-disclosure">
+                  <summary>実行前の入力契約</summary>
+                  <ContractFields
+                    input
+                    value={stage.contracts?.inputs ?? []}
+                    onChange={(inputs) =>
+                      update({ contracts: { inputs, outputs: stage.contracts?.outputs ?? [] } })
+                    }
+                  />
+                </details>
+                <details className="wf-disclosure">
+                  <summary>出力の契約・JSONの型</summary>
+                  <ContractFields
+                    value={stage.contracts?.outputs ?? []}
+                    onChange={(outputs) =>
+                      update({ contracts: { inputs: stage.contracts?.inputs ?? [], outputs } })
+                    }
+                  />
+                </details>
+              </>
+            )}
             <div className="wf-fields">
               <label>
                 工程名

@@ -113,9 +113,11 @@ function Monitor({ project }: { project: ProjectSpec }) {
     window.dispatchEvent(new Event('popstate'));
   };
   const approve = useMutation({
-    mutationFn: (jobId: string) => {
+    mutationFn: ({ jobId, task }: { jobId: string; task?: string }) => {
       const job = state.jobs.find((item) => item.id === jobId);
-      const stage = job?.stages.find((item) => item.status === 'review');
+      const stage = job?.stages.find(
+        (item) => item.status === 'review' && (!task || item.key === task),
+      );
       return request(
         `/api/jobs/${jobId}/approve`,
         jsonRequest('POST', {
@@ -190,8 +192,8 @@ function Monitor({ project }: { project: ProjectSpec }) {
               approving={approve.isPending}
               onSelectStage={handleSelectStage}
               onShowAllLogs={() => setShowAllLogs(true)}
-              onApproveReview={(jobId) => {
-                if (!approve.isPending) approve.mutate(jobId);
+              onApproveReview={(jobId, task) => {
+                if (!approve.isPending) approve.mutate({ jobId, task });
               }}
             />
 

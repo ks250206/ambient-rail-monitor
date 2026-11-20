@@ -1,12 +1,18 @@
 import { useQuery } from '@tanstack/react-query';
 import { resolveExecution, RETRY_LABELS } from '../../shared/execution-policy.ts';
 import type { JobStage, WorkflowJob } from '../../shared/types.ts';
+import { monitorJobHref } from '../utils/workflow.ts';
 import { request } from '../api.ts';
 import { ConditionEvidence } from './ConditionBuilder.tsx';
 
 export function DatasetDetails({ job }: { job: WorkflowJob }) {
   return (
     <div className="dataset-details">
+      {job.parentJobId && (
+        <p className="wf-help">
+          再実行元: <a href={monitorJobHref(job.projectId, job.parentJobId)}>{job.parentJobId}</a>
+        </p>
+      )}
       {job.dataset && (
         <details>
           <summary>
@@ -51,7 +57,9 @@ export function StageExecutionDetails({
   stage: JobStage;
   nowMs: number;
 }) {
-  const spec = job.workflow?.project.stages.find((item) => item.key === stage.key);
+  const spec = job.workflow?.project.stages.find(
+    (item) => item.key === (stage.stageKey ?? stage.key),
+  );
   const config = job.events.findLast(
     (event) => event.stage === stage.key && event.type === 'stage.started',
   )?.stageConfig;
@@ -60,6 +68,37 @@ export function StageExecutionDetails({
   const budget = (ms: number) => (ms ? `${ms / 1000}秒` : '無制限');
   return (
     <div className="stage-execution-details">
+      {stage.item && (
+        <p>
+          対象ファイル：<strong>{stage.item.path}</strong>
+        </p>
+      )}
+      {stage.completion?.mode === 'reused' && (
+        <p>
+          元ジョブ{' '}
+          <a href={monitorJobHref(job.projectId, stage.completion.jobId!)}>
+            {stage.completion.jobId}
+          </a>{' '}
+          の試行 {stage.completion.attempt} を再利用しました。
+        </p>
+      )}
+      {stage.output && (
+        <details>
+          <summary>
+            確定した出力（{stage.output.files.length}件）· {stage.output.hash.slice(0, 12)}
+          </summary>
+          <ul className="upload-file-list">
+            {stage.output.files.map((file) => (
+              <li key={file.path}>
+                {file.path}
+                <small>
+                  {file.bytes} bytes · {file.hash.slice(0, 12)}
+                </small>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
       <div className="execution-facts">
         <span>
           試行 {stage.attempts} 回 · リトライ {stage.retryCount ?? 0} / {policy.maxRetries} 回
@@ -119,7 +158,16 @@ export function StageExecutionDetails({
       )}
       {stage.gates?.map((gate) => (
         <div key={gate.scope}>
-          <h4>{gate.scope === 'stage' ? '工程の受け入れ判定' : '最終成果物の受け入れ判定'}</h4>
+          <h4>
+            {
+              {
+                input: '入力契約',
+                output: '出力契約',
+                stage: '工程の受け入れ判定',
+                final: '最終成果物の受け入れ判定',
+              }[gate.scope]
+            }
+          </h4>
           <ConditionEvidence result={gate.result} />
         </div>
       ))}
@@ -129,7 +177,11 @@ export function StageExecutionDetails({
         stage.reviewSequence !== undefined && <ReviewOutputs job={job} stage={stage} />}
       {config?.prompt && (
         <details>
-          <summary>この試行で送信したプロンプト</summary>
+          <summary>
+            {!spec?.runner || spec.runner.kind === 'ai'
+              ? 'この試行で送信したプロンプト'
+              : 'この試行の指示と入力'}
+          </summary>
           <pre className="prompt-preview">{config.prompt}</pre>
         </details>
       )}
@@ -141,9 +193,12 @@ function ReviewOutputs({ job, stage }: { job: WorkflowJob; stage: JobStage }) {
   const query = useQuery({
     queryKey: ['review-outputs', job.id, stage.reviewSequence],
     queryFn: ({ signal }) =>
-      request<{ files: Array<{ path: string; bytes: number }> }>(`/api/jobs/${job.id}/review`, {
-        signal,
-      }),
+      request<{ files: Array<{ path: string; bytes: number }> }>(
+        `/api/jobs/${job.id}/review?task=${encodeURIComponent(stage.key)}`,
+        {
+          signal,
+        },
+      ),
   });
   return (
     <div className="review-outputs">
@@ -163,7 +218,7 @@ function ReviewOutputs({ job, stage }: { job: WorkflowJob; stage: JobStage }) {
               <a
                 target="_blank"
                 rel="noreferrer"
-                href={`/api/jobs/${job.id}/review/file?${new URLSearchParams({ path: file.path, sequence: String(stage.reviewSequence) })}`}
+                href={`/api/jobs/${job.id}/review/file?${new URLSearchParams({ path: file.path, sequence: String(stage.reviewSequence), task: stage.key })}`}
               >
                 {file.path}
               </a>

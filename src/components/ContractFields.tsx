@@ -1,0 +1,213 @@
+import type { FileContract, JsonSchema } from '../../shared/contracts.ts';
+
+const types: JsonSchema['type'][] = [
+  'object',
+  'array',
+  'string',
+  'number',
+  'integer',
+  'boolean',
+  'null',
+];
+export function ContractFields({
+  value,
+  onChange,
+  input,
+}: {
+  value: FileContract[];
+  onChange: (next: FileContract[]) => void;
+  input?: boolean;
+}) {
+  const update = (index: number, patch: Partial<FileContract>) =>
+    onChange(value.map((item, i) => (i === index ? { ...item, ...patch } : item)));
+  return (
+    <div className="contract-fields">
+      <p className="wf-help">
+        {input
+          ? 'データセットの相対パス、または前工程の「タスクキー/出力パス」を照合します。mapではそのファイルだけをデータセット入力として検証します。'
+          : '出力の件数とJSONの型を検証します。受け入れた工程自身の出力は、すべて後続に渡します。'}
+      </p>
+      {value.map((contract, index) => (
+        <fieldset key={index} className="contract-row">
+          <legend>契約 {index + 1}</legend>
+          <div className="wf-fields">
+            {input && (
+              <label>
+                入力元
+                <select
+                  value={contract.source ?? 'dataset'}
+                  onChange={(event) =>
+                    update(index, { source: event.target.value as 'dataset' | 'upstream' })
+                  }
+                >
+                  <option value="dataset">データセット</option>
+                  <option value="upstream">合格した前工程</option>
+                </select>
+              </label>
+            )}
+            <label>
+              ファイルパターン
+              <input
+                value={contract.pattern}
+                onChange={(event) => update(index, { pattern: event.target.value })}
+                placeholder="**/metrics.json"
+              />
+            </label>
+            <label>
+              最低件数
+              <input
+                type="number"
+                min={0}
+                max={5000}
+                value={contract.minFiles}
+                onChange={(event) => update(index, { minFiles: Number(event.target.value) })}
+              />
+            </label>
+            <label>
+              最大件数
+              <input
+                type="number"
+                min={0}
+                max={5000}
+                value={contract.maxFiles}
+                onChange={(event) => update(index, { maxFiles: Number(event.target.value) })}
+              />
+            </label>
+            <label>
+              JSONの型検証
+              <select
+                value={contract.schema?.type ?? ''}
+                onChange={(event) =>
+                  update(index, {
+                    schema: event.target.value
+                      ? { type: event.target.value as JsonSchema['type'] }
+                      : undefined,
+                  })
+                }
+              >
+                <option value="">なし</option>
+                {types.map((type) => (
+                  <option key={type}>{type}</option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="wf-secondary"
+              type="button"
+              onClick={() => onChange(value.filter((_, i) => i !== index))}
+            >
+              契約を削除
+            </button>
+          </div>
+          {contract.schema?.type === 'object' && (
+            <div className="schema-fields">
+              {Object.entries(contract.schema.properties ?? {}).map(([name, rule]) => {
+                const replace = (nextName: string, nextRule: JsonSchema) =>
+                  update(index, {
+                    schema: {
+                      ...contract.schema!,
+                      properties: Object.fromEntries(
+                        Object.entries(contract.schema!.properties ?? {}).map(([key, item]) =>
+                          key === name ? [nextName, nextRule] : [key, item],
+                        ),
+                      ),
+                      required: contract.schema!.required?.map((key) =>
+                        key === name ? nextName : key,
+                      ),
+                    },
+                  });
+                return (
+                  <div className="condition-toolbar" key={name}>
+                    <label>
+                      キー
+                      <input
+                        defaultValue={name}
+                        onBlur={(event) => replace(event.target.value, rule)}
+                      />
+                    </label>
+                    <label>
+                      型
+                      <select
+                        value={rule.type}
+                        onChange={(event) =>
+                          replace(name, { type: event.target.value as JsonSchema['type'] })
+                        }
+                      >
+                        {types.map((type) => (
+                          <option key={type}>{type}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="wf-check">
+                      <input
+                        type="checkbox"
+                        checked={contract.schema!.required?.includes(name) ?? false}
+                        onChange={(event) =>
+                          update(index, {
+                            schema: {
+                              ...contract.schema!,
+                              required: event.target.checked
+                                ? [...(contract.schema!.required ?? []), name]
+                                : contract.schema!.required?.filter((key) => key !== name),
+                            },
+                          })
+                        }
+                      />
+                      必須
+                    </label>
+                    <button
+                      type="button"
+                      className="wf-secondary"
+                      onClick={() =>
+                        update(index, {
+                          schema: {
+                            ...contract.schema!,
+                            properties: Object.fromEntries(
+                              Object.entries(contract.schema!.properties ?? {}).filter(
+                                ([key]) => key !== name,
+                              ),
+                            ),
+                            required: contract.schema!.required?.filter((key) => key !== name),
+                          },
+                        })
+                      }
+                    >
+                      キーを削除
+                    </button>
+                  </div>
+                );
+              })}
+              <button
+                type="button"
+                className="wf-secondary"
+                onClick={() => {
+                  let n = 1;
+                  while (Object.hasOwn(contract.schema!.properties ?? {}, `field_${n}`)) n++;
+                  update(index, {
+                    schema: {
+                      ...contract.schema!,
+                      properties: {
+                        ...contract.schema!.properties,
+                        [`field_${n}`]: { type: 'number' },
+                      },
+                    },
+                  });
+                }}
+              >
+                JSONキーを追加
+              </button>
+            </div>
+          )}
+        </fieldset>
+      ))}
+      <button
+        type="button"
+        className="wf-secondary"
+        disabled={value.length >= 20}
+        onClick={() => onChange([...value, { pattern: '**/*.json', minFiles: 1, maxFiles: 5000 }])}
+      >
+        ファイル契約を追加
+      </button>
+    </div>
+  );
+}

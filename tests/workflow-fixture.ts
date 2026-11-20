@@ -47,7 +47,7 @@ export async function workflowFixture(existingHome?: string, env: Record<string,
       .toBe(status);
     return job(id);
   }
-  function worker(script: string) {
+  function worker(script: string, workerEnv: Record<string, string> = {}) {
     writeFileSync(path.join(home, 'codex'), '#!/usr/bin/env node\n' + script, { mode: 0o755 });
     const child = spawn(process.execPath, ['worker.ts', '--mode=codex'], {
       env: {
@@ -55,6 +55,7 @@ export async function workflowFixture(existingHome?: string, env: Record<string,
         PATH: home + path.delimiter + process.env.PATH,
         RAILFLOW_URL: url,
         TEST_HOME: home,
+        ...workerEnv,
       },
       stdio: ['ignore', 'ignore', 'pipe'],
     });

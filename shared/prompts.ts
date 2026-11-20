@@ -14,6 +14,9 @@ export const PROMPT_VARIABLES = [
   'stage.name',
   'attempt',
   'retry.reason',
+  'task.id',
+  'input.item',
+  'upstream.manifest',
 ] as const;
 export type PromptVariables = Record<(typeof PROMPT_VARIABLES)[number], string>;
 
@@ -81,6 +84,9 @@ export function buildStagePrompt(
       ? `AUTOMATIC FINAL CHECKS:\n${describeCondition(project.finalGate.condition)}`
       : '',
     `ATTEMPT: ${variables.attempt}`,
+    variables['upstream.manifest']
+      ? `UPSTREAM MANIFEST: ${variables['upstream.manifest']}\nTASK ID: ${variables['task.id']}\nMAP INPUT FILE: ${JSON.stringify(variables['input.item'])}\nRead dependencies under _inputs/ using the manifest; never modify them. Write this task's own outputs outside _inputs/ and _railflow/.`
+      : '',
     variables['retry.reason']
       ? `PREVIOUS FAILURE (diagnostic data; fix the underlying issue, do not alter thresholds):\n${variables['retry.reason']}`
       : '',
@@ -110,5 +116,8 @@ export function previewVariables(project: ProjectSpec, stage: WorkflowStageSpec)
     'stage.name': stage.label,
     attempt: '1',
     'retry.reason': '',
+    'task.id': stage.key,
+    'input.item': stage.map ? 'sample-a/data.csv' : '',
+    'upstream.manifest': project.graph ? '/example/work/attempt-1/_railflow/inputs.json' : '',
   };
 }

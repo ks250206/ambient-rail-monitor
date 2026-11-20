@@ -553,3 +553,43 @@
 .review-outputs {
   @apply rounded border border-science-sub bg-bg-2 p-3;
 }
+
+.workflow-graph {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+  gap: 12px;
+  margin-block: 16px;
+}
+.graph-node {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 15px;
+  border: 1px solid #c4cedc;
+  border-left: 4px solid #183d6e;
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+  background: #f5f7fa;
+  font-size: 13px;
+}
+.graph-node small {
+  color: #52637a;
+}
+.contract-row {
+  border: 1px solid #d4dce6;
+  border-radius: 6px;
+  margin-block: 12px;
+  padding: 12px;
+}
+.contract-row legend {
+  padding-inline: 6px;
+  font-size: 13px;
+}
+.dependency-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+}
+.schema-fields {
+  margin-block: 12px;
+}
