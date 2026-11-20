@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
+import { fileURLToPath } from 'node:url';
 import type { FailureKind } from './execution-policy.ts';
 
 export class ExecutionFailure extends Error {
@@ -33,12 +34,15 @@ export async function runCommand(
 ): Promise<void> {
   if (options.signal?.aborted)
     throw new ExecutionFailure('interrupted', 'ワーカーが停止されました。');
-  const child = spawn(command, args, {
-    cwd: options.cwd,
-    env: process.env,
-    detached: process.platform !== 'win32',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const child = spawn(
+    process.execPath,
+    [fileURLToPath(new URL('./process-supervisor.ts', import.meta.url)), command, ...args],
+    {
+      cwd: options.cwd,
+      env: { ...process.env, RAILFLOW_SUPERVISOR_GRACE_MS: String(options.graceMs ?? 500) },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    },
+  );
   let failure: ExecutionFailure | undefined;
   let stderr = '';
   let closed = false;
@@ -47,12 +51,7 @@ export async function runCommand(
   const killTree = (signal: NodeJS.Signals) => {
     if (!child.pid || closed) return;
     try {
-      if (process.platform === 'win32') {
-        const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
-          stdio: 'ignore',
-        });
-        killer.on('error', () => child.kill(signal));
-      } else process.kill(-child.pid, signal);
+      child.kill(signal);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
         try {
@@ -73,7 +72,7 @@ export async function runCommand(
     telemetry.abort();
     if (closed) return;
     killTree('SIGTERM');
-    killTimer ??= setTimeout(() => killTree('SIGKILL'), options.graceMs ?? 1000);
+    killTimer ??= setTimeout(() => killTree('SIGKILL'), (options.graceMs ?? 500) + 500);
   };
   const onAbort = () => stop('interrupted');
   options.signal?.addEventListener('abort', onAbort, { once: true });
@@ -111,6 +110,7 @@ export async function runCommand(
       child.once('close', resolve);
     });
   } finally {
+    child.stdin.end();
     if (killTimer) clearTimeout(killTimer);
     killTree('SIGKILL');
     closed = true;

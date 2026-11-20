@@ -31,6 +31,7 @@ import {
   STAGE_STATUS_LABELS,
 } from '../utils/workflow.ts';
 import { DatasetDetails, StageExecutionDetails } from './ExecutionDetails.tsx';
+import { JobControls } from './JobControls.tsx';
 import { ConditionEvidence } from './ConditionBuilder.tsx';
 import { StatusIcon, StatusPill } from './StatusBadge.tsx';
 
@@ -225,6 +226,7 @@ export function ActionsSection({
                   </div>
                 </div>
 
+                <JobControls key={selectedJob.id} job={selectedJob} />
                 <DatasetDetails job={selectedJob} />
                 {/* Compact Run Facts */}
                 <div className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-3.5 sm:grid-cols-4">

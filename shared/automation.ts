@@ -1,4 +1,5 @@
 import { parseCondition } from './conditions.ts';
+import { parsePriority } from './queue.ts';
 import {
   boundedInteger,
   MAX_BUDGET_MS,
@@ -42,8 +43,22 @@ export function parseInput(value: unknown): InputSpec {
 export function projectAutomation(
   raw: Record<string, unknown>,
   existing?: ProjectSpec,
-): Pick<ProjectSpec, 'input' | 'execution' | 'jobTimeoutMs' | 'finalGate' | 'prompt'> {
+): Pick<ProjectSpec, 'input' | 'execution' | 'jobTimeoutMs' | 'finalGate' | 'prompt' | 'queue'> {
+  const queue =
+    raw.queue === undefined
+      ? (existing?.queue ?? { maxConcurrentJobs: 4, priority: 0 })
+      : raw.queue;
+  if (!queue || typeof queue !== 'object' || Array.isArray(queue))
+    throw new Error('プロジェクトのキュー設定が不正です。');
+  const values = queue as Record<string, unknown>;
+  const maxConcurrentJobs = boundedInteger(
+    values.maxConcurrentJobs,
+    'プロジェクトの同時実行数',
+    32,
+  );
+  if (!maxConcurrentJobs) throw new Error('同時実行数は1以上にしてください。');
   return {
+    queue: { maxConcurrentJobs, priority: parsePriority(values.priority) },
     input:
       raw.input === undefined
         ? structuredClone(existing?.input ?? DEFAULT_INPUT)

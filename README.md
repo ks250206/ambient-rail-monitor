@@ -89,3 +89,9 @@ tests/               Vitest API, event-replay, and helper tests
 ```
 
 Set `PORT`, `HOST`, `RAILFLOW_HOME`, `RAILFLOW_URL`, `RAILFLOW_AGENT_TIMEOUT_MS`, and `RAILFLOW_PYTHON` for deployment differences. The demo is designed for **localhost only** (default bind `127.0.0.1`), and has **no authentication**.
+
+### Reliable execution
+
+The monitor supports pause/resume/cancel, queue priorities, concurrency limits,
+and lease-based recovery from worker failure. See [execution and recovery](docs/reliable-execution.md)
+for the protocol, SQLite journal migration and configuration.

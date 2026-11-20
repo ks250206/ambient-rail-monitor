@@ -33,7 +33,13 @@ it('enforces execution order and computes gate evidence rather than accepting wo
     mkdirSync(path.join(claim.paths!.work, work), { recursive: true });
     writeFileSync(path.join(claim.paths!.work, work, 'metrics.json'), '{"ok":false}');
     const post = (type: string, extra = {}) =>
-      f.response(`/api/jobs/${job.id}/events`, { type, stage: 'fit', attempt: 1, ...extra });
+      f.response(`/api/jobs/${job.id}/events`, {
+        type,
+        stage: 'fit',
+        attempt: 1,
+        leaseToken: claim.lease!.token,
+        ...extra,
+      });
     expect((await post('stage.started', { workspace: work })).status).toBe(200);
     for (const type of ['gate.evaluated', 'stage.succeeded', 'review.required'])
       expect((await post(type, { gate: { scope: 'stage' } })).status).toBe(409);

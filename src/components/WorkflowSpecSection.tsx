@@ -33,6 +33,7 @@ export type WorkflowUpdatePayload = Pick<
   | 'jobTimeoutMs'
   | 'finalGate'
   | 'prompt'
+  | 'queue'
 >;
 
 interface WorkflowSpecSectionProps {
@@ -403,6 +404,38 @@ export function WorkflowSpecSection({
           <summary>
             実行の既定値・ジョブ全体の上限 <ChevronDown size={17} />
           </summary>
+          <div className="wf-fields">
+            <label>
+              このプロジェクトの同時ジョブ数
+              <input
+                type="number"
+                min={1}
+                max={32}
+                value={automation.queue!.maxConcurrentJobs}
+                onChange={(event) =>
+                  setAutomation({
+                    ...automation,
+                    queue: { ...automation.queue!, maxConcurrentJobs: Number(event.target.value) },
+                  })
+                }
+              />
+            </label>
+            <label>
+              新規ジョブの優先度
+              <input
+                type="number"
+                min={-100}
+                max={100}
+                value={automation.queue!.priority}
+                onChange={(event) =>
+                  setAutomation({
+                    ...automation,
+                    queue: { ...automation.queue!, priority: Number(event.target.value) },
+                  })
+                }
+              />
+            </label>
+          </div>
           <ExecutionPolicyFields
             value={automation.execution!}
             onChange={(execution) =>

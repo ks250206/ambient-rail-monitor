@@ -1,3 +1,4 @@
+import { QueuePanel } from './components/QueuePanel.tsx';
 import { useMutation } from '@tanstack/react-query';
 import { RefreshCw, Search } from 'lucide-react';
 import { useRef, useState } from 'react';
@@ -58,6 +59,12 @@ export function JobsPage({ project }: { project: ProjectSpec }) {
             更新
           </button>
         </div>
+        {query.data?.queue && (
+          <QueuePanel
+            key={`${query.data.queue.maxConcurrentJobs}-${query.data.queue.maxJobsPerWorker}-${query.data.queue.maxRecoveries}`}
+            queue={query.data.queue}
+          />
+        )}
         <DatasetUpload
           projectId={project.id}
           onCreated={(job) => window.location.assign(monitorJobHref(project.id, job.id))}

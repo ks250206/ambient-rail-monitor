@@ -1,4 +1,4 @@
-import { AlertCircle, Check, Circle, Loader2, X } from 'lucide-react';
+import { AlertCircle, Check, Circle, Loader2, X, Pause } from 'lucide-react';
 
 import type { JobStatus, StageStatus } from '../../shared/types.ts';
 import {
@@ -19,6 +19,8 @@ const ICON_TONE: Record<NormalizedActionStatus, string> = {
   review: 'border-st-orange bg-st-orange-bg text-st-orange-dark',
   failed: 'border-st-red bg-st-red-bg text-st-red-dark',
   queued: 'border-navy-300 bg-bg-2 text-ink-muted',
+  paused: 'border-st-orange bg-st-orange-bg text-st-orange-dark',
+  cancelled: 'border-navy-300 bg-bg-2 text-ink-muted',
 };
 
 export function StatusIcon({ status, size = 'md' }: StatusIconProps) {
@@ -36,6 +38,8 @@ export function StatusIcon({ status, size = 'md' }: StatusIconProps) {
       {state === 'running' && <Loader2 className={`${iconSize} animate-spin`} strokeWidth={2.5} />}
       {state === 'review' && <AlertCircle className={iconSize} strokeWidth={2.5} />}
       {state === 'failed' && <X className={iconSize} strokeWidth={2.75} />}
+      {state === 'paused' && <Pause className={iconSize} />}
+      {state === 'cancelled' && <X className={iconSize} />}
       {state === 'queued' && <Circle className={iconSize} strokeWidth={2.25} />}
     </span>
   );
@@ -52,6 +56,8 @@ const PILL_TONE: Record<NormalizedActionStatus, string> = {
   review: 'border-st-orange/45 bg-st-orange-bg text-st-orange-dark',
   failed: 'border-st-red/40 bg-st-red-bg text-st-red-dark',
   queued: 'border-line bg-bg-2 text-ink-muted',
+  paused: 'border-st-orange/45 bg-st-orange-bg text-st-orange-dark',
+  cancelled: 'border-line bg-bg-2 text-ink-muted',
 };
 
 export function StatusPill({ status, label }: StatusPillProps) {

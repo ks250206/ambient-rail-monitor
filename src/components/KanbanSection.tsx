@@ -6,6 +6,7 @@ import {
   dateMs,
   elapsed,
   KANBAN_COLUMNS,
+  STATUS_LABELS,
   monitorJobHref,
   type KanbanColumnDef,
 } from '../utils/workflow.ts';
@@ -27,7 +28,11 @@ export function KanbanSection({ jobs }: { jobs: WorkflowJob[] }) {
           jobs={jobs.filter((job) =>
             column.id === 'review'
               ? job.status === 'review' || job.status === 'failed'
-              : job.status === column.id,
+              : column.id === 'queued'
+                ? ['queued', 'paused', 'pausing'].includes(job.status)
+                : column.id === 'running'
+                  ? ['running', 'cancelling'].includes(job.status)
+                  : ['done', 'cancelled'].includes(job.status),
           )}
           nowMs={nowMs}
         />
@@ -104,7 +109,7 @@ function JobCard({ job, nowMs }: { job: WorkflowJob; nowMs: number }) {
         ? 'Approval required'
         : job.status === 'failed'
           ? 'Failed'
-          : `${job.stages.length}-stage pipeline`;
+          : `${STATUS_LABELS[job.status]} · 優先度 ${job.priority ?? 0}`;
   const start = job.startedAt || job.createdAt;
   return (
     <a

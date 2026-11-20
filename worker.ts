@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } 
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 
 import { prepareAttempt } from './shared/attempt-workspace.ts';
 import { failedEvidence } from './shared/conditions.ts';
@@ -47,6 +48,13 @@ const PROJECT_FILTER =
 
 const API = (process.env.RAILFLOW_URL || 'http://127.0.0.1:4173').replace(/\/$/, '');
 const WORKER_ID = `${os.hostname()}-${process.pid}`;
+const concurrency = Number(
+  (process.argv.find((arg) => arg.startsWith('--concurrency=')) ?? '--concurrency=1').split('=')[1],
+);
+if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 16)
+  throw new Error('concurrency must be 1–16');
+const contexts = new Map<string, { token: string; signal: AbortSignal }>();
+const jobSignal = (job: WorkflowJob) => contexts.get(job.id)?.signal ?? shutdown.signal;
 
 const STAGE_NOTE_FILES: Record<string, string> = {
   ingest: '01_ingest.md',
@@ -57,19 +65,19 @@ const STAGE_NOTE_FILES: Record<string, string> = {
 };
 
 const shutdown = new AbortController();
-const sleep = (ms: number): Promise<void> =>
+const sleep = (ms: number, signal = shutdown.signal): Promise<void> =>
   new Promise((resolve) => {
-    if (shutdown.signal.aborted) {
+    if (signal.aborted) {
       resolve();
       return;
     }
     const finish = () => {
       clearTimeout(timer);
-      shutdown.signal.removeEventListener('abort', finish);
+      signal.removeEventListener('abort', finish);
       resolve();
     };
     const timer = setTimeout(finish, ms);
-    shutdown.signal.addEventListener('abort', finish, { once: true });
+    signal.addEventListener('abort', finish, { once: true });
   });
 
 let stopping = false;
@@ -102,17 +110,22 @@ async function emit(
   more: Record<string, unknown> = {},
   signal?: AbortSignal,
 ): Promise<WorkflowEvent> {
-  const result = await req<{ event: WorkflowEvent }>(
-    `/api/jobs/${job.id}/events`,
-    {
-      type,
-      stage,
-      message,
-      attempt: job.stages.find((item) => item.key === stage)?.attempts,
-      ...more,
-    },
-    signal,
-  );
+  const data = {
+    type,
+    requestId: randomUUID(),
+    leaseToken: contexts.get(job.id)?.token,
+    stage,
+    message,
+    attempt: job.stages.find((item) => item.key === stage)?.attempts,
+    ...more,
+  };
+  const send = () => req<{ event: WorkflowEvent }>(`/api/jobs/${job.id}/events`, data, signal);
+  const result = await send().catch(async (error: unknown) => {
+    if (signal?.aborted || jobSignal(job).aborted) throw error;
+    // The server may have committed the event before its response was lost.
+    // A stable request ID makes this second delivery read the original result.
+    return send();
+  });
   return result.event;
 }
 
@@ -407,7 +420,7 @@ async function runAgent(
     cwd: work,
     timeoutMs,
     timeoutKind,
-    signal: shutdown.signal,
+    signal: jobSignal(job),
     onLine: (line, signal) => {
       let event: RawCliEvent;
       try {
@@ -469,7 +482,7 @@ async function generateDemoReport(
       cwd: paths.work,
       timeoutMs,
       timeoutKind,
-      signal: shutdown.signal,
+      signal: jobSignal(job),
     },
   );
 }
@@ -535,7 +548,7 @@ async function processJob(
 
   for (let index = 0; index < job.stages.length; index++) {
     const stage = job.stages[index];
-    if (stopping) throw new ExecutionFailure('interrupted', 'ワーカーが停止されました。');
+    if (jobSignal(job).aborted) throw new ExecutionFailure('interrupted', '実行が中断されました。');
     const final = index === job.stages.length - 1;
     if (stage.status === 'success') {
       previous = stage.workspace ? path.join(paths.work, stage.workspace) : previous;
@@ -565,7 +578,35 @@ async function processJob(
         .find((event) => event.stage === stage.key && event.type === 'stage.failed')?.message ?? '';
     let accepted = false;
 
-    while (!accepted && stage.attempts <= policy.maxRetries) {
+    if (stage.status === 'retry' && (stage.retryAt || stage.retryRemainingMs !== undefined)) {
+      if (stage.retryRemainingMs !== undefined) {
+        const resumed = await emit(
+          job,
+          'stage.retry.resumed',
+          stage.key,
+          '中断したリトライ待機を再開',
+        );
+        stage.retryAt = resumed.retryAt;
+      }
+      const delay = Math.max(0, Date.parse(stage.retryAt!) - Date.now());
+      const aggregate = availableBudget(job, stage, policy, project);
+      if (delay >= aggregate.left) {
+        await emit(job, 'job.failed', stage.key, 'リトライ待機の時間予算が不足しています。', {
+          failureKind: aggregate.kind,
+        });
+        return;
+      }
+      const waitStarted = performance.now();
+      await sleep(delay, jobSignal(job));
+      if (jobSignal(job).aborted)
+        throw new ExecutionFailure('interrupted', '実行が中断されました。');
+      const elapsedMs = Math.round(performance.now() - waitStarted);
+      await emit(job, 'stage.retry.ready', stage.key, '保存されたリトライ待機を終了', {
+        elapsedMs,
+      });
+      stage.activeMs = (stage.activeMs ?? 0) + elapsedMs;
+    }
+    while (!accepted) {
       const aggregate = availableBudget(job, stage, policy, project);
       if (aggregate.left <= 0) {
         await emit(job, 'job.failed', stage.key, '工程またはジョブ全体の時間上限に達したため停止', {
@@ -588,7 +629,8 @@ async function processJob(
       const started = performance.now();
       const elapsed = () => Math.max(0, Math.round(performance.now() - started));
       const remaining = () => {
-        if (stopping) throw new ExecutionFailure('interrupted', 'ワーカーが停止されました。');
+        if (jobSignal(job).aborted)
+          throw new ExecutionFailure('interrupted', '実行が中断されました。');
         if (elapsed() >= limit)
           throw new ExecutionFailure(timeoutKind, `実行時間の上限に達しました (${timeoutKind})。`);
         return limit - elapsed();
@@ -658,7 +700,7 @@ async function processJob(
         let lastMessage = '';
         if (MODE === 'demo') {
           const duration = stage.key === retryDemoStageKey ? 2100 : 1100;
-          await sleep(Math.min(duration, remaining()));
+          await sleep(Math.min(duration, remaining()), jobSignal(job));
           remaining();
           if (job.demo && stage.key === retryDemoStageKey && stage.attempts === 1)
             throw new Error('模擬エラー: ピーク検出の初期条件が収束せず');
@@ -751,7 +793,7 @@ async function processJob(
         if (final) await publishReports(job, stage, reportStaging, paths.artifacts);
       } catch (error) {
         // Publication failures occur after acceptance and must never rerun the agent.
-        if (accepted) throw error;
+        if (accepted || jobSignal(job).aborted) throw error;
         const kind = error instanceof ExecutionFailure ? error.kind : 'execution_error';
         reason = error instanceof Error ? error.message : String(error);
         const elapsedMs = elapsed();
@@ -762,8 +804,12 @@ async function processJob(
           workspace: relative,
         });
         stage.activeMs = (stage.activeMs ?? 0) + elapsedMs;
-        if (!deterministic && canRetry(policy, kind, stage.attempts) && !stopping) {
-          const delay = retryDelay(policy, stage.attempts);
+        if (
+          !deterministic &&
+          canRetry(policy, kind, (stage.retryCount ?? 0) + 1) &&
+          !jobSignal(job).aborted
+        ) {
+          const delay = retryDelay(policy, (stage.retryCount ?? 0) + 1);
           const left = availableBudget(job, stage, policy, project);
           if (delay >= left.left) {
             await emit(job, 'job.failed', stage.key, '次のリトライ待機時間を確保できないため停止', {
@@ -776,17 +822,21 @@ async function processJob(
             job,
             'stage.retry',
             stage.key,
-            `${delay / 1000} 秒後に再試行 (${stage.attempts}/${policy.maxRetries} 回)`,
+            `${delay / 1000} 秒後に再試行 (${(stage.retryCount ?? 0) + 1}/${policy.maxRetries} 回)`,
             { retryAt },
           );
+          stage.retryCount = (stage.retryCount ?? 0) + 1;
           const waitStart = performance.now();
-          await sleep(delay);
-          if (stopping) throw new ExecutionFailure('interrupted', 'ワーカーが停止されました。');
+          await sleep(delay, jobSignal(job));
+          if (jobSignal(job).aborted)
+            throw new ExecutionFailure('interrupted', '実行が中断されました。');
           const waited = Math.round(performance.now() - waitStart);
           await emit(job, 'stage.retry.ready', stage.key, 'リトライ待機が終了', {
             elapsedMs: waited,
           });
           stage.activeMs += waited;
+          if (jobSignal(job).aborted)
+            throw new ExecutionFailure('interrupted', '実行が中断されました。');
         } else if (
           !deterministic &&
           policy.onFailure === 'review' &&
@@ -827,31 +877,61 @@ async function processJob(
 console.log(
   `Railflow pull worker: ${MODE} (${WORKER_ID})${PROJECT_FILTER ? ` [project=${PROJECT_FILTER}]` : ''} -> ${API}`,
 );
-while (!stopping) {
-  try {
-    const response = await req<ClaimResponse>('/api/jobs/claim', {
-      agent: MODE,
-      worker: WORKER_ID,
-      ...(PROJECT_FILTER ? { projectId: PROJECT_FILTER } : {}),
-    });
-    if (response.job && response.paths) {
-      try {
-        await processJob(response.job, response.paths, response.project);
-      } catch (err) {
-        await emit(
-          response.job,
-          'job.failed',
-          null,
-          err instanceof Error ? err.message : String(err),
-          { failureKind: err instanceof ExecutionFailure ? err.kind : 'execution_error' },
-        );
+async function workLoop() {
+  while (!stopping) {
+    try {
+      const response = await req<ClaimResponse>('/api/jobs/claim', {
+        agent: MODE,
+        worker: WORKER_ID,
+        capacity: concurrency,
+        ...(PROJECT_FILTER ? { projectId: PROJECT_FILTER } : {}),
+      });
+      if (!response.job || !response.paths || !response.lease) {
+        await sleep(1000);
+        continue;
       }
-    } else {
-      await sleep(1500);
+      const { job, paths, project, lease } = response;
+      const control = new AbortController();
+      const signal = AbortSignal.any([shutdown.signal, control.signal]);
+      contexts.set(job.id, { token: lease.token, signal });
+      let heartbeatBusy = false;
+      const heartbeat = setInterval(() => {
+        if (heartbeatBusy || signal.aborted) return;
+        heartbeatBusy = true;
+        void req<{ action: string }>(
+          `/api/jobs/${job.id}/heartbeat`,
+          { leaseToken: lease.token },
+          AbortSignal.timeout(Math.max(100, lease.heartbeatMs)),
+        )
+          .then((result) => {
+            if (result.action !== 'continue') control.abort();
+          })
+          .catch(() => control.abort()) // Losing contact fails closed and stops the process group.
+          .finally(() => {
+            heartbeatBusy = false;
+          });
+      }, lease.heartbeatMs);
+      try {
+        await processJob(job, paths, project);
+      } catch (err) {
+        if (!signal.aborted) {
+          await emit(job, 'job.failed', null, err instanceof Error ? err.message : String(err), {
+            failureKind: err instanceof ExecutionFailure ? err.kind : 'execution_error',
+          }).catch(() => undefined);
+        }
+      } finally {
+        clearInterval(heartbeat);
+        // Also releases a claim interrupted between stage transitions. Terminal events
+        // already release atomically; a resulting 409 is expected in that case.
+        await req(`/api/jobs/${job.id}/release`, { leaseToken: lease.token }).catch(
+          () => undefined,
+        );
+        contexts.delete(job.id);
+      }
+    } catch (err) {
+      console.error('Worker error:', err instanceof Error ? err.message : String(err));
+      await sleep(3000);
     }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error('Worker error:', message);
-    await sleep(3000);
   }
 }
+await Promise.all(Array.from({ length: concurrency }, () => workLoop()));

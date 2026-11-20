@@ -7,7 +7,14 @@ import type {
   WorkflowJob,
 } from '../../shared/types.ts';
 
-export type NormalizedActionStatus = 'queued' | 'running' | 'review' | 'done' | 'failed';
+export type NormalizedActionStatus =
+  | 'queued'
+  | 'running'
+  | 'review'
+  | 'done'
+  | 'failed'
+  | 'paused'
+  | 'cancelled';
 export type LogEventLevel = 'normal' | 'success' | 'warning' | 'error';
 
 export const STATUS_LABELS: Record<JobStatus, string> = {
@@ -16,6 +23,10 @@ export const STATUS_LABELS: Record<JobStatus, string> = {
   review: 'Needs review',
   done: 'Completed',
   failed: 'Failed',
+  pausing: 'Pausing',
+  paused: 'Paused',
+  cancelling: 'Cancelling',
+  cancelled: 'Cancelled',
 };
 
 export const ACTION_STATUS_LABELS: Record<NormalizedActionStatus, string> = {
@@ -24,6 +35,8 @@ export const ACTION_STATUS_LABELS: Record<NormalizedActionStatus, string> = {
   review: 'Review needed',
   done: 'Success',
   failed: 'Failed',
+  paused: 'Paused',
+  cancelled: 'Cancelled',
 };
 
 export const STAGE_STATUS_LABELS: Record<StageStatus, string> = {
@@ -119,6 +132,8 @@ export function actionDuration(
 }
 
 export function normalizeActionStatus(status: JobStatus | StageStatus): NormalizedActionStatus {
+  if (status === 'paused' || status === 'pausing') return 'paused';
+  if (status === 'cancelled' || status === 'cancelling') return 'cancelled';
   if (status === 'success' || status === 'done') return 'done';
   if (status === 'pending' || status === 'queued') return 'queued';
   if (status === 'retry' || status === 'running') return 'running';
@@ -168,7 +183,8 @@ export function getSpans(job: WorkflowJob): StageSpan[] {
     if (
       (event.type === 'stage.succeeded' ||
         event.type === 'stage.failed' ||
-        event.type === 'review.required') &&
+        event.type === 'review.required' ||
+        event.type === 'stage.interrupted') &&
       event.stage
     ) {
       const span = [...spans]
@@ -176,7 +192,10 @@ export function getSpans(job: WorkflowJob): StageSpan[] {
         .find((item) => item.stage === event.stage && item.end === null);
       if (span) {
         span.end = dateMs(event.at);
-        span.status = event.type === 'stage.failed' ? 'failed' : 'success';
+        span.status =
+          event.type === 'stage.failed' || event.type === 'stage.interrupted'
+            ? 'failed'
+            : 'success';
       }
     }
     if (event.type === 'agent.event' && event.stage) {
