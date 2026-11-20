@@ -98,61 +98,77 @@
   margin-inline: auto;
 }
 
-/* Keep the arch at the edge, clear of the title and controls. */
-.monitor-hero {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-  background: white;
+.monitor-layout {
+  width: min(100% - 2rem, 102rem);
+  margin-inline: auto;
 }
 
-.hero-arches {
-  position: absolute;
-  z-index: -1;
-  inset: 0 0 0 auto;
-  width: 36%;
-  overflow: hidden;
-}
-
-.hero-arches::before,
-.hero-arches::after {
-  content: '';
-  position: absolute;
-  left: -70%;
-  width: 230%;
-  height: 95%;
-  border-radius: 50%;
-  border-top: clamp(3rem, 5vw, 6rem) solid var(--color-science-sub);
-  top: 30%;
-  transform: rotate(13deg);
-}
-
-.hero-arches::after {
-  top: 54%;
-  border-top-color: var(--color-science-blue);
-  transform: rotate(-16deg);
-}
-
-.hero-copy {
-  max-width: 60%;
-}
-
-.monitor-button {
-  display: inline-flex;
-  min-height: 48px;
-  min-width: 9rem;
-  align-items: center;
-  justify-content: center;
-  padding: 0.5rem 1.5rem;
-  border: 1px solid var(--color-science-blue);
-  border-radius: 6px;
-  background: white;
-  color: var(--color-science-blue);
-  font-weight: 700;
-}
-
-.monitor-button:hover {
+.run-history-sidebar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  color: var(--color-ink);
   background: var(--color-bg-2);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.run-history-heading,
+.run-history-body {
+  display: none;
+}
+
+.run-history-toggle,
+.run-history-body[data-expanded='true'] {
+  display: flex;
+}
+
+.run-history-body {
+  position: absolute;
+  inset: 100% 0 auto;
+  max-height: calc(100dvh - 4rem);
+  overflow-y: auto;
+  background: var(--color-bg-2);
+  border: 1px solid var(--color-line);
+}
+
+@media (max-width: 47.999rem) {
+  .monitor-layout main [id] {
+    scroll-margin-top: 3.75rem;
+  }
+}
+
+@media (min-width: 48rem) {
+  .monitor-layout {
+    display: grid;
+    grid-template-columns: clamp(15rem, 23vw, 21rem) minmax(0, 1fr);
+    column-gap: clamp(1rem, 2.5vw, 3rem);
+    padding-right: 1rem;
+  }
+
+  .run-history-sidebar {
+    display: flex;
+    flex-direction: column;
+    align-self: start;
+    height: 100dvh;
+    overflow-y: auto;
+    border: 0;
+    border-inline-end: 1px solid var(--color-line);
+  }
+
+  .run-history-heading,
+  .run-history-body {
+    display: flex;
+  }
+
+  .run-history-body {
+    position: static;
+    max-height: none;
+    border: 0;
+  }
+
+  .run-history-toggle {
+    display: none;
+  }
 }
 
 .section-link {
@@ -196,21 +212,18 @@
   }
 }
 
-@media (max-width: 47.99rem) {
-  .hero-copy {
-    max-width: none;
+@keyframes page-enter {
+  from {
+    opacity: 0.55;
   }
-  .monitor-hero {
-    padding-bottom: 2rem;
+  to {
+    opacity: 1;
   }
-  .hero-arches {
-    inset: auto 0 0 auto;
-    width: 54%;
-    height: 2.75rem;
-  }
-  .hero-arches::before,
-  .hero-arches::after {
-    border-top-width: 0.75rem;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  main {
+    animation: page-enter 160ms ease-out;
   }
 }
 
@@ -223,4 +236,149 @@
   .animate-pulse {
     animation: none;
   }
+}
+
+.workflow-page {
+  max-width: 72rem;
+  padding-block: clamp(1.75rem, 4vw, 4rem) 4rem;
+}
+.workflow-title,
+.wf-project,
+.wf-section-title,
+.wf-detail-title {
+  @apply flex flex-wrap items-center justify-between gap-4;
+}
+.workflow-title {
+  @apply mb-7 border-b-2 border-science-blue pb-5 text-science-blue;
+}
+.workflow-title h1 {
+  @apply text-3xl font-bold tracking-tight sm:text-4xl;
+}
+.workflow-title a,
+.wf-save,
+.wf-order {
+  @apply inline-flex flex-wrap items-center gap-2;
+}
+.workflow-title a {
+  @apply text-sm font-semibold underline-offset-4 hover:underline;
+}
+.wf-project {
+  @apply mb-5 items-start;
+}
+.wf-project > div:first-child {
+  @apply min-w-0 flex-1 basis-72;
+}
+.wf-project h2,
+.wf-section-title h2 {
+  @apply text-xl font-bold text-science-blue;
+}
+.wf-project p {
+  @apply mt-2 max-w-2xl text-sm leading-relaxed text-ink-muted;
+}
+.workflow-page {
+  overflow-wrap: anywhere;
+}
+.wf-save {
+  @apply gap-3;
+}
+.wf-save span {
+  @apply text-xs text-ink-muted;
+}
+.wf-primary,
+.wf-secondary,
+.wf-delete,
+.wf-order button {
+  @apply inline-flex min-h-9 items-center justify-center gap-2 rounded px-3 text-sm font-semibold;
+}
+.wf-primary {
+  @apply bg-science-blue text-white hover:bg-navy-800;
+}
+.wf-secondary,
+.wf-order button {
+  @apply border border-line bg-white text-science-blue hover:bg-bg-2;
+}
+.workflow-page button:disabled {
+  @apply cursor-not-allowed opacity-45;
+}
+.wf-disclosure {
+  @apply border-y border-line;
+}
+.wf-disclosure summary {
+  @apply flex cursor-pointer list-none items-center justify-between gap-2 py-3.5 text-sm font-semibold text-science-blue;
+}
+.wf-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+.wf-disclosure[open] > summary svg {
+  transform: rotate(180deg);
+}
+.wf-section-title {
+  @apply mt-8 mb-4;
+}
+.wf-section-title h2 span {
+  @apply ml-1 font-en text-base font-medium text-ink-muted;
+}
+.wf-editor {
+  @apply grid min-w-0 items-start gap-5 md:grid-cols-[minmax(11rem,1fr)_minmax(0,2.4fr)] md:gap-8;
+}
+.wf-stage-list {
+  @apply hidden flex-col border-t border-line md:flex;
+}
+.wf-stage-list button {
+  @apply flex items-baseline gap-3 border-b border-line px-3 py-3 text-left text-sm hover:bg-bg-2;
+}
+.wf-stage-list button span {
+  @apply font-en text-xs tabular-nums text-ink-muted;
+}
+.wf-stage-list button[aria-current] {
+  @apply bg-bg-1 font-bold text-science-blue;
+}
+.wf-stage-detail {
+  @apply min-w-0 rounded border border-line px-4 py-4 sm:px-6;
+}
+.wf-detail-title {
+  @apply mb-4;
+}
+.wf-detail-title h3 {
+  @apply text-lg font-bold text-science-blue;
+}
+.wf-order {
+  @apply gap-1;
+}
+.wf-order button {
+  @apply min-w-9 px-1;
+}
+.wf-fields {
+  @apply grid min-w-0 gap-4 pb-4 sm:grid-cols-2;
+}
+.wf-fields label,
+.wf-mobile-select {
+  @apply grid min-w-0 content-start gap-1.5 text-sm font-semibold;
+}
+.wf-mobile-select {
+  @apply md:hidden;
+}
+.wf-fields input,
+.wf-fields select,
+.wf-fields textarea,
+.wf-mobile-select select {
+  @apply w-full min-w-0 rounded border border-navy-400 bg-white px-3 py-2 text-sm font-normal text-ink;
+}
+.wf-fields textarea {
+  @apply leading-relaxed;
+}
+.wf-wide {
+  @apply sm:col-span-2;
+}
+.wf-stage-detail .wf-disclosure {
+  @apply border-b-0;
+}
+.wf-stage-detail .wf-disclosure:not([open]) summary {
+  @apply pb-0;
+}
+.wf-delete {
+  @apply mb-3 px-0 text-st-red-dark;
+}
+.wf-toast {
+  @apply fixed right-4 bottom-5 z-50 max-w-[90vw] rounded px-4 py-3 text-sm text-white shadow-lg;
 }

@@ -1,8 +1,10 @@
 node_modules/
 dist/
 .vite/
+.yomiyasu/
 data/
 inbox/
 work/
 artifacts/
+projects/
 .DS_Store

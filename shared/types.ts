@@ -1,8 +1,15 @@
-export type StageKey = 'ingest' | 'preprocess' | 'analysis' | 'validate' | 'visualize' | 'publish';
+export type StageKey = string;
 
 export type StageStatus = 'pending' | 'running' | 'success' | 'failed' | 'retry' | 'review';
 
 export type JobStatus = 'queued' | 'running' | 'review' | 'done' | 'failed';
+
+export type ReasoningEffort = '' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export interface LlmConfig {
+  model: string;
+  effort: ReasoningEffort;
+}
 
 export type EventType =
   | 'job.created'
@@ -27,11 +34,30 @@ export interface StageDefinition {
   short: string;
 }
 
+export interface WorkflowStageSpec extends StageDefinition {
+  instruction: string;
+  llm: LlmConfig;
+}
+
+export interface ProjectSpec {
+  id: string;
+  name: string;
+  purpose: string;
+  acceptanceCriteria: string;
+  llm: LlmConfig;
+  stages: WorkflowStageSpec[];
+  inboxDir: string;
+  artifactsDir: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface JobStage extends StageDefinition {
   status: StageStatus;
   attempts: number;
   startedAt: string | null;
   endedAt: string | null;
+  summary: string | null;
 }
 
 export interface ArtifactInfo {
@@ -43,23 +69,28 @@ export interface ArtifactInfo {
 export interface WorkflowEvent {
   type: EventType;
   jobId: string;
+  projectId?: string;
   at: string;
   sequence: number;
   stage?: StageKey | null;
   message?: string;
+  summary?: string;
   details?: string;
+  stageConfig?: { instruction: string; llm: LlmConfig };
   artifact?: ArtifactInfo;
   file?: string;
   bytes?: number;
   hash?: string;
   demo?: boolean;
   needsReview?: boolean;
+  stages?: StageDefinition[];
   agent?: string;
   worker?: string;
 }
 
 export interface WorkflowJob {
   id: string;
+  projectId: string;
   file: string;
   bytes: number;
   hash: string;
@@ -79,6 +110,8 @@ export interface WorkflowJob {
 }
 
 export interface AppStateResponse {
+  projects: ProjectSpec[];
+  project: ProjectSpec;
   jobs: WorkflowJob[];
   events: WorkflowEvent[];
   stages: StageDefinition[];
@@ -94,6 +127,7 @@ export interface ClaimPaths {
 export interface ClaimResponse {
   job: WorkflowJob | null;
   paths?: ClaimPaths;
+  project?: ProjectSpec;
 }
 
 export interface StageSpan {

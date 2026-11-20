@@ -1,10 +1,8 @@
 const sections = [
-  ['#overview', '概要'],
-  ['#actions', '実行履歴'],
-  ['#board', 'ジョブボード'],
-  ['#railway', '実行工程'],
+  ['#actions', 'ジョブ詳細'],
   ['#trace', 'トレース'],
   ['#events', 'イベント'],
+  ['#artifacts', '成果物'],
 ];
 
 export function SectionNavigation({ activeHash }: { activeHash: string }) {
@@ -13,7 +11,7 @@ export function SectionNavigation({ activeHash }: { activeHash: string }) {
       aria-label="ページ内ナビゲーション"
       className="border-y border-line bg-white md:sticky md:top-0 md:z-20"
     >
-      <div className="page-width grid grid-cols-3 sm:flex sm:flex-wrap">
+      <div className="grid grid-cols-2 sm:flex sm:flex-wrap">
         {sections.map(([hash, label]) => (
           <a
             key={hash}
