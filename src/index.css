@@ -224,3 +224,160 @@
     animation: none;
   }
 }
+
+.workflow-page {
+  max-width: 72rem;
+  padding-block: clamp(1.75rem, 4vw, 4rem) 4rem;
+}
+.workflow-title,
+.wf-project,
+.wf-section-title,
+.wf-detail-title {
+  @apply flex flex-wrap items-center justify-between gap-4;
+}
+.workflow-title {
+  @apply mb-7 border-b-2 border-science-blue pb-5 text-science-blue;
+}
+.workflow-title h1 {
+  @apply text-3xl font-bold tracking-tight sm:text-4xl;
+}
+.workflow-title a,
+.wf-save,
+.wf-order {
+  @apply inline-flex flex-wrap items-center gap-2;
+}
+.workflow-title a {
+  @apply text-sm font-semibold underline-offset-4 hover:underline;
+}
+.wf-project {
+  @apply mb-5 items-start;
+}
+.wf-project > div:first-child {
+  @apply min-w-0 flex-1 basis-72;
+}
+.wf-project h2,
+.wf-section-title h2 {
+  @apply text-xl font-bold text-science-blue;
+}
+.wf-project p {
+  @apply mt-2 max-w-2xl text-sm leading-relaxed text-ink-muted;
+}
+.workflow-page {
+  overflow-wrap: anywhere;
+}
+.wf-save {
+  @apply gap-3;
+}
+.wf-save span {
+  @apply text-xs text-ink-muted;
+}
+.wf-primary,
+.wf-secondary,
+.wf-delete,
+.wf-order button {
+  @apply inline-flex min-h-9 items-center justify-center gap-2 rounded px-3 text-sm font-semibold;
+}
+.wf-primary {
+  @apply bg-science-blue text-white hover:bg-navy-800;
+}
+.wf-secondary,
+.wf-order button {
+  @apply border border-line bg-white text-science-blue hover:bg-bg-2;
+}
+.workflow-page button:disabled {
+  @apply cursor-not-allowed opacity-45;
+}
+.wf-disclosure {
+  @apply border-y border-line;
+}
+.wf-disclosure summary {
+  @apply flex cursor-pointer list-none items-center justify-between gap-2 py-3.5 text-sm font-semibold text-science-blue;
+}
+.wf-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+.wf-disclosure[open] > summary svg {
+  transform: rotate(180deg);
+}
+.wf-section-title {
+  @apply mt-8 mb-4;
+}
+.wf-section-title h2 span {
+  @apply ml-1 font-en text-base font-medium text-ink-muted;
+}
+.wf-editor {
+  @apply grid min-w-0 items-start gap-5 md:grid-cols-[minmax(11rem,1fr)_minmax(0,2.4fr)] md:gap-8;
+}
+.wf-stage-list {
+  @apply hidden flex-col border-t border-line md:flex;
+}
+.wf-stage-list button {
+  @apply flex items-baseline gap-3 border-b border-line px-3 py-3 text-left text-sm hover:bg-bg-2;
+}
+.wf-stage-list button span {
+  @apply font-en text-xs tabular-nums text-ink-muted;
+}
+.wf-stage-list button[aria-current] {
+  @apply bg-bg-1 font-bold text-science-blue;
+}
+.wf-stage-detail {
+  @apply min-w-0 rounded border border-line px-4 py-4 sm:px-6;
+}
+.wf-detail-title {
+  @apply mb-4;
+}
+.wf-detail-title h3 {
+  @apply text-lg font-bold text-science-blue;
+}
+.wf-order {
+  @apply gap-1;
+}
+.wf-order button {
+  @apply min-w-9 px-1;
+}
+.wf-fields {
+  @apply grid min-w-0 gap-4 pb-4 sm:grid-cols-2;
+}
+.wf-fields label,
+.wf-mobile-select {
+  @apply grid min-w-0 content-start gap-1.5 text-sm font-semibold;
+}
+.wf-mobile-select {
+  @apply md:hidden;
+}
+.wf-fields input,
+.wf-fields select,
+.wf-fields textarea,
+.wf-mobile-select select {
+  @apply w-full min-w-0 rounded border border-navy-400 bg-white px-3 py-2 text-sm font-normal text-ink;
+}
+.wf-fields textarea {
+  @apply leading-relaxed;
+}
+.wf-wide {
+  @apply sm:col-span-2;
+}
+.wf-stage-detail .wf-disclosure {
+  @apply border-b-0;
+}
+.wf-stage-detail .wf-disclosure:not([open]) summary {
+  @apply pb-0;
+}
+.wf-paths {
+  @apply mb-4 grid gap-2 text-xs text-ink-muted sm:grid-cols-2;
+}
+.wf-paths dd {
+  @apply mt-1 font-mono text-ink;
+}
+.wf-management {
+  @apply mt-8;
+}
+.wf-management form button {
+  @apply justify-self-start;
+}
+.wf-delete {
+  @apply mb-3 px-0 text-st-red-dark;
+}
+.wf-toast {
+  @apply fixed right-4 bottom-5 z-50 max-w-[90vw] rounded px-4 py-3 text-sm text-white shadow-lg;
+}

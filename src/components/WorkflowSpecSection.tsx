@@ -1,5 +1,5 @@
-import { ArrowDown, ArrowUp, Cpu, FolderOpen, Plus, RotateCcw, Save, Trash2 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { ArrowDown, ArrowUp, ChevronDown, Plus, RotateCcw, Save, Trash2 } from 'lucide-react';
+import { useRef, useState } from 'react';
 
 import type {
   LlmConfig,
@@ -20,7 +20,7 @@ export interface ProjectUpdatePayload {
 interface WorkflowSpecSectionProps {
   project: ProjectSpec;
   saving: boolean;
-  onSave: (next: ProjectUpdatePayload) => Promise<void>;
+  onSave: (next: ProjectUpdatePayload) => void;
 }
 
 const EFFORT_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
@@ -42,451 +42,302 @@ const MODEL_SUGGESTIONS = [
   'claude-sonnet-4-6',
 ];
 
-function cloneStages(stages: WorkflowStageSpec[]): WorkflowStageSpec[] {
-  return stages.map((stage) => ({
-    ...stage,
-    llm: { ...stage.llm },
-  }));
+function editableStages(stages: WorkflowStageSpec[]) {
+  return stages.map((stage, rowId) => ({ ...stage, rowId }));
 }
 
 export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSectionProps) {
   const [name, setName] = useState(project.name);
   const [purpose, setPurpose] = useState(project.purpose);
-  const [acceptanceCriteria, setAcceptanceCriteria] = useState(project.acceptanceCriteria);
-  const [llm, setLlm] = useState<LlmConfig>({ ...project.llm });
-  const [stages, setStages] = useState<WorkflowStageSpec[]>(() => cloneStages(project.stages));
-
-  useEffect(() => {
-    setName(project.name);
-    setPurpose(project.purpose);
-    setAcceptanceCriteria(project.acceptanceCriteria);
-    setLlm({ ...project.llm });
-    setStages(cloneStages(project.stages));
-  }, [project]);
-
-  const isDirty = useMemo(() => {
-    if (
-      name !== project.name ||
-      purpose !== project.purpose ||
-      acceptanceCriteria !== project.acceptanceCriteria ||
-      llm.model !== project.llm.model ||
-      llm.effort !== project.llm.effort ||
-      stages.length !== project.stages.length
-    ) {
-      return true;
-    }
-    return stages.some((stage, index) => {
-      const orig = project.stages[index];
-      if (!orig) return true;
-      return (
-        stage.key !== orig.key ||
-        stage.label !== orig.label ||
-        stage.short !== orig.short ||
-        stage.instruction !== orig.instruction ||
-        stage.llm.model !== orig.llm.model ||
-        stage.llm.effort !== orig.llm.effort
-      );
-    });
-  }, [name, purpose, acceptanceCriteria, llm, stages, project]);
-
-  const handleReset = () => {
-    setName(project.name);
-    setPurpose(project.purpose);
-    setAcceptanceCriteria(project.acceptanceCriteria);
-    setLlm({ ...project.llm });
-    setStages(cloneStages(project.stages));
+  const [acceptanceCriteria, setAcceptance] = useState(project.acceptanceCriteria);
+  const [llm, setLlm] = useState(project.llm);
+  const [stages, setStages] = useState(() => editableStages(project.stages));
+  const nextId = useRef(stages.length);
+  const [active, setActive] = useState(0);
+  const index = Math.max(
+    0,
+    stages.findIndex((s) => s.rowId === active),
+  );
+  const stage = stages[index];
+  const payload = {
+    name,
+    purpose,
+    acceptanceCriteria,
+    llm,
+    stages: stages.map(({ rowId: _id, ...spec }) => spec),
   };
-
-  const handleAddStage = () => {
-    if (stages.length >= 20) return;
-    const nextNumber = stages.length + 1;
-    setStages((prev) => [
-      ...prev,
+  const dirty =
+    name !== project.name ||
+    purpose !== project.purpose ||
+    acceptanceCriteria !== project.acceptanceCriteria ||
+    JSON.stringify(llm) !== JSON.stringify(project.llm) ||
+    JSON.stringify(payload.stages) !== JSON.stringify(project.stages);
+  function reset() {
+    setName(project.name);
+    setPurpose(project.purpose);
+    setAcceptance(project.acceptanceCriteria);
+    setLlm(project.llm);
+    setStages(editableStages(project.stages));
+    setActive(0);
+  }
+  function update(patch: Partial<WorkflowStageSpec>) {
+    setStages((prev) =>
+      prev.map((item) => (item.rowId === stage.rowId ? { ...item, ...patch } : item)),
+    );
+  }
+  function add() {
+    const rowId = nextId.current++;
+    let n = rowId + 1;
+    while (stages.some((s) => s.key === `stage_${n}`)) n++;
+    setStages([
+      ...stages,
       {
-        key: `stage_${nextNumber}`,
-        label: `新規工程 ${nextNumber}`,
-        short: `Stage ${nextNumber}`,
+        rowId,
+        key: `stage_${n}`,
+        label: `新規工程 ${n}`,
+        short: `Stage ${n}`,
         instruction: '',
         llm: { model: '', effort: '' },
       },
     ]);
-  };
-
-  const handleRemoveStage = (index: number) => {
-    if (stages.length <= 1) return;
-    setStages((prev) => prev.filter((_, i) => i !== index));
-  };
-
-  const handleMoveStage = (index: number, delta: -1 | 1) => {
-    const target = index + delta;
-    if (target < 0 || target >= stages.length) return;
-    setStages((prev) => {
-      const copy = [...prev];
-      const [moved] = copy.splice(index, 1);
-      copy.splice(target, 0, moved);
-      return copy;
-    });
-  };
-
-  const updateStage = (index: number, patch: Partial<WorkflowStageSpec>) => {
-    setStages((prev) => prev.map((item, i) => (i === index ? { ...item, ...patch } : item)));
-  };
-
-  const handleSubmit = async () => {
-    await onSave({
-      name,
-      purpose,
-      acceptanceCriteria,
-      llm,
-      stages,
-    });
-  };
-
+    setActive(rowId);
+  }
+  function move(delta: number) {
+    const items = [...stages];
+    items.splice(index, 1);
+    items.splice(index + delta, 0, stage);
+    setStages(items);
+  }
+  function remove() {
+    const items = stages.filter((item) => item.rowId !== stage.rowId);
+    setStages(items);
+    setActive(items[Math.min(index, items.length - 1)].rowId);
+  }
   return (
-    <section
-      id="workflow"
-      aria-label="プロジェクトのワークフロー定義と LLM・工程別カスタム指示"
-      className="mt-4 scroll-mt-6 border-t-2 border-science-sub bg-white pt-4"
-    >
-      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+    <section aria-label="ワークフロー設定">
+      <div className="wf-project">
         <div>
-          <p className="text-sm text-ink-muted">
-            選択中プロジェクトの目的・受け入れ要件・LLM
-            設定・工程数と各工程の指示を保存できます。保存した内容は次回ワーカーがジョブを取得したときの実行引数とプロンプトに反映されます。
-          </p>
+          <h2>{project.name}</h2>
+          <p>{project.purpose}</p>
         </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {isDirty ? (
-            <span className="rounded bg-st-orange-bg px-2.5 py-1 text-xs font-semibold text-st-orange-dark">
-              未保存の変更があります
-            </span>
-          ) : (
-            <span className="font-mono text-xs text-ink-muted">
-              最終更新: {clockDate(project.updatedAt)}
-            </span>
+        <div className="wf-save">
+          <span role="status">
+            {dirty ? '未保存の変更' : `最終更新 ${clockDate(project.updatedAt)}`}
+          </span>
+          {dirty && (
+            <button className="wf-secondary" disabled={saving} onClick={reset}>
+              <RotateCcw size={14} />
+              戻す
+            </button>
           )}
           <button
-            type="button"
-            disabled={!isDirty || saving}
-            onClick={handleReset}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-semibold text-ink transition-colors hover:bg-bg-1 disabled:cursor-not-allowed disabled:opacity-45"
+            className="wf-primary"
+            disabled={!dirty || saving}
+            onClick={() => onSave(payload)}
           >
-            <RotateCcw className="h-3.5 w-3.5" />
-            戻す
-          </button>
-          <button
-            type="button"
-            disabled={!isDirty || saving}
-            onClick={() => void handleSubmit()}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-science-blue px-3.5 py-1.5 text-xs font-bold text-white transition-colors hover:bg-navy-800 disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            <Save className="h-3.5 w-3.5" />
+            <Save size={15} />
             {saving ? '保存中…' : '定義を保存'}
           </button>
         </div>
       </div>
-
-      {/* Project Directories Banner */}
-      <div className="mb-4 grid grid-cols-1 gap-2 rounded-md border border-line bg-navy-50/70 p-3 text-xs sm:grid-cols-3">
-        <div className="flex items-center gap-2">
-          <FolderOpen className="h-4 w-4 shrink-0 text-eyebrow" />
-          <div className="min-w-0">
-            <span className="block text-[11px] font-bold text-ink-muted">プロジェクト ID</span>
-            <code className="font-mono font-bold text-science-blue">{project.id}</code>
+      <fieldset disabled={saving} className="min-w-0">
+        <details className="wf-disclosure">
+          <summary>
+            基本設定 <ChevronDown size={17} />
+          </summary>
+          <div className="wf-fields">
+            <label>
+              プロジェクト名
+              <input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} />
+            </label>
+            <label className="wf-wide">
+              目的
+              <textarea
+                rows={2}
+                value={purpose}
+                onChange={(e) => setPurpose(e.target.value)}
+                maxLength={2000}
+              />
+            </label>
+            <label className="wf-wide">
+              受け入れ要件
+              <textarea
+                rows={4}
+                value={acceptanceCriteria}
+                onChange={(e) => setAcceptance(e.target.value)}
+                maxLength={4000}
+              />
+            </label>
+            <ModelFields value={llm} onChange={setLlm} />
+          </div>
+          <dl className="wf-paths">
+            <div>
+              <dt>入力フォルダ</dt>
+              <dd>{project.inboxDir}</dd>
+            </div>
+            <div>
+              <dt>成果物フォルダ</dt>
+              <dd>{project.artifactsDir}</dd>
+            </div>
+          </dl>
+        </details>
+        <div className="wf-section-title">
+          <h2>
+            工程 <span>{stages.length}</span>
+          </h2>
+          <button className="wf-secondary" onClick={add} disabled={stages.length >= 20}>
+            <Plus size={15} />
+            工程を追加
+          </button>
+        </div>
+        <div className="wf-editor">
+          <nav className="wf-stage-list" aria-label="編集する工程">
+            {stages.map((item, i) => (
+              <button
+                type="button"
+                key={item.rowId}
+                aria-current={i === index ? 'step' : undefined}
+                onClick={() => setActive(item.rowId)}
+              >
+                <span>{String(i + 1).padStart(2, '0')}</span>
+                {item.label || item.key}
+              </button>
+            ))}
+          </nav>
+          <label className="wf-mobile-select">
+            編集する工程
+            <select
+              aria-label="編集する工程"
+              value={stage.rowId}
+              onChange={(e) => setActive(Number(e.target.value))}
+            >
+              {stages.map((item, i) => (
+                <option key={item.rowId} value={item.rowId}>
+                  {i + 1}. {item.label || item.key}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="wf-stage-detail" key={stage.rowId}>
+            <div className="wf-detail-title">
+              <h3>{stage.label || '工程の編集'}</h3>
+              <div className="wf-order">
+                <button
+                  aria-label="工程を前へ移動"
+                  title="前へ移動"
+                  disabled={index === 0}
+                  onClick={() => move(-1)}
+                >
+                  <ArrowUp size={16} />
+                </button>
+                <button
+                  aria-label="工程を後ろへ移動"
+                  title="後ろへ移動"
+                  disabled={index === stages.length - 1}
+                  onClick={() => move(1)}
+                >
+                  <ArrowDown size={16} />
+                </button>
+                <button
+                  aria-label="工程を削除"
+                  title="工程を削除"
+                  disabled={stages.length <= 1}
+                  onClick={remove}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            </div>
+            <div className="wf-fields">
+              <label>
+                工程名
+                <input
+                  value={stage.label}
+                  maxLength={80}
+                  onChange={(e) => update({ label: e.target.value })}
+                />
+              </label>
+              <label>
+                短縮名
+                <input
+                  value={stage.short}
+                  maxLength={40}
+                  onChange={(e) => update({ short: e.target.value })}
+                />
+              </label>
+              <label className="wf-wide">
+                カスタム指示
+                <textarea
+                  rows={4}
+                  maxLength={2000}
+                  value={stage.instruction}
+                  onChange={(e) => update({ instruction: e.target.value })}
+                />
+              </label>
+            </div>
+            <details className="wf-disclosure">
+              <summary>
+                工程キー・モデル設定 <ChevronDown size={16} />
+              </summary>
+              <div className="wf-fields">
+                <label className="wf-wide">
+                  工程キー
+                  <input
+                    value={stage.key}
+                    maxLength={48}
+                    onChange={(e) => update({ key: e.target.value })}
+                  />
+                </label>
+                <ModelFields value={stage.llm} inherited onChange={(llm) => update({ llm })} />
+              </div>
+            </details>
           </div>
         </div>
-        <div className="min-w-0 sm:border-l sm:border-line sm:pl-3">
-          <span className="block text-[11px] font-bold text-ink-muted">入力フォルダ（Inbox）</span>
-          <code className="block truncate font-mono text-ink" title={project.inboxDir}>
-            {project.inboxDir}
-          </code>
-        </div>
-        <div className="min-w-0 sm:border-l sm:border-line sm:pl-3">
-          <span className="block text-[11px] font-bold text-ink-muted">
-            成果物フォルダ（Artifacts）
-          </span>
-          <code className="block truncate font-mono text-ink" title={project.artifactsDir}>
-            {project.artifactsDir}
-          </code>
-        </div>
-      </div>
-
+      </fieldset>
       <datalist id="railflow-model-suggestions">
-        {MODEL_SUGGESTIONS.map((model) => (
-          <option key={model} value={model} />
+        {MODEL_SUGGESTIONS.map((m) => (
+          <option key={m} value={m} />
         ))}
       </datalist>
-
-      <div className="rounded-md border border-line bg-bg-2/50 p-4 sm:p-5">
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <div className="space-y-4">
-            <label className="block">
-              <span className="block text-xs font-bold text-science-blue">
-                プロジェクト / ワークフロー名
-              </span>
-              <input
-                type="text"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                maxLength={120}
-                placeholder="例: XPS スペクトル解析ワークフロー"
-                className="mt-1.5 w-full rounded-md border border-line bg-white px-3 py-2 text-sm text-ink placeholder:text-ink-muted focus:border-science-blue focus:outline-none"
-              />
-            </label>
-
-            <label className="block">
-              <span className="block text-xs font-bold text-science-blue">
-                このワークフローが何をするか（目的・概要）
-              </span>
-              <textarea
-                value={purpose}
-                onChange={(event) => setPurpose(event.target.value)}
-                rows={4}
-                maxLength={2000}
-                placeholder="入力データに対して何を解析・検証し、どのような成果物を出すワークフローかを記入"
-                className="mt-1.5 w-full rounded-md border border-line bg-white px-3 py-2 text-xs leading-relaxed text-ink placeholder:text-ink-muted focus:border-science-blue focus:outline-none"
-              />
-            </label>
-          </div>
-
-          <label className="flex flex-col">
-            <span className="block text-xs font-bold text-science-blue">
-              受け入れ要件（Acceptance Criteria）
-            </span>
-            <span className="mt-0.5 text-[11px] text-ink-muted">
-              完了とみなすための必須条件、品質基準、禁止事項などを箇条書きで記入できます
-            </span>
-            <textarea
-              value={acceptanceCriteria}
-              onChange={(event) => setAcceptanceCriteria(event.target.value)}
-              rows={7}
-              maxLength={4000}
-              placeholder="- 単位が明記されていない場合は推測せず記録すること&#10;- 再現可能な解析スクリプトを残すこと"
-              className="mt-1.5 flex-1 rounded-md border border-line bg-white px-3 py-2 font-mono text-xs leading-relaxed text-ink placeholder:text-ink-muted focus:border-science-blue focus:outline-none"
-            />
-          </label>
-        </div>
-
-        {/* Default LLM Model & Reasoning Effort */}
-        <div className="mt-5 border-t border-line pt-4">
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <h3 className="inline-flex items-center gap-1.5 text-sm font-bold text-science-blue">
-              <Cpu className="h-4 w-4 text-eyebrow" />
-              LLM モデル・エフォート設定（プロジェクト共通）
-            </h3>
-            <span className="font-mono text-[11px] text-ink-muted">
-              Codex: --model / -c model_reasoning_effort · Claude: --model / --effort
-            </span>
-          </div>
-
-          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
-            <label className="block rounded-md border border-line bg-white p-3">
-              <span className="block text-xs font-bold text-ink">既定モデル</span>
-              <span className="mt-0.5 block text-[11px] text-ink-muted">
-                空欄の場合は Codex CLI / Claude Code CLI の既定モデルを使います
-              </span>
-              <input
-                type="text"
-                list="railflow-model-suggestions"
-                value={llm.model}
-                onChange={(event) => setLlm((prev) => ({ ...prev, model: event.target.value }))}
-                maxLength={100}
-                placeholder="例: gpt-5.4 / opus / sonnet"
-                className="mt-2 w-full rounded border border-line bg-bg-2/40 px-2.5 py-1.5 font-mono text-xs text-ink placeholder:text-ink-muted focus:border-science-blue focus:bg-white focus:outline-none"
-              />
-            </label>
-
-            <label className="block rounded-md border border-line bg-white p-3">
-              <span className="block text-xs font-bold text-ink">既定エフォート（推論強度）</span>
-              <span className="mt-0.5 block text-[11px] text-ink-muted">
-                各工程で未指定のときに使う推論エフォートを選択します
-              </span>
-              <select
-                value={llm.effort}
-                onChange={(event) =>
-                  setLlm((prev) => ({
-                    ...prev,
-                    effort: event.target.value as ReasoningEffort,
-                  }))
-                }
-                className="mt-2 w-full rounded border border-line bg-bg-2/40 px-2.5 py-1.5 text-xs text-ink focus:border-science-blue focus:bg-white focus:outline-none"
-              >
-                {EFFORT_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-        </div>
-
-        {/* Editable Stage List (variable stage count + order + custom instructions + per-stage LLM) */}
-        <div className="mt-5 border-t border-line pt-4">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h3 className="text-sm font-bold text-science-blue">
-                工程構成・カスタム指示（現在 {stages.length} 工程）
-              </h3>
-              <p className="mt-0.5 text-xs text-ink-muted">
-                工程の追加・削除・並び替えが可能です（1〜20工程）。最終工程でレポート成果物を公開します。
-              </p>
-            </div>
-            <button
-              type="button"
-              disabled={stages.length >= 20}
-              onClick={handleAddStage}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-science-blue bg-white px-3 py-1.5 text-xs font-bold text-science-blue transition-colors hover:bg-bg-1 disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              工程を追加
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {stages.map((stage, index) => (
-              <div
-                key={`${stage.key}-${index}`}
-                className="flex flex-col rounded-md border border-line bg-white p-3"
-              >
-                <div className="flex items-center justify-between gap-2 border-b border-line/70 pb-2">
-                  <span className="font-mono text-xs font-bold text-eyebrow">
-                    STEP {String(index + 1).padStart(2, '0')}
-                  </span>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      aria-label={`工程 ${index + 1} を前へ移動`}
-                      disabled={index === 0}
-                      onClick={() => handleMoveStage(index, -1)}
-                      className="inline-flex h-6 w-6 items-center justify-center rounded border border-line bg-bg-2 text-ink hover:bg-bg-1 disabled:cursor-not-allowed disabled:opacity-35"
-                    >
-                      <ArrowUp className="h-3 w-3" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`工程 ${index + 1} を後ろへ移動`}
-                      disabled={index === stages.length - 1}
-                      onClick={() => handleMoveStage(index, 1)}
-                      className="inline-flex h-6 w-6 items-center justify-center rounded border border-line bg-bg-2 text-ink hover:bg-bg-1 disabled:cursor-not-allowed disabled:opacity-35"
-                    >
-                      <ArrowDown className="h-3 w-3" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`工程 ${index + 1} を削除`}
-                      disabled={stages.length <= 1}
-                      onClick={() => handleRemoveStage(index)}
-                      className="inline-flex h-6 w-6 items-center justify-center rounded border border-line bg-bg-2 text-st-red-dark hover:bg-st-red-bg disabled:cursor-not-allowed disabled:opacity-35"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                  <label className="block">
-                    <span className="block text-[10px] font-semibold text-ink-muted">工程名</span>
-                    <input
-                      type="text"
-                      value={stage.label}
-                      onChange={(event) => updateStage(index, { label: event.target.value })}
-                      maxLength={80}
-                      placeholder="例: ピーク解析"
-                      className="mt-0.5 w-full rounded border border-line bg-bg-2/40 px-2 py-1 text-xs font-semibold text-ink focus:border-science-blue focus:bg-white focus:outline-none"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="block text-[10px] font-semibold text-ink-muted">
-                      短縮名（英語）
-                    </span>
-                    <input
-                      type="text"
-                      value={stage.short}
-                      onChange={(event) => updateStage(index, { short: event.target.value })}
-                      maxLength={40}
-                      placeholder="例: Analysis"
-                      className="mt-0.5 w-full rounded border border-line bg-bg-2/40 px-2 py-1 font-en text-xs text-ink focus:border-science-blue focus:bg-white focus:outline-none"
-                    />
-                  </label>
-                </div>
-
-                <label className="mt-2 block">
-                  <span className="block text-[10px] font-semibold text-ink-muted">
-                    工程キー（半角英数・`_`・`-`）
-                  </span>
-                  <input
-                    type="text"
-                    value={stage.key}
-                    onChange={(event) => updateStage(index, { key: event.target.value })}
-                    maxLength={48}
-                    placeholder="例: analysis"
-                    className="mt-0.5 w-full rounded border border-line bg-bg-2/40 px-2 py-1 font-mono text-[11px] text-ink focus:border-science-blue focus:bg-white focus:outline-none"
-                  />
-                </label>
-
-                <label className="mt-2 block">
-                  <span className="block text-[10px] font-semibold text-ink-muted">
-                    カスタム指示
-                  </span>
-                  <textarea
-                    value={stage.instruction}
-                    onChange={(event) => updateStage(index, { instruction: event.target.value })}
-                    rows={3}
-                    maxLength={2000}
-                    placeholder={`${stage.label || 'この工程'} に対するカスタム指示を記入`}
-                    className="mt-0.5 w-full rounded border border-line bg-bg-2/40 px-2.5 py-1.5 text-xs leading-relaxed text-ink placeholder:text-ink-muted focus:border-science-blue focus:bg-white focus:outline-none"
-                  />
-                </label>
-
-                <div className="mt-2 grid grid-cols-2 gap-2 border-t border-line/70 pt-2">
-                  <label className="block">
-                    <span className="block text-[10px] font-semibold text-ink-muted">
-                      モデル上書き
-                    </span>
-                    <input
-                      type="text"
-                      list="railflow-model-suggestions"
-                      value={stage.llm.model}
-                      onChange={(event) =>
-                        updateStage(index, {
-                          llm: { ...stage.llm, model: event.target.value },
-                        })
-                      }
-                      maxLength={100}
-                      placeholder={llm.model || '共通を継承'}
-                      className="mt-0.5 w-full rounded border border-line bg-bg-2/40 px-2 py-1 font-mono text-[11px] text-ink placeholder:text-ink-muted focus:border-science-blue focus:bg-white focus:outline-none"
-                    />
-                  </label>
-
-                  <label className="block">
-                    <span className="block text-[10px] font-semibold text-ink-muted">
-                      エフォート上書き
-                    </span>
-                    <select
-                      value={stage.llm.effort}
-                      onChange={(event) =>
-                        updateStage(index, {
-                          llm: { ...stage.llm, effort: event.target.value as ReasoningEffort },
-                        })
-                      }
-                      className="mt-0.5 w-full rounded border border-line bg-bg-2/40 px-2 py-1 text-[11px] text-ink focus:border-science-blue focus:bg-white focus:outline-none"
-                    >
-                      <option value="">{llm.effort ? `共通 (${llm.effort})` : '共通を継承'}</option>
-                      <option value="low">low</option>
-                      <option value="medium">medium</option>
-                      <option value="high">high</option>
-                      <option value="xhigh">xhigh</option>
-                      <option value="max">max</option>
-                    </select>
-                  </label>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
     </section>
+  );
+}
+
+function ModelFields({
+  value,
+  onChange,
+  inherited = false,
+}: {
+  value: LlmConfig;
+  onChange: (llm: LlmConfig) => void;
+  inherited?: boolean;
+}) {
+  const fallback = inherited ? 'プロジェクト設定を継承' : 'CLI の既定値';
+  return (
+    <>
+      <label>
+        {inherited ? 'モデル上書き' : '既定モデル'}
+        <input
+          list="railflow-model-suggestions"
+          value={value.model}
+          placeholder={fallback}
+          maxLength={100}
+          onChange={(e) => onChange({ ...value, model: e.target.value })}
+        />
+      </label>
+      <label>
+        推論強度
+        <select
+          value={value.effort}
+          onChange={(e) => onChange({ ...value, effort: e.target.value as ReasoningEffort })}
+        >
+          {EFFORT_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.value ? option.label : fallback}
+            </option>
+          ))}
+        </select>
+      </label>
+    </>
   );
 }

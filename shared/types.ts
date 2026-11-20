@@ -76,6 +76,7 @@ export interface WorkflowEvent {
   message?: string;
   summary?: string;
   details?: string;
+  stageConfig?: { instruction: string; llm: LlmConfig };
   artifact?: ArtifactInfo;
   file?: string;
   bytes?: number;

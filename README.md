@@ -57,7 +57,7 @@ pnpm run test         # Run Vitest suite (vp test run)
 
 The demo worker creates a genuine `report.html` (styled with the Science Tokyo palette) and, if `python-pptx` is installed, a `report.pptx` using Yu Gothic. It simulates a retry at the analysis stage to exercise the failure rail. **This is descriptive demo data processing, not a scientific XPS peak-fitting or peak assignment.**
 
-The Codex and Claude workers write intermediate files and final reports in `work/<run-id>/`. After the publish stage, the worker copies `report.html` and any `report.pptx` into `artifacts/<run-id>/` and registers them in the dashboard. The agent only needs write access to its workspace.
+The Codex and Claude workers write intermediate files and final reports in `projects/<project-id>/work/<run-id>/`. After the final stage and any required approval, the worker copies the finished reports into `projects/<project-id>/artifacts/<run-id>/` and registers them in the dashboard. The agent only needs write access to its workspace.
 
 ## File structure
 

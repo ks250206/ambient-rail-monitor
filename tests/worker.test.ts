@@ -131,6 +131,14 @@ if (stage === 'deliver') {
           'LLM応答フォールバック: 141行のCSVを検証済み',
         );
 
+        expect(
+          result.events.find((event) => event.type === 'stage.started' && event.stage === 'inspect')
+            ?.stageConfig,
+        ).toEqual({
+          instruction: '列と欠損を確認',
+          llm: { model: 'gpt-5.3-codex', effort: 'low' },
+        });
+
         // Verify model and effort CLI flags passed to Codex for each custom stage.
         const invocations = readFileSync(argvLog, 'utf8')
           .trim()

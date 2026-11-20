@@ -173,16 +173,11 @@ export function ActionsSection({
     return relevant.at(-1)?.message || null;
   }, [activeStageEvents]);
 
-  const matchingProjectStage = activeStage
-    ? project.stages.find((stage) => stage.key === activeStage.key)
-    : undefined;
-
-  const customStageInstruction = matchingProjectStage?.instruction?.trim() || '';
-
-  const effectiveStageLlm = {
-    model: matchingProjectStage?.llm?.model || project.llm?.model || '',
-    effort: matchingProjectStage?.llm?.effort || project.llm?.effort || '',
-  };
+  const executedConfig = activeStageEvents.findLast(
+    (event) => event.type === 'stage.started',
+  )?.stageConfig;
+  const customStageInstruction = executedConfig?.instruction ?? '';
+  const effectiveStageLlm = executedConfig?.llm;
 
   const activeTab: StepDetailTab = showAllLogs ? 'logs' : detailTab;
 
@@ -719,14 +714,15 @@ export function ActionsSection({
                           <FileText className="h-3.5 w-3.5" />
                           <span>結果の概要</span>
                         </div>
-                        {(effectiveStageLlm.model || effectiveStageLlm.effort) && (
-                          <span className="rounded border border-line bg-white px-2 py-0.5 font-mono text-[11px] font-semibold text-science-blue">
-                            LLM: {effectiveStageLlm.model || 'CLI既定'}
-                            {effectiveStageLlm.effort
-                              ? ` · effort=${effectiveStageLlm.effort}`
-                              : ''}
-                          </span>
-                        )}
+                        {effectiveStageLlm &&
+                          (effectiveStageLlm.model || effectiveStageLlm.effort) && (
+                            <span className="rounded border border-line bg-white px-2 py-0.5 font-mono text-[11px] font-semibold text-science-blue">
+                              LLM: {effectiveStageLlm.model || 'CLI既定'}
+                              {effectiveStageLlm.effort
+                                ? ` · effort=${effectiveStageLlm.effort}`
+                                : ''}
+                            </span>
+                          )}
                       </div>
                       <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-ink">
                         {activeStage.summary ||

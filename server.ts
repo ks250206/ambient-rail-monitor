@@ -6,6 +6,8 @@ import {
   type FSWatcher,
   mkdirSync,
   readdirSync,
+  renameSync,
+  rmSync,
   readFileSync,
   statSync,
   watch,
@@ -375,7 +377,7 @@ function isWorkerEventType(value: unknown): value is WorkerEventType {
   return typeof value === 'string' && WORKER_EVENT_TYPES.has(value as WorkerEventType);
 }
 
-function resolveJobStageDefs(event: WorkflowEvent, projectId: string): StageDefinition[] {
+function resolveJobStageDefs(event: WorkflowEvent): StageDefinition[] {
   if (Array.isArray(event.stages) && event.stages.length > 0) {
     return event.stages.map((stage) => ({
       key: stage.key,
@@ -383,8 +385,7 @@ function resolveJobStageDefs(event: WorkflowEvent, projectId: string): StageDefi
       short: stage.short,
     }));
   }
-  const project = getProjectOrDefault(projectId);
-  return project.stages.map(({ key, label, short }) => ({ key, label, short }));
+  return defaultStages().map(({ key, label, short }) => ({ key, label, short }));
 }
 
 function rebuild(event: WorkflowEvent): void {
@@ -393,7 +394,7 @@ function rebuild(event: WorkflowEvent): void {
   if (event.type === 'job.created') {
     if (jobs.has(event.jobId)) return;
     const projectId = event.projectId || DEFAULT_PROJECT_ID;
-    const stageDefs = resolveJobStageDefs(event, projectId);
+    const stageDefs = resolveJobStageDefs(event);
     jobs.set(event.jobId, {
       id: event.jobId,
       projectId,
@@ -579,10 +580,43 @@ function readBody(req: IncomingMessage, limit = 100_000): Promise<Buffer> {
   });
 }
 
-function findJobInputFile(job: WorkflowJob): string {
-  const projectFile = path.join(projectInboxPath(job.projectId), job.file);
-  if (existsSync(projectFile)) return projectFile;
-  return path.join(LEGACY_INBOX, job.file);
+function jobWorkspace(job: WorkflowJob): string {
+  const legacy = path.join(LEGACY_WORK, job.id);
+  if (!job.events[0].projectId && existsSync(legacy)) return legacy;
+  return path.join(projectWorkPath(job.projectId), job.id);
+}
+
+function inputSnapshot(id: string, file: string): string {
+  return path.join(DATA, 'inputs', id, file);
+}
+
+function saveInput(id: string, file: string, bytes: Buffer): string {
+  const dest = inputSnapshot(id, file);
+  mkdirSync(path.dirname(dest), { recursive: true });
+  const temp = dest + '.' + randomUUID();
+  try {
+    writeFileSync(temp, bytes, { flag: 'wx' });
+    renameSync(temp, dest);
+  } finally {
+    rmSync(temp, { force: true });
+  }
+  return dest;
+}
+
+function findJobInputFile(job: WorkflowJob): string | null {
+  const snapshot = inputSnapshot(job.id, job.file);
+  if (existsSync(snapshot)) return snapshot;
+  // Older events have no snapshot. Only recover bytes matching the original input.
+  const roots = [jobWorkspace(job), projectInboxPath(job.projectId), LEGACY_INBOX];
+  for (const root of roots) {
+    const file = path.join(root, job.file);
+    if (!existsSync(file)) continue;
+    const bytes = readFileSync(file);
+    if (createHash('sha256').update(bytes).digest('hex') === job.hash) {
+      return saveInput(job.id, job.file, bytes);
+    }
+  }
+  return null;
 }
 
 function findJobArtifactFile(job: WorkflowJob, artifactName: string): string {
@@ -607,12 +641,16 @@ function enqueue(
   );
   if (existing) return existing;
 
-  const id = `run_${randomUUID().slice(0, 8)}`;
+  let id: string;
+  do {
+    id = `run_${randomUUID().slice(0, 8)}`;
+  } while (jobs.has(id));
   const stageDefs: StageDefinition[] = project.stages.map(({ key, label, short }) => ({
     key,
     label,
     short,
   }));
+  saveInput(id, basename, bytes);
   appendEvent({
     type: 'job.created',
     jobId: id,
@@ -791,6 +829,7 @@ interface EventRequestBody {
   message?: unknown;
   summary?: unknown;
   details?: unknown;
+  stageConfig?: { instruction?: unknown; llm?: unknown };
   artifact?: { name?: unknown };
 }
 
@@ -867,12 +906,12 @@ const server = http.createServer(async (req, res) => {
 
     if (projectMatch && req.method === 'PUT') {
       const projectId = projectMatch[1];
-      const existing = projects.get(projectId);
-      if (!existing) return deliverJSON(res, { error: 'Project not found' }, 404);
       const raw = JSON.parse((await readBody(req, 100_000)).toString('utf8') || '{}') as Record<
         string,
         unknown
       >;
+      const existing = projects.get(projectId);
+      if (!existing) return deliverJSON(res, { error: 'Project not found' }, 404);
       const updated = buildProjectSpec(projectId, raw, existing);
       projects.set(projectId, updated);
       saveProjects();
@@ -885,6 +924,17 @@ const server = http.createServer(async (req, res) => {
       if (!projects.has(projectId)) return deliverJSON(res, { error: 'Project not found' }, 404);
       if (projects.size <= 1) {
         return deliverJSON(res, { error: 'At least one project must remain' }, 400);
+      }
+      if (
+        [...jobs.values()].some(
+          (job) => job.projectId === projectId && job.status !== 'done' && job.status !== 'failed',
+        )
+      ) {
+        return deliverJSON(
+          res,
+          { error: '未完了のジョブがあるプロジェクトは削除できません。' },
+          409,
+        );
       }
       const dir = projectInboxPath(projectId);
       inboxWatchers.get(dir)?.close();
@@ -939,17 +989,21 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === '/api/demo' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as DemoRequestBody;
+      if (body.projectId && !projects.has(body.projectId))
+        return deliverJSON(res, { error: 'Project not found' }, 404);
       return deliverJSON(res, { job: makeSample(body.projectId, Boolean(body.review)) }, 201);
     }
 
     if (pathname === '/api/upload' && req.method === 'POST') {
-      const project = getProjectOrDefault(url.searchParams.get('project'));
-      ensureProjectDirs(project.id);
+      const requestedId = url.searchParams.get('project');
+      const project = requestedId ? projects.get(requestedId) : getDefaultProject();
+      if (!project) return deliverJSON(res, { error: 'Project not found' }, 404);
       const name = cleanName(url.searchParams.get('filename'));
       if (!/\.(csv|tsv|txt|json|dat)$/i.test(name)) {
         return deliverJSON(res, { error: 'Supported extensions: csv,tsv,txt,json,dat' }, 400);
       }
       const body = await readBody(req, MAX_UPLOAD);
+      if (!projects.has(project.id)) return deliverJSON(res, { error: 'Project not found' }, 404);
       if (!body.length) {
         return deliverJSON(res, { error: 'Empty file' }, 400);
       }
@@ -975,7 +1029,15 @@ const server = http.createServer(async (req, res) => {
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
       if (!job) return deliverJSON(res, { job: null });
 
-      const project = getProjectOrDefault(job.projectId);
+      const project = projects.get(job.projectId);
+      const input = project && findJobInputFile(job);
+      if (!project || !input) {
+        const message = project
+          ? '登録時の入力ファイルを復元できません。'
+          : 'ジョブのプロジェクトが見つかりません。';
+        appendEvent({ type: 'job.failed', projectId: job.projectId, jobId: job.id, message });
+        return deliverJSON(res, { job: null });
+      }
       ensureProjectDirs(project.id);
       appendEvent({
         type: 'job.claimed',
@@ -987,8 +1049,8 @@ const server = http.createServer(async (req, res) => {
       return deliverJSON(res, {
         job: jobs.get(job.id),
         paths: {
-          input: findJobInputFile(job),
-          work: path.join(projectWorkPath(job.projectId), job.id),
+          input,
+          work: jobWorkspace(job),
           artifacts: path.join(projectArtifactsPath(job.projectId), job.id),
         },
         project,
@@ -1067,6 +1129,13 @@ const server = http.createServer(async (req, res) => {
         message: asString(input.message).slice(0, 600),
         summary: rawSummary ? rawSummary.slice(0, 1200) : undefined,
         artifact,
+        stageConfig:
+          input.type === 'stage.started' && input.stageConfig
+            ? {
+                instruction: asString(input.stageConfig.instruction).slice(0, 2000),
+                llm: normalizeLlmConfig(input.stageConfig.llm),
+              }
+            : undefined,
         details: rawDetails ? rawDetails.slice(0, 1300) : undefined,
       });
       return deliverJSON(res, { ok: true });

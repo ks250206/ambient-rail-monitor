@@ -1,5 +1,15 @@
+import { useQuery, useMutation } from '@tanstack/react-query';
+import {
+  request,
+  jsonRequest,
+  queryClient,
+  useProjects,
+  useToast,
+  useConnection,
+  useClock,
+} from './api.ts';
 import { FolderOpen, SlidersHorizontal, Upload } from 'lucide-react';
-import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type ChangeEvent, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import type { AppStateResponse, ProjectSpec, StageKey, WorkflowJob } from '../shared/types.ts';
 import { ActionsSection } from './components/ActionsSection.tsx';
@@ -16,310 +26,141 @@ import {
   readInitialProjectId,
 } from './utils/workflow.ts';
 
-interface ToastState {
-  text: string;
-  error: boolean;
-}
-
-const EMPTY_PROJECT: ProjectSpec = {
-  id: 'default',
-  name: '科学データ解析ワークフロー',
-  purpose: '',
-  acceptanceCriteria: '',
-  llm: { model: '', effort: '' },
-  stages: [],
-  inboxDir: 'projects/default/inbox',
-  artifactsDir: 'projects/default/artifacts',
-  createdAt: '',
-  updatedAt: '',
-};
-
-async function postJson<T>(route: string, payload: unknown): Promise<T> {
-  const res = await fetch(route, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const answer = (await res.json()) as T & { error?: string };
-  if (!res.ok) throw new Error(answer.error || 'Request failed');
-  return answer;
+function subscribeHash(notify: () => void) {
+  window.addEventListener('hashchange', notify);
+  return () => window.removeEventListener('hashchange', notify);
 }
 
 export function App() {
-  const [selectedProjectId, setSelectedProjectId] = useState<string>(() => readInitialProjectId());
-  const [state, setState] = useState<AppStateResponse>({
-    projects: [],
-    project: EMPTY_PROJECT,
-    jobs: [],
-    events: [],
-    stages: [],
-    updatedAt: '',
+  const [requestedId, setRequestedId] = useState(readInitialProjectId);
+  const projects = useProjects();
+  const connection = useConnection();
+  const list = projects.data?.projects ?? [];
+  const project = list.find((item) => item.id === requestedId) ?? list[0];
+  const select = (id: string) => {
+    persistProjectId(id);
+    setRequestedId(id);
+  };
+
+  return (
+    <>
+      <AppHeader
+        currentPage="monitor"
+        projects={list}
+        selectedProjectId={project?.id ?? requestedId}
+        onSelectProject={select}
+        connection={projects.isError ? 'reconnecting' : connection}
+      />
+      {project ? (
+        <Monitor key={project.id} project={project} />
+      ) : (
+        <p role="status" className="page-width py-6">
+          {projects.isError ? 'プロジェクトを取得できませんでした。' : '読み込み中…'}
+        </p>
+      )}
+    </>
+  );
+}
+
+function Monitor({ project }: { project: ProjectSpec }) {
+  const selectedProjectId = project.id;
+  const queryKey = ['monitor', project.id];
+  const query = useQuery({
+    queryKey,
+    queryFn: ({ signal }) =>
+      request<AppStateResponse>(`/api/state?project=${encodeURIComponent(project.id)}`, { signal }),
   });
-  const [initialLoading, setInitialLoading] = useState(true);
-  const [stateAvailable, setStateAvailable] = useState(false);
-  const [streamConnection, setStreamConnection] = useState<
-    'connecting' | 'online' | 'reconnecting'
-  >('connecting');
-  const connection =
-    streamConnection === 'online' && !initialLoading && !stateAvailable
-      ? 'reconnecting'
-      : streamConnection;
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [selectedStage, setSelectedStage] = useState<StageKey>('ingest');
+  const state = query.data ?? { jobs: [], project };
+  const [chosenJob, setChosenJob] = useState<string | null>(null);
+  const [chosenStage, setChosenStage] = useState<StageKey | null>(null);
+  const selectedJob = state.jobs.find((job) => job.id === chosenJob) ?? state.jobs[0] ?? null;
+  const selectedJobId = selectedJob?.id ?? null;
+  const selectedStage =
+    selectedJob?.stages.find((stage) => stage.key === chosenStage)?.key ??
+    pickDefaultStage(selectedJob);
   const [showAllLogs, setShowAllLogs] = useState(false);
-  const [activeHash, setActiveHash] = useState<string>(() => window.location.hash || '#board');
-  const [nowMs, setNowMs] = useState<number>(() => Date.now());
-  const [toast, setToast] = useState<ToastState | null>(null);
+  const activeHash = useSyncExternalStore(subscribeHash, () => window.location.hash || '#board');
+  const nowMs = useClock();
+  const { toast, showToast } = useToast();
   const [reviewDemo, setReviewDemo] = useState(false);
   const [dragVisible, setDragVisible] = useState(false);
-
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const loadingRef = useRef(false);
-  const pendingRefreshRef = useRef(false);
-  const selectedProjectRef = useRef(selectedProjectId);
-  const toastTimerRef = useRef<number | null>(null);
-  const dragDepthRef = useRef(0);
-
-  selectedProjectRef.current = selectedProjectId;
-
-  const showToast = useCallback((text: string, error = false) => {
-    setToast({ text, error });
-    if (toastTimerRef.current !== null) {
-      window.clearTimeout(toastTimerRef.current);
-    }
-    toastTimerRef.current = window.setTimeout(() => {
-      setToast(null);
-    }, 3900);
-  }, []);
-
-  const refresh = useCallback(async (projectOverride?: string) => {
-    if (loadingRef.current) {
-      pendingRefreshRef.current = true;
-      return;
-    }
-    loadingRef.current = true;
-    const targetProject = projectOverride || selectedProjectRef.current;
-    try {
-      const response = await fetch(`/api/state?project=${encodeURIComponent(targetProject)}`, {
-        cache: 'no-store',
-      });
-      if (!response.ok) throw new Error(`${response.status}`);
-      const next = (await response.json()) as AppStateResponse;
-      setState(next);
-      setStateAvailable(true);
-      setInitialLoading(false);
-      if (next.project.id !== selectedProjectRef.current) {
-        setSelectedProjectId(next.project.id);
-      }
-      persistProjectId(next.project.id);
-      setSelectedJobId((prev) => {
-        if (prev && next.jobs.some((job) => job.id === prev)) return prev;
-        const firstJob = next.jobs[0] || null;
-        if (firstJob) {
-          setSelectedStage(pickDefaultStage(firstJob));
-        }
-        return firstJob?.id || null;
-      });
-    } catch {
-      setStateAvailable(false);
-      setInitialLoading(false);
-    } finally {
-      loadingRef.current = false;
-      if (pendingRefreshRef.current) {
-        pendingRefreshRef.current = false;
-        queueMicrotask(() => {
-          void refresh();
-        });
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh(selectedProjectId);
-  }, [refresh, selectedProjectId]);
-
-  useEffect(() => {
-    const source = new EventSource('/api/stream');
-    source.onopen = () => {
-      setStreamConnection('online');
-      void refresh();
-    };
-    source.onmessage = () => {
-      void refresh();
-    };
-    source.onerror = () => {
-      setStreamConnection('reconnecting');
-    };
-    return () => {
-      source.close();
-    };
-  }, [refresh]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setNowMs(Date.now());
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    const onHashChange = () => {
-      setActiveHash(window.location.hash || '#board');
-    };
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
-
-  const uploadFile = useCallback(
-    async (file: File | undefined) => {
-      if (!file) return;
-      const projectId = selectedProjectRef.current;
-      try {
-        const result = await fetch(
-          `/api/upload?filename=${encodeURIComponent(file.name)}&project=${encodeURIComponent(projectId)}`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/octet-stream' },
-            body: file,
-          },
-        );
-        const answer = (await result.json()) as { job?: WorkflowJob; error?: string };
-        if (!result.ok || !answer.job) throw new Error(answer.error || 'Upload failed');
-        setSelectedJobId(answer.job.id);
-        setSelectedStage(answer.job.stages[0]?.key || 'ingest');
-        setShowAllLogs(false);
-        showToast(`${file.name} を ${projectId} へ投入しました`);
-        await refresh(projectId);
-      } catch (err) {
-        showToast(err instanceof Error ? err.message : 'Upload failed', true);
-      }
+  const dragDepth = useRef(0);
+  const selectJob = (id: string) => {
+    setChosenJob(id);
+    setChosenStage(null);
+    setShowAllLogs(false);
+  };
+  const onError = (err: Error) => showToast(err.message, true);
+  const enqueue = useMutation({
+    mutationFn: (input: File | boolean) =>
+      input instanceof File
+        ? request<{ job: WorkflowJob }>(
+            `/api/upload?filename=${encodeURIComponent(input.name)}&project=${encodeURIComponent(project.id)}`,
+            { method: 'POST', body: input },
+          )
+        : request<{ job: WorkflowJob }>(
+            '/api/demo',
+            jsonRequest('POST', { projectId: project.id, review: input }),
+          ),
+    onSuccess: ({ job }) => {
+      selectJob(job.id);
+      showToast(`${job.file} を ${project.name} に追加しました。`);
+      return queryClient.invalidateQueries({ queryKey });
     },
-    [refresh, showToast],
-  );
-
-  useEffect(() => {
-    const onDragEnter = (event: DragEvent) => {
-      if (event.dataTransfer?.types.includes('Files')) {
-        event.preventDefault();
-        dragDepthRef.current += 1;
-        setDragVisible(true);
-      }
-    };
-    const onDragLeave = (event: DragEvent) => {
-      event.preventDefault();
-      dragDepthRef.current -= 1;
-      if (dragDepthRef.current <= 0) {
-        dragDepthRef.current = 0;
-        setDragVisible(false);
-      }
-    };
-    const onDragOver = (event: DragEvent) => {
-      if (event.dataTransfer?.types.includes('Files')) {
-        event.preventDefault();
-      }
-    };
-    const onDrop = (event: DragEvent) => {
-      event.preventDefault();
-      dragDepthRef.current = 0;
-      setDragVisible(false);
-      void uploadFile(event.dataTransfer?.files[0]);
-    };
-
-    document.addEventListener('dragenter', onDragEnter);
-    document.addEventListener('dragleave', onDragLeave);
-    document.addEventListener('dragover', onDragOver);
-    document.addEventListener('drop', onDrop);
-    return () => {
-      document.removeEventListener('dragenter', onDragEnter);
-      document.removeEventListener('dragleave', onDragLeave);
-      document.removeEventListener('dragover', onDragOver);
-      document.removeEventListener('drop', onDrop);
-    };
-  }, [uploadFile]);
-
-  const selectedJob = useMemo(
-    () => state.jobs.find((job) => job.id === selectedJobId) || null,
-    [state.jobs, selectedJobId],
-  );
+    onError,
+  });
+  const approve = useMutation({
+    mutationFn: (jobId: string) => request(`/api/jobs/${jobId}/approve`, jsonRequest('POST', {})),
+    onSuccess: () => {
+      showToast('レビューを承認しました。');
+      return queryClient.invalidateQueries({ queryKey });
+    },
+    onError,
+  });
 
   const agentNames = useMemo(() => {
     const names = state.jobs.flatMap((job) => (job.agent ? [job.agent] : []));
     return [...new Set(names)].join(' / ');
   }, [state.jobs]);
 
-  const handleSelectProject = useCallback((projectId: string) => {
-    setSelectedProjectId(projectId);
-    setSelectedJobId(null);
+  const handleSelectStage = (stage: StageKey) => {
+    setChosenJob(selectedJobId);
+    setChosenStage(stage);
     setShowAllLogs(false);
-    persistProjectId(projectId);
-  }, []);
-
-  const handleSelectJob = useCallback(
-    (jobId: string) => {
-      setSelectedJobId(jobId);
-      setShowAllLogs(false);
-      const found = state.jobs.find((job) => job.id === jobId) || null;
-      setSelectedStage(pickDefaultStage(found));
-    },
-    [state.jobs],
-  );
-
-  const handleSelectStage = useCallback((stage: StageKey) => {
-    setSelectedStage(stage);
-    setShowAllLogs(false);
-  }, []);
-
-  const handleDemoRun = useCallback(
-    async (review: boolean) => {
-      const projectId = selectedProjectRef.current;
-      try {
-        const answer = await postJson<{ job: WorkflowJob }>('/api/demo', {
-          projectId,
-          review,
-        });
-        setSelectedJobId(answer.job.id);
-        setSelectedStage(answer.job.stages[0]?.key || 'ingest');
-        setShowAllLogs(false);
-        showToast(
-          review ? 'デモジョブを追加しました（レビュー承認あり）' : 'デモジョブを追加しました',
-        );
-        await refresh(projectId);
-      } catch (err) {
-        showToast(err instanceof Error ? err.message : 'Request failed', true);
-      }
-    },
-    [refresh, showToast],
-  );
-
-  const handleApproveReview = useCallback(
-    async (jobId: string) => {
-      try {
-        await postJson(`/api/jobs/${jobId}/approve`, {});
-        showToast('レビューを承認しました。Workerの次回claimで再開します。');
-        await refresh();
-      } catch (err) {
-        showToast(err instanceof Error ? err.message : 'Approval failed', true);
-      }
-    },
-    [refresh, showToast],
-  );
-
+  };
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    void uploadFile(event.target.files?.[0]);
+    const file = event.target.files?.[0];
+    if (file) enqueue.mutate(file);
     event.target.value = '';
   };
 
   return (
-    <div id="overview" className="min-h-screen bg-white text-ink">
-      <AppHeader
-        currentPage="monitor"
-        projects={state.projects}
-        selectedProjectId={selectedProjectId}
-        onSelectProject={handleSelectProject}
-        connection={connection}
-        nowMs={nowMs}
-      />
-
+    <div
+      id="overview"
+      className="min-h-screen bg-white text-ink"
+      onDragEnter={(e) => {
+        if (e.dataTransfer.types.includes('Files')) {
+          e.preventDefault();
+          dragDepth.current++;
+          setDragVisible(true);
+        }
+      }}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (!dragDepth.current) setDragVisible(false);
+      }}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes('Files')) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        dragDepth.current = 0;
+        setDragVisible(false);
+        const file = e.dataTransfer.files[0];
+        if (file) enqueue.mutate(file);
+      }}
+    >
       <main>
         <div className="monitor-hero">
           <div aria-hidden="true" className="hero-arches" />
@@ -367,7 +208,7 @@ export function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={(event) => void handleDemoRun(reviewDemo || event.shiftKey)}
+                  onClick={(event) => enqueue.mutate(reviewDemo || event.shiftKey)}
                   title="Shift + Click で人間のレビュー承認ゲートを有効にして実行"
                   lang="en"
                   className="monitor-button font-en"
@@ -399,15 +240,20 @@ export function App() {
 
         <div className="page-width pb-10">
           {/* KPI Metrics */}
-          <MetricsGrid jobs={state.jobs} loading={initialLoading} />
+          {query.isError && (
+            <p role="alert" className="py-2 text-st-red-dark">
+              ジョブの取得に失敗しました。ジョブボードから再読み込みできます。
+            </p>
+          )}
+          <MetricsGrid jobs={state.jobs} loading={query.isPending} />
 
           {/* 01 / Kanban Job Board (First!) */}
           <KanbanSection
             jobs={state.jobs}
             selectedJobId={selectedJobId}
             nowMs={nowMs}
-            onSelectJob={handleSelectJob}
-            onRefresh={() => void refresh()}
+            onSelectJob={selectJob}
+            onRefresh={() => void query.refetch()}
           />
 
           {/* 02 / Unified Execution History & Tabbed Summary/Logs */}
@@ -418,10 +264,10 @@ export function App() {
             showAllLogs={showAllLogs}
             project={state.project}
             nowMs={nowMs}
-            onSelectJob={handleSelectJob}
+            onSelectJob={selectJob}
             onSelectStage={handleSelectStage}
             onShowAllLogs={() => setShowAllLogs(true)}
-            onApproveReview={(jobId) => void handleApproveReview(jobId)}
+            onApproveReview={(jobId) => approve.mutate(jobId)}
           />
 
           {/* 03 / Trace Explorer */}

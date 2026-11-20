@@ -186,9 +186,10 @@ describe('API integration', () => {
       });
       expect(claim.body.job?.id).toBe(id);
       expect(claim.body.project?.id).toBe('xrd-lab');
-      expect(claim.body.paths?.input).toContain(path.join('projects', 'xrd-lab', 'inbox'));
+      expect(claim.body.paths?.input).toContain(path.join('data', 'inputs', id));
       expect(claim.body.paths?.artifacts).toContain(path.join('projects', 'xrd-lab', 'artifacts'));
 
+      expect((await fetch(api + '/api/projects/xrd-lab', { method: 'DELETE' })).status).toBe(409);
       const second = await post<ClaimResponse>('/api/jobs/claim', {
         agent: 'demo',
         projectId: 'xrd-lab',

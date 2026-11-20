@@ -1,4 +1,5 @@
 import type { ProjectSpec } from '../../shared/types.ts';
+import { useClock } from '../api.ts';
 import { clock, pageHref } from '../utils/workflow.ts';
 
 interface AppHeaderProps {
@@ -7,7 +8,6 @@ interface AppHeaderProps {
   selectedProjectId: string;
   onSelectProject: (projectId: string) => void;
   connection: 'connecting' | 'online' | 'reconnecting';
-  nowMs: number;
 }
 
 export function AppHeader({
@@ -16,7 +16,6 @@ export function AppHeader({
   selectedProjectId,
   onSelectProject,
   connection,
-  nowMs,
 }: AppHeaderProps) {
   return (
     <header className="border-t-4 border-science-blue border-b border-b-line bg-white">
@@ -92,11 +91,18 @@ export function AppHeader({
                 ? '接続を開始しています'
                 : '再接続中'}
           </span>
-          <time className="hidden border-l border-line pl-3 font-mono sm:inline">
-            {clock(new Date(nowMs).toISOString())}
-          </time>
+          <HeaderClock />
         </div>
       </div>
     </header>
+  );
+}
+
+function HeaderClock() {
+  const nowMs = useClock();
+  return (
+    <time className="hidden border-l border-line pl-3 font-mono sm:inline">
+      {clock(new Date(nowMs).toISOString())}
+    </time>
   );
 }

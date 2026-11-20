@@ -1,5 +1,13 @@
 import { spawn } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -95,7 +103,6 @@ interface RawCliEvent {
     exit_code?: number;
     text?: string;
     name?: string;
-    message?: string;
   };
   message?: {
     content?: Array<{ type?: string; name?: string; text?: string }>;
@@ -177,17 +184,17 @@ const KNOWN_STAGE_PROMPTS: Record<string, string> = {
   visualize:
     'Make clear publication-ready plots, with units and captions. Save plots under the current workspace and write 05_visualization.md. If Matplotlib is unavailable, a standalone SVG is sufficient. When a PNG is useful and resvg is installed, use resvg input.svg output.png directly. If optional rasterization is unavailable, keep the verified SVG and document the limitation.',
   publish:
-    'Create a self-contained report.html and optionally report.pptx in the root of the current workspace. The worker publishes these files after this stage. Include methodology, plots, result summary and limitations. Provide source code where possible. Check embedded figures and local references. If a browser preview is unavailable in the sandbox, record that limitation and use structural checks.',
+    'Create a self-contained report.html and optionally report.pptx in the root of the current workspace. The worker publishes the final files after any required approval. Include methodology, plots, result summary and limitations. Provide source code where possible. Check embedded figures and local references. If a browser preview is unavailable in the sandbox, record that limitation and use structural checks.',
 };
 
 function defaultStagePrompt(stage: JobStage, isFinalStage: boolean): string {
-  if (stage.key in KNOWN_STAGE_PROMPTS) {
-    return KNOWN_STAGE_PROMPTS[stage.key];
-  }
-  if (isFinalStage) {
-    return `Complete stage "${stage.label}" (${stage.short}). Produce a self-contained report.html (and optionally report.pptx) in the root of the workspace summarizing methodology, plots, results, and limitations.`;
-  }
-  return `Execute stage "${stage.label}" (${stage.short}) carefully and record reproducible notes and outputs in the workspace.`;
+  const task =
+    KNOWN_STAGE_PROMPTS[stage.key] ??
+    `Execute stage "${stage.label}" (${stage.short}) carefully and record reproducible notes and outputs in the workspace.`;
+  if (isFinalStage && stage.key !== 'publish') return task + ' ' + KNOWN_STAGE_PROMPTS.publish;
+  if (!isFinalStage && stage.key === 'publish')
+    return 'Prepare a draft report in the workspace for later stages to revise.';
+  return task;
 }
 
 function resolveStageConfig(stageKey: StageKey, project?: ProjectSpec) {
@@ -294,7 +301,7 @@ function buildDemoStageSummary(
       case 'publish':
         return reports.length
           ? `成果物（${reports.join(', ')}）を出力・公開しました。`
-          : 'レポート成果物を公開しました。';
+          : 'レポートの下書きを準備しました。';
       default:
         return isFinalStage && reports.length
           ? `${stage.label} を完了し、成果物（${reports.join(', ')}）を公開しました。`
@@ -476,7 +483,7 @@ async function generateDemoReport(job: WorkflowJob, paths: ClaimPaths): Promise<
   const script = path.join(ROOT, 'scripts', 'generate_report.py');
   const py = process.env.RAILFLOW_PYTHON || 'python3';
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(py, [script, paths.input, paths.artifacts, job.id], {
+    const child = spawn(py, [script, paths.input, paths.work, job.id], {
       cwd: paths.work,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -490,6 +497,28 @@ async function generateDemoReport(job: WorkflowJob, paths: ClaimPaths): Promise<
       else reject(new Error(`report generator: ${stderr}`));
     });
   });
+}
+
+async function publishReports(
+  job: WorkflowJob,
+  stage: JobStage,
+  source: string,
+  artifacts: string,
+) {
+  const reports = await publishAgentReports(source, artifacts);
+  for (const name of reports) {
+    await emit(job, 'artifact.created', stage.key, `成果物 ${name} を保存`, { artifact: { name } });
+  }
+  return reports;
+}
+
+function archiveDraftReports(work: string) {
+  const existing = ['report.html', 'report.pptx'].filter((name) =>
+    existsSync(path.join(work, name)),
+  );
+  if (!existing.length) return;
+  const draft = mkdtempSync(path.join(work, 'draft-'));
+  for (const name of existing) renameSync(path.join(work, name), path.join(draft, name));
 }
 
 async function processJob(
@@ -514,10 +543,16 @@ async function processJob(
   for (let index = 0; index < stageList.length; index += 1) {
     const stage = stageList[index];
     if (stopping) return;
-    if (stage.status === 'success') continue;
-
     const isFinalStage = index === stageList.length - 1;
-    const shouldPublishArtifacts = stage.key === 'publish' || isFinalStage;
+    const needsApproval = stage.key === reviewStageKey && job.needsReview && !job.reviewApproved;
+    const pendingReports = paths.artifacts + '.pending';
+    if (stage.status === 'success') {
+      if (isFinalStage && job.reviewApproved && existsSync(pendingReports)) {
+        await publishReports(job, stage, pendingReports, paths.artifacts);
+        rmSync(pendingReports, { recursive: true, force: true });
+      }
+      continue;
+    }
     const { instruction, llm } = resolveStageConfig(stage.key, project);
     const llmTag = formatLlmTag(llm);
     let success = false;
@@ -530,14 +565,16 @@ async function processJob(
         'stage.started',
         stage.key,
         `${stage.key}: ${attempt}回目の処理を開始${llmTag}`,
+        { stageConfig: { instruction, llm } },
       );
       try {
+        if (isFinalStage) archiveDraftReports(paths.work);
         if (MODE === 'demo') {
           await sleep(stage.key === retryDemoStageKey ? 2100 : 1100 + Math.random() * 800);
           if (job.demo && stage.key === retryDemoStageKey && attempt === 1) {
             throw new Error('模擬エラー: ピーク検出の初期条件が収束せず');
           }
-          if (shouldPublishArtifacts) await generateDemoReport(job, paths);
+          if (isFinalStage) await generateDemoReport(job, paths);
         } else {
           lastAgentMessage = await runAgent(
             job,
@@ -546,22 +583,16 @@ async function processJob(
             project,
             instruction,
             llm,
-            shouldPublishArtifacts,
+            isFinalStage,
           );
         }
 
-        if (shouldPublishArtifacts) {
-          publishedReports =
-            MODE === 'demo'
-              ? readdirSync(paths.artifacts).filter((name) => /\.(html|pptx)$/i.test(name))
-              : await publishAgentReports(paths.work, paths.artifacts);
-          if (!publishedReports.length) {
-            throw new Error('Required HTML/PPTX artifact was not found');
-          }
-          for (const name of publishedReports) {
-            await emit(job, 'artifact.created', stage.key, `成果物 ${name} を保存`, {
-              artifact: { name },
-            });
+        if (isFinalStage) {
+          if (needsApproval) {
+            mkdirSync(pendingReports, { recursive: true });
+            await publishAgentReports(paths.work, pendingReports);
+          } else {
+            publishedReports = await publishReports(job, stage, paths.work, paths.artifacts);
           }
         }
 
@@ -574,14 +605,14 @@ async function processJob(
                 publishedReports,
                 instruction,
                 llm,
-                shouldPublishArtifacts,
+                isFinalStage,
               )
             : extractAgentStageSummary(
                 stage,
                 paths,
                 publishedReports,
                 lastAgentMessage,
-                shouldPublishArtifacts,
+                isFinalStage,
               );
 
         await emit(job, 'stage.succeeded', stage.key, `${stage.key}: 完了`, { summary });
@@ -599,7 +630,7 @@ async function processJob(
       }
     }
 
-    if (stage.key === reviewStageKey && job.needsReview && !job.reviewApproved) {
+    if (needsApproval) {
       await emit(
         job,
         'review.required',
@@ -630,7 +661,16 @@ while (!stopping) {
       ...(PROJECT_FILTER ? { projectId: PROJECT_FILTER } : {}),
     });
     if (response.job && response.paths) {
-      await processJob(response.job, response.paths, response.project);
+      try {
+        await processJob(response.job, response.paths, response.project);
+      } catch (err) {
+        await emit(
+          response.job,
+          'job.failed',
+          null,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
     } else {
       await sleep(1500);
     }
