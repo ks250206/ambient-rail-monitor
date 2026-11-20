@@ -23,18 +23,10 @@ export function TraceSection({ job, nowMs, onSelectStage }: TraceSectionProps) {
   const ticks = Array.from({ length: 5 }, (_, index) => axisTime(((duration / 1000) * index) / 4));
 
   return (
-    <section
-      id="trace"
-      className="mt-5 scroll-mt-6 rounded-xl border border-line bg-white p-5 shadow-2xs"
-    >
+    <section id="trace" className="mt-5 scroll-mt-6 border-t-2 border-science-sub bg-white pt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <span className="font-en text-[11px] font-bold tracking-[0.14em] text-eyebrow uppercase">
-            04 / Distributed Tracing
-          </span>
-          <h2 className="mt-0.5 text-lg font-bold tracking-tight text-science-blue">
-            Trace explorer <span className="font-normal text-ink-muted">/ Gantt</span>
-          </h2>
+          <h2 className="section-heading">トレース</h2>
         </div>
 
         <span className="font-mono text-xs text-ink-muted tabular-nums">
@@ -59,10 +51,10 @@ export function TraceSection({ job, nowMs, onSelectStage }: TraceSectionProps) {
         ) : (
           <>
             <div className="mb-3 grid grid-cols-[120px_1fr] items-center gap-3 sm:grid-cols-[170px_1fr]">
-              <span className="font-mono text-[10px] font-semibold text-ink-muted uppercase">
+              <span className="font-mono text-xs font-semibold text-ink-muted uppercase">
                 Span / Attempt
               </span>
-              <div className="flex justify-between font-mono text-[10px] text-ink-muted tabular-nums">
+              <div className="flex justify-between font-mono text-xs text-ink-muted tabular-nums">
                 {ticks.map((tick, index) => (
                   <span key={`${tick}-${index}`}>{tick}</span>
                 ))}
@@ -82,12 +74,11 @@ export function TraceSection({ job, nowMs, onSelectStage }: TraceSectionProps) {
                   span.end || nowMs,
                 );
 
-                // Science Tokyo CVD-safe chart colors: #435ea5 (Navy 700), #fb5b01 (Orange), #00a3bf (Cyan)
                 const barTone =
                   span.status === 'failed'
-                    ? 'bg-st-orange text-white border-st-orange-dark'
+                    ? 'bg-st-orange-dark text-white border-st-orange-dark'
                     : span.status === 'running'
-                      ? 'bg-st-cyan-dark text-white border-st-cyan animate-st-pulse'
+                      ? 'bg-st-cyan-dark text-white border-st-cyan'
                       : 'bg-navy-700 text-white border-science-blue';
 
                 return (
@@ -95,10 +86,12 @@ export function TraceSection({ job, nowMs, onSelectStage }: TraceSectionProps) {
                     key={`${span.stage}-${span.attempt}`}
                     className="grid min-h-[30px] grid-cols-[120px_1fr] items-center gap-3 sm:grid-cols-[170px_1fr]"
                   >
-                    <span className="truncate text-xs font-medium text-ink">
+                    <span className="text-xs font-medium text-ink">
                       <span className="mr-1.5 text-eyebrow">↳</span>
                       {stage?.short || span.stage}{' '}
-                      <span className="font-mono text-[10px] text-ink-muted">#{span.attempt}</span>
+                      <span className="text-xs text-ink-muted">
+                        #{span.attempt} · {span.status}
+                      </span>
                     </span>
                     <div className="trace-grid-bg relative h-7 rounded-md bg-bg-2">
                       <button
@@ -108,8 +101,9 @@ export function TraceSection({ job, nowMs, onSelectStage }: TraceSectionProps) {
                           left: `${Math.min(98, leftPct).toFixed(2)}%`,
                           width: `${Math.min(widthPct, 100 - leftPct).toFixed(2)}%`,
                         }}
-                        title={`${span.stage} attempt #${span.attempt}: ${labelDuration}`}
-                        className={`absolute top-1 flex h-5 min-w-[8px] items-center justify-center overflow-hidden rounded border px-1.5 font-mono text-[10px] font-semibold whitespace-nowrap transition-opacity hover:opacity-90 ${barTone}`}
+                        aria-label={`${span.stage} attempt #${span.attempt} (${span.status}): ${labelDuration}`}
+                        title={`${span.stage} attempt #${span.attempt} (${span.status}): ${labelDuration}`}
+                        className={`absolute top-1 flex h-5 min-w-[8px] items-center justify-center overflow-hidden rounded border px-1.5 font-mono text-xs font-semibold whitespace-nowrap transition-opacity hover:opacity-90 ${barTone}`}
                       >
                         {widthPct > 9 ? labelDuration : ''}
                       </button>
@@ -122,7 +116,7 @@ export function TraceSection({ job, nowMs, onSelectStage }: TraceSectionProps) {
         )}
       </div>
 
-      <p className="mt-4 border-t border-line pt-3 text-[11px] text-ink-muted">
+      <p className="mt-4 border-t border-line pt-3 text-xs text-ink-muted">
         Each bar represents an actual stage attempt. Failures and retries are retained as separate
         spans. Time axis is relative to the first step.
       </p>

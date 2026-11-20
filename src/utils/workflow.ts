@@ -42,10 +42,10 @@ export interface KanbanColumnDef {
 }
 
 export const KANBAN_COLUMNS: KanbanColumnDef[] = [
-  { id: 'queued', label: 'Queued', hint: 'Waiting for a worker' },
-  { id: 'running', label: 'Running', hint: 'Agent is processing' },
-  { id: 'review', label: 'Review / blocked', hint: 'Needs intervention' },
-  { id: 'done', label: 'Completed', hint: 'Finished workflows' },
+  { id: 'queued', label: 'Queued', hint: '待機中のジョブはありません' },
+  { id: 'running', label: 'Running', hint: '実行中のジョブはありません' },
+  { id: 'review', label: 'Review / blocked', hint: '要対応のジョブはありません' },
+  { id: 'done', label: 'Completed', hint: '完了したジョブはありません' },
 ];
 
 export function dateMs(value: string | null | undefined): number {

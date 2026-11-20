@@ -2,12 +2,14 @@
 
 A local-first proof of concept for **pull-based Codex / Claude Code scientific-analysis jobs**, styled with the **Institute of Science Tokyo (東京科学大学 / Science Tokyo)** design system and built with **Node.js 26, pnpm 12, Vite+, React 19, TypeScript, and Tailwind CSS v4**.
 
+![RAILFLOW workflow overview](docs/preview.png)
+
 Four synchronized operational views:
 
-- **Actions / Runs** — GitHub Actions-inspired run history, active/review/failed status filtering, step list, collapsible attempts, expandable timestamped logs, live durations, search, and raw log download.
-- **Kanban** — queue, running, review/blocked, completed.
+- **Actions / Runs** — GitHub Actions-inspired run history, active/review/failed status filtering, step list, collapsible attempts, expandable timestamped logs, live durations, search, and raw log download. [Step logs](docs/actions.png) · [Review gate](docs/review.png)
+- **Kanban** — queue, running, review/blocked, completed. [Job board](docs/board.png)
 - **Railway execution** — stage-by-stage success and failure/retry routes, human review gate, and step inspector.
-- **Trace explorer** — individual execution attempts rendered against elapsed time with CVD-checked Science Tokyo chart colors, raw agent events, and artifacts.
+- **Trace explorer** — individual execution attempts rendered against elapsed time with Science Tokyo colors and visible status labels, raw agent events, and artifacts.
 
 ## Tech stack
 
@@ -26,7 +28,7 @@ pnpm install
 pnpm run demo
 # Open http://127.0.0.1:4173
 # Click "Demo run" to generate a sample XPS-like CSV and execute six quicklook stages.
-# Shift + click "Demo run" to stop at human review before completing.
+# Select 「デモをレビューで一時停止」 before starting to pause for human review. Shift + click also works.
 ```
 
 For Vite HMR frontend development alongside the local API server:

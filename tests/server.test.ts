@@ -155,21 +155,29 @@ describe('API integration', () => {
       const resumed = await post<ClaimResponse>('/api/jobs/claim', { agent: 'demo' });
       expect(resumed.body.job?.id).toBe(id);
 
-      const out = path.join(temp, 'artifacts', id, 'report.html');
+      const out = path.join(temp, 'artifacts', id, 'report 100%.html');
       mkdirSync(path.dirname(out), { recursive: true });
       writeFileSync(out, '<h1>Hello</h1>');
 
       const artifact = await post(`/api/jobs/${id}/events`, {
         type: 'artifact.created',
         stage: 'publish',
-        artifact: { name: 'report.html' },
+        artifact: { name: 'report 100%.html' },
       });
       expect(artifact.status).toBe(200);
       await send('job.completed', null, 'done');
 
-      const file = await fetch(`${api}/artifacts/${id}/report.html`);
+      const file = await fetch(`${api}/artifacts/${id}/report%20100%25.html`);
       expect(file.status).toBe(200);
       expect(file.headers.get('content-security-policy')).toMatch(/sandbox/);
+
+      writeFileSync(
+        path.join(temp, 'artifacts', id, 'chart.svg'),
+        '<svg xmlns="http://www.w3.org/2000/svg"/>',
+      );
+      const chart = await fetch(`${api}/artifacts/${id}/chart.svg`);
+      expect(chart.status).toBe(200);
+      expect(chart.headers.get('content-security-policy')).toMatch(/sandbox/);
 
       state = (await (await fetch(`${api}/api/state`)).json()) as AppStateResponse;
       expect(state.jobs[0].status).toBe('done');

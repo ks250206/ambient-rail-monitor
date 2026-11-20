@@ -363,7 +363,7 @@ function serveFile(
     'x-content-type-options': 'nosniff',
   };
 
-  if (artifact && contentType.startsWith('text/html')) {
+  if (artifact) {
     headers['content-security-policy'] =
       "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'";
   } else if (contentType.startsWith('text/html')) {
@@ -418,8 +418,14 @@ interface EventRequestBody {
 }
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-  const pathname = decodeURIComponent(url.pathname);
+  let url: URL;
+  let pathname: string;
+  try {
+    url = new URL(req.url || '/', 'http://localhost');
+    pathname = decodeURIComponent(url.pathname);
+  } catch {
+    return deliverJSON(res, { error: 'Invalid URL' }, 400);
+  }
 
   try {
     if (pathname === '/api/state' && req.method === 'GET') {
@@ -587,7 +593,7 @@ const server = http.createServer(async (req, res) => {
       if (!match || !jobs.has(match[1])) {
         return deliverJSON(res, { error: 'Not found' }, 404);
       }
-      const artifact = decodeURIComponent(match[2]);
+      const artifact = match[2];
       if (artifact !== path.basename(artifact)) {
         return deliverJSON(res, { error: 'Invalid path' }, 400);
       }

@@ -138,28 +138,9 @@ export function ActionsSection({
       aria-label="Actions style workflow execution monitoring"
       className="mt-8 scroll-mt-6"
     >
-      <div className="mb-3.5 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <span className="font-en text-[11px] font-bold tracking-[0.14em] text-eyebrow uppercase">
-            01 / Workflow Runs
-          </span>
-          <h2 className="mt-0.5 text-lg font-bold tracking-tight text-science-blue">
-            Actions{' '}
-            <span className="font-normal text-ink-muted">/ Execution history &amp; logs</span>
-          </h2>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-md border border-st-green/30 bg-st-green-bg px-2.5 py-1 font-en text-[10px] font-bold tracking-wider text-st-green-dark">
-            <span className="h-1.5 w-1.5 rounded-full bg-st-green animate-st-pulse" />
-            EVENT STREAM LIVE
-          </span>
-          <span className="hidden rounded-md border border-line bg-bg-2 px-2.5 py-1 font-mono text-[10px] font-medium text-ink-muted sm:inline-block">
-            EVENT-SOURCED
-          </span>
-        </div>
-      </div>
+      <h2 className="section-heading mb-4">実行履歴</h2>
 
-      <div className="grid min-h-[560px] grid-cols-1 overflow-hidden rounded-xl border border-line bg-white shadow-xs xl:grid-cols-[minmax(300px,0.78fr)_minmax(0,1.62fr)]">
+      <div className="grid min-h-[560px] grid-cols-1 overflow-hidden rounded-md border border-line bg-white xl:grid-cols-[minmax(300px,0.78fr)_minmax(0,1.62fr)]">
         {/* Left pane: Run history list */}
         <div className="flex min-w-0 flex-col border-b border-line bg-bg-2/70 xl:border-b-0 xl:border-r">
           <div className="flex items-center justify-between px-4 pb-3 pt-4">
@@ -170,11 +151,11 @@ export function ActionsSection({
               <strong className="font-en text-[13px] font-bold text-science-blue">
                 Workflow runs
               </strong>
-              <span className="rounded-full bg-bg-1 px-2 py-0.5 font-mono text-[11px] font-bold text-science-blue">
+              <span className="rounded-full bg-bg-1 px-2 py-0.5 font-mono text-xs font-bold text-science-blue">
                 {jobs.length}
               </span>
             </div>
-            <span className="text-[11px] text-ink-muted">Newest first</span>
+            <span className="text-xs text-ink-muted">Newest first</span>
           </div>
 
           <div className="border-b border-line px-3.5 pb-3">
@@ -209,7 +190,7 @@ export function ActionsSection({
                       setRunFilter(tab.id);
                       setPage(0);
                     }}
-                    className={`rounded-md px-2.5 py-1 font-en text-[11px] font-semibold transition-colors ${
+                    className={`rounded-md px-2.5 py-1 font-en text-xs font-semibold transition-colors ${
                       active
                         ? 'bg-science-blue text-white shadow-2xs'
                         : 'bg-white text-ink-muted hover:bg-bg-1 hover:text-science-blue'
@@ -280,21 +261,21 @@ export function ActionsSection({
                     </span>
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <strong className="truncate text-xs font-bold text-ink">{job.file}</strong>
-                      <span className="truncate text-[11px] text-ink-muted">
+                      <span className="truncate text-xs text-ink-muted">
                         Experiment analysis · {(job.agent || 'unassigned').toUpperCase()}
                       </span>
-                      <span className="truncate font-mono text-[10px] text-ink-muted">
+                      <span className="truncate font-mono text-xs text-ink-muted">
                         {job.id} · {clockDate(job.createdAt)}
                       </span>
                     </span>
                     <span className="flex shrink-0 flex-col items-end gap-0.5 text-right tabular-nums">
-                      <span className={`text-[11px] font-bold ${resultTone}`}>{summaryLabel}</span>
-                      <span className="font-mono text-[11px] text-ink">
+                      <span className={`text-xs font-bold ${resultTone}`}>{summaryLabel}</span>
+                      <span className="font-mono text-xs text-ink">
                         {job.startedAt
                           ? actionDuration(job.startedAt, job.finishedAt, nowMs)
                           : 'Queued'}
                       </span>
-                      <span className="text-[10px] text-ink-muted">
+                      <span className="text-xs text-ink-muted">
                         {done}/{job.stages.length} steps
                       </span>
                     </span>
@@ -304,7 +285,7 @@ export function ActionsSection({
             )}
           </div>
 
-          <div className="flex items-center justify-between gap-2 border-t border-line bg-bg-1/70 px-3.5 py-2.5 text-[11px] text-ink-muted">
+          <div className="flex items-center justify-between gap-2 border-t border-line bg-bg-1/70 px-3.5 py-2.5 text-xs text-ink-muted">
             <span>
               {filteredJobs.length
                 ? `${clampedPage * ACTIONS_PAGE_SIZE + 1}–${Math.min(
@@ -339,14 +320,14 @@ export function ActionsSection({
         {/* Right pane: Run header + Steps + Log Console */}
         <div className="flex min-w-0 flex-col">
           {/* Run Header */}
-          <div className="border-b border-line bg-gradient-to-br from-navy-50 via-white to-bg-2 px-5 py-4">
+          <div className="border-b border-line bg-white px-5 py-4">
             {!selectedJob ? (
               <div className="flex min-h-[140px] items-center justify-center text-xs text-ink-muted">
                 Select a workflow run to inspect its logs.
               </div>
             ) : (
               <>
-                <div className="flex items-center justify-between gap-2 text-[11px]">
+                <div className="flex items-center justify-between gap-2 text-xs">
                   <span className="font-en font-bold tracking-[0.08em] text-eyebrow uppercase">
                     Experiment analysis
                   </span>
@@ -375,7 +356,7 @@ export function ActionsSection({
                       <button
                         type="button"
                         onClick={() => onApproveReview(selectedJob.id)}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-st-orange px-3 py-1.5 text-xs font-bold text-white shadow-2xs transition-colors hover:bg-st-orange-dark"
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-science-blue px-3 py-1.5 text-xs font-bold text-white shadow-2xs transition-colors hover:bg-navy-800"
                       >
                         <Check className="h-3.5 w-3.5" />
                         Approve &amp; resume
@@ -383,12 +364,18 @@ export function ActionsSection({
                     )}
                     {selectedJob.artifacts.length > 0 && (
                       <a
-                        href={selectedJob.artifacts[0].uri}
-                        target="_blank"
+                        href={
+                          selectedJob.artifacts.length === 1
+                            ? selectedJob.artifacts[0].uri
+                            : '#artifacts'
+                        }
+                        target={selectedJob.artifacts.length === 1 ? '_blank' : undefined}
                         rel="noopener noreferrer"
                         className="inline-flex items-center gap-1 rounded-lg border border-line bg-white px-2.5 py-1.5 text-xs font-semibold text-science-blue transition-colors hover:bg-bg-1"
                       >
-                        {selectedJob.artifacts.length} artifacts
+                        {selectedJob.artifacts.length === 1
+                          ? '1 artifact'
+                          : `${selectedJob.artifacts.length} artifacts`}
                         <ExternalLink className="h-3 w-3" />
                       </a>
                     )}
@@ -404,7 +391,7 @@ export function ActionsSection({
 
                 <div className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-3.5 sm:grid-cols-4">
                   <div>
-                    <span className="font-en text-[10px] font-bold tracking-[0.1em] text-eyebrow uppercase">
+                    <span className="font-en text-xs font-bold tracking-[0.1em] text-eyebrow uppercase">
                       Progress
                     </span>
                     <div className="mt-0.5 text-sm font-bold text-science-blue tabular-nums">
@@ -413,7 +400,7 @@ export function ActionsSection({
                         {' '}
                         / {selectedJob.stages.length}
                       </span>{' '}
-                      <span className="text-[11px] font-medium text-ink-muted">
+                      <span className="text-xs font-medium text-ink-muted">
                         {selectedJob.status === 'running' ? 'Running' : 'steps'}
                       </span>
                     </div>
@@ -428,7 +415,7 @@ export function ActionsSection({
                   </div>
 
                   <div className="sm:border-l sm:border-line sm:pl-3">
-                    <span className="font-en text-[10px] font-bold tracking-[0.1em] text-eyebrow uppercase">
+                    <span className="font-en text-xs font-bold tracking-[0.1em] text-eyebrow uppercase">
                       Run time
                     </span>
                     <div className="mt-0.5 font-mono text-sm font-bold text-ink tabular-nums">
@@ -436,13 +423,13 @@ export function ActionsSection({
                         ? actionDuration(selectedJob.startedAt, selectedJob.finishedAt, nowMs)
                         : '—'}
                     </div>
-                    <p className="text-[11px] text-ink-muted">
+                    <p className="text-xs text-ink-muted">
                       {actionSeconds(activeStageSeconds)} stage active
                     </p>
                   </div>
 
                   <div className="sm:border-l sm:border-line sm:pl-3">
-                    <span className="font-en text-[10px] font-bold tracking-[0.1em] text-eyebrow uppercase">
+                    <span className="font-en text-xs font-bold tracking-[0.1em] text-eyebrow uppercase">
                       Queue wait
                     </span>
                     <div className="mt-0.5 font-mono text-sm font-bold text-ink tabular-nums">
@@ -450,18 +437,18 @@ export function ActionsSection({
                         ? actionDuration(selectedJob.createdAt, selectedJob.startedAt, nowMs)
                         : actionDuration(selectedJob.createdAt, null, nowMs)}
                     </div>
-                    <p className="text-[11px] text-ink-muted">from file event</p>
+                    <p className="text-xs text-ink-muted">from file event</p>
                   </div>
 
                   <div className="sm:border-l sm:border-line sm:pl-3">
-                    <span className="font-en text-[10px] font-bold tracking-[0.1em] text-eyebrow uppercase">
+                    <span className="font-en text-xs font-bold tracking-[0.1em] text-eyebrow uppercase">
                       Runner
                     </span>
                     <div className="mt-0.5 truncate font-en text-sm font-bold text-science-blue">
                       {(selectedJob.agent || 'unassigned').toUpperCase()}
                     </div>
                     <p
-                      className="truncate text-[11px] text-ink-muted"
+                      className="truncate text-xs text-ink-muted"
                       title={selectedJob.worker || 'Not claimed'}
                     >
                       {selectedJob.worker || 'Not claimed'}
@@ -476,7 +463,7 @@ export function ActionsSection({
           <div className="grid flex-1 grid-cols-1 lg:grid-cols-[minmax(200px,0.75fr)_minmax(0,1.6fr)]">
             {/* Step list */}
             <div className="flex min-w-0 flex-col border-b border-line bg-bg-2/40 lg:border-b-0 lg:border-r">
-              <div className="flex items-center justify-between border-b border-line bg-bg-1/70 px-3.5 py-2.5 text-[10px] font-bold tracking-[0.12em] text-eyebrow uppercase">
+              <div className="flex items-center justify-between border-b border-line bg-bg-1/70 px-3.5 py-2.5 text-xs font-bold tracking-[0.12em] text-eyebrow uppercase">
                 <span className="font-en">Jobs &amp; Steps</span>
                 <span className="font-mono tracking-normal text-ink-muted">
                   {selectedJob ? `${selectedJob.stages.length} steps` : ''}
@@ -509,9 +496,9 @@ export function ActionsSection({
                           <strong className="font-en text-xs font-bold text-ink">
                             {stage.short}
                           </strong>
-                          <span className="truncate text-[11px] text-ink-muted">{stage.label}</span>
+                          <span className="truncate text-xs text-ink-muted">{stage.label}</span>
                         </span>
-                        <span className="flex shrink-0 flex-col items-end gap-0.5 text-right font-mono text-[10px] text-ink-muted tabular-nums">
+                        <span className="flex shrink-0 flex-col items-end gap-0.5 text-right font-mono text-xs text-ink-muted tabular-nums">
                           <span>
                             {stage.startedAt
                               ? actionDuration(stage.startedAt, stage.endedAt, nowMs)
@@ -545,27 +532,27 @@ export function ActionsSection({
                       <List className="h-3.5 w-3.5 text-eyebrow" />
                       All run events
                     </span>
-                    <span className="rounded bg-bg-1 px-1.5 py-0.5 font-mono text-[10px] text-science-blue">
+                    <span className="rounded bg-bg-1 px-1.5 py-0.5 font-mono text-xs text-science-blue">
                       {selectedJob.events.length}
                     </span>
                   </button>
                 </div>
               )}
 
-              <div className="flex items-center gap-2 border-t border-line bg-bg-2 px-3 py-2 text-[10px] text-ink-muted">
+              <div className="flex items-center gap-2 border-t border-line bg-bg-2 px-3 py-2 text-xs text-ink-muted">
                 <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-science-sub" />
                 <span>Worker events, not inferred agent progress</span>
               </div>
             </div>
 
-            {/* Log Console — high-contrast Science Blue dark surface (Navy 1100 #0a1541) */}
-            <div className="flex min-w-0 flex-col bg-navy-1100 text-white">
-              <div className="flex items-center justify-between gap-2 border-b border-navy-900 bg-science-blue px-3.5 py-2.5">
+            {/* Step logs */}
+            <div className="flex min-w-0 flex-col bg-white text-ink">
+              <div className="flex items-center justify-between gap-2 border-b border-line bg-bg-1 px-3.5 py-2.5">
                 <div className="flex min-w-0 items-center gap-2">
-                  <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded bg-navy-1100 text-navy-200">
+                  <span className="inline-flex shrink-0 text-science-blue">
                     <Terminal className="h-3.5 w-3.5" />
                   </span>
-                  <strong className="truncate font-en text-xs font-semibold text-white">
+                  <strong className="truncate font-en text-sm font-semibold text-science-blue">
                     {!selectedJob
                       ? 'Step logs'
                       : showAllLogs
@@ -577,40 +564,40 @@ export function ActionsSection({
                 {selectedJob ? (
                   <a
                     href={`/api/jobs/${encodeURIComponent(selectedJob.id)}/logs`}
-                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-navy-400/50 bg-navy-1000 px-2.5 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-navy-800"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-science-blue bg-white px-2.5 py-1 text-xs font-semibold text-science-blue transition-colors hover:bg-bg-2"
                     title="Download this run's logs"
                   >
                     <Download className="h-3 w-3" />
                     Logs
                   </a>
                 ) : (
-                  <span className="inline-flex items-center gap-1 rounded-md border border-navy-600 px-2.5 py-1 text-[11px] text-navy-200 opacity-50">
+                  <span className="inline-flex items-center gap-1 rounded-md border border-line px-2.5 py-1 text-xs text-ink-muted">
                     <Download className="h-3 w-3" />
                     Logs
                   </span>
                 )}
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-navy-900 bg-navy-1000/80 px-3.5 py-2 text-[11px] text-navy-200">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-bg-2 px-3.5 py-2 text-xs text-ink-muted">
                 <label className="inline-flex cursor-pointer items-center gap-1.5">
                   <input
                     type="checkbox"
                     checked={showTimestamps}
                     onChange={(event) => setShowTimestamps(event.target.checked)}
-                    className="h-3.5 w-3.5 accent-navy-500"
+                    className="h-3.5 w-3.5 accent-science-blue"
                   />
                   <span>Timestamps</span>
                 </label>
 
-                <label className="flex h-7 w-48 items-center gap-1.5 rounded-md border border-navy-700 bg-navy-1100 px-2 focus-within:border-navy-300">
-                  <Search className="h-3 w-3 text-navy-200" />
+                <label className="flex min-h-8 w-48 max-w-full items-center gap-1.5 rounded-md border border-ink-muted bg-white px-2 focus-within:outline-2 focus-within:outline-science-blue">
+                  <Search className="h-3 w-3 text-ink-muted" />
                   <input
                     type="search"
                     value={logSearch}
                     onChange={(event) => setLogSearch(event.target.value)}
                     placeholder="Filter log lines"
                     aria-label="Filter step logs"
-                    className="w-full min-w-0 bg-transparent text-[11px] text-white outline-none placeholder:text-navy-300"
+                    className="w-full min-w-0 bg-transparent text-xs text-ink outline-none placeholder:text-ink-muted"
                   />
                 </label>
               </div>
@@ -618,14 +605,14 @@ export function ActionsSection({
               <div
                 role="region"
                 aria-label="Step log output"
-                className="max-h-[410px] min-h-[280px] flex-1 overflow-y-auto py-2.5 font-mono text-[11px]"
+                className="max-h-[410px] min-h-[280px] flex-1 overflow-y-auto py-2.5 font-mono text-xs"
               >
                 {!selectedJob ? (
-                  <div className="px-4 py-10 text-center font-sans text-xs text-navy-200">
+                  <div className="px-4 py-10 text-center font-sans text-xs text-ink-muted">
                     Run a workflow to see step output.
                   </div>
                 ) : filteredEvents.length === 0 ? (
-                  <div className="px-4 py-10 text-center font-sans text-xs text-navy-200">
+                  <div className="px-4 py-10 text-center font-sans text-xs text-ink-muted">
                     {logQuery
                       ? 'No log lines match your filter.'
                       : 'No log entries yet. Events will appear as the agent progresses.'}
@@ -657,36 +644,33 @@ export function ActionsSection({
                       const failed = group.events.some((event) => event.type === 'stage.failed');
 
                       return (
-                        <div
-                          key={key}
-                          className="overflow-hidden rounded-md border border-navy-800"
-                        >
+                        <div key={key} className="overflow-hidden rounded-md border border-line">
                           <button
                             type="button"
                             aria-expanded={expanded}
                             onClick={() => toggleAttempt(key, expanded)}
-                            className="flex w-full items-center gap-2 bg-navy-1000 px-3 py-2 text-left text-[11px] text-white hover:bg-navy-900"
+                            className="flex w-full items-center gap-2 bg-bg-2 px-3 py-2 text-left text-xs text-ink hover:bg-bg-1"
                           >
                             {expanded ? (
-                              <ChevronDown className="h-3.5 w-3.5 text-navy-200" />
+                              <ChevronDown className="h-3.5 w-3.5 text-ink-muted" />
                             ) : (
-                              <ChevronRight className="h-3.5 w-3.5 text-navy-200" />
+                              <ChevronRight className="h-3.5 w-3.5 text-ink-muted" />
                             )}
                             <span className="font-semibold">
                               Attempt {String(group.number).padStart(2, '0')}
                             </span>
                             {failed && (
-                              <span className="rounded bg-st-red/25 px-1.5 py-0.5 text-[9px] font-bold text-red-200">
+                              <span className="rounded bg-st-red-bg px-1.5 py-0.5 text-xs font-bold text-st-red-dark">
                                 FAILED
                               </span>
                             )}
-                            <span className="ml-auto text-[10px] text-navy-200 tabular-nums">
+                            <span className="ml-auto text-xs text-ink-muted tabular-nums">
                               {group.end ? actionDuration(group.start, group.end, nowMs) : '—'}
                             </span>
                           </button>
 
                           {expanded && (
-                            <div className="divide-y divide-navy-1000/60 py-1">
+                            <div className="divide-y divide-bg-1 py-1">
                               {matching.map((event) => (
                                 <LogLineRow
                                   key={event.sequence}
@@ -703,7 +687,7 @@ export function ActionsSection({
                 )}
               </div>
 
-              <div className="flex items-center justify-between gap-2 border-t border-navy-900 bg-navy-1000 px-3.5 py-2 text-[10px] text-navy-200">
+              <div className="flex items-center justify-between gap-2 border-t border-line bg-bg-2 px-3.5 py-2 text-xs text-ink-muted">
                 <span>
                   {selectedJob
                     ? `${filteredEvents.length} / ${stageHistory.length} events`
@@ -715,9 +699,7 @@ export function ActionsSection({
                     <span>·</span>
                     <span
                       className={`h-2 w-2 rounded-full ${
-                        selectedJob.status === 'running'
-                          ? 'bg-emerald-300 animate-st-pulse'
-                          : 'border border-navy-300'
+                        selectedJob.status === 'running' ? 'bg-st-green' : 'border border-navy-300'
                       }`}
                     />
                     <span>{selectedJob.status === 'running' ? 'Streaming' : 'Saved history'}</span>
@@ -741,40 +723,40 @@ function LogLineRow({ event, showTimestamps }: LogLineRowProps) {
   const level = actionEventLevel(event);
   const rowTone =
     level === 'error'
-      ? 'border-l-red-400 bg-red-950/45'
+      ? 'border-l-st-red bg-st-red-bg'
       : level === 'warning'
-        ? 'border-l-amber-400 bg-amber-950/35'
-        : 'border-l-transparent hover:bg-navy-1000/80';
+        ? 'border-l-st-orange bg-st-orange-bg'
+        : 'border-l-transparent';
 
   const markTone =
     level === 'error'
-      ? 'text-red-300'
+      ? 'text-st-red-dark'
       : level === 'warning'
-        ? 'text-amber-300'
+        ? 'text-st-orange-dark'
         : level === 'success'
-          ? 'text-emerald-300'
-          : 'text-navy-300';
+          ? 'text-st-green-dark'
+          : 'text-ink-muted';
 
   const mark =
     level === 'error' ? '✗' : level === 'warning' ? '!' : level === 'success' ? '✓' : '›';
 
   return (
     <div
-      className={`grid gap-2 border-l-2 px-3 py-1 text-[11px] leading-relaxed text-navy-100 ${rowTone} ${
-        showTimestamps ? 'grid-cols-[62px_14px_minmax(0,1fr)]' : 'grid-cols-[14px_minmax(0,1fr)]'
+      className={`grid gap-2 border-l-2 px-3 py-1 text-xs leading-relaxed text-ink ${rowTone} ${
+        showTimestamps ? 'grid-cols-[8ch_14px_minmax(0,1fr)]' : 'grid-cols-[14px_minmax(0,1fr)]'
       }`}
     >
       {showTimestamps && (
-        <span className="whitespace-nowrap text-[10px] text-navy-300 tabular-nums">
+        <span className="whitespace-nowrap text-xs text-ink-muted tabular-nums">
           {clock(event.at)}
         </span>
       )}
       <span className={`text-center font-bold ${markTone}`}>{mark}</span>
       <div className="min-w-0 break-words whitespace-pre-wrap">
-        {event.stage && <span className="mr-1.5 text-navy-300">[{event.stage}]</span>}
-        <span className="text-white">{event.message || event.type}</span>
+        {event.stage && <span className="mr-1.5 text-ink-muted">[{event.stage}]</span>}
+        <span className="text-ink">{event.message || event.type}</span>
         {event.details && (
-          <pre className="mt-1.5 border-l-2 border-navy-600 pl-2.5 text-[10px] whitespace-pre-wrap text-navy-200">
+          <pre className="mt-1.5 border-l-2 border-line pl-2.5 text-xs whitespace-pre-wrap text-ink-muted">
             {event.details}
           </pre>
         )}

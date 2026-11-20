@@ -13,20 +13,12 @@ export function BottomGrid({ job }: BottomGridProps) {
   return (
     <section className="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(290px,0.85fr)]">
       {/* Recent Events */}
-      <div
-        id="events"
-        className="min-w-0 scroll-mt-6 rounded-xl border border-line bg-white p-5 shadow-2xs"
-      >
+      <div id="events" className="min-w-0 scroll-mt-6 border-t-2 border-science-sub bg-white pt-4">
         <div className="flex items-center justify-between gap-2">
           <div>
-            <span className="font-en text-[11px] font-bold tracking-[0.14em] text-eyebrow uppercase">
-              05 / Immutable Event Log
-            </span>
-            <h2 className="mt-0.5 text-lg font-bold tracking-tight text-science-blue">
-              Recent events
-            </h2>
+            <h2 className="section-heading">イベント</h2>
           </div>
-          <span className="font-mono text-[11px] text-ink-muted">JSONL · Event-sourced</span>
+          <span className="font-mono text-xs text-ink-muted">JSONL · Event-sourced</span>
         </div>
 
         <div className="mt-4 max-h-[280px] min-h-[160px] overflow-y-auto divide-y divide-line">
@@ -49,11 +41,11 @@ export function BottomGrid({ job }: BottomGridProps) {
                   key={event.sequence}
                   className="grid grid-cols-[64px_112px_minmax(0,1fr)] items-start gap-2.5 py-2.5 text-xs"
                 >
-                  <span className="font-mono text-[11px] text-ink-muted tabular-nums">
+                  <span className="font-mono text-xs text-ink-muted tabular-nums">
                     {clock(event.at)}
                   </span>
                   <span
-                    className={`truncate font-mono text-[11px] font-semibold ${typeTone}`}
+                    className={`truncate font-mono text-xs font-semibold ${typeTone}`}
                     title={event.type}
                   >
                     {event.type}
@@ -69,13 +61,13 @@ export function BottomGrid({ job }: BottomGridProps) {
       </div>
 
       {/* Artifacts */}
-      <div className="flex min-w-0 flex-col rounded-xl border border-line bg-white p-5 shadow-2xs">
+      <div
+        id="artifacts"
+        className="flex min-w-0 scroll-mt-6 flex-col border-t-2 border-science-sub bg-white pt-4"
+      >
         <div className="flex items-center justify-between gap-2">
           <div>
-            <span className="font-en text-[11px] font-bold tracking-[0.14em] text-eyebrow uppercase">
-              06 / Outputs
-            </span>
-            <h2 className="mt-0.5 text-lg font-bold tracking-tight text-science-blue">Artifacts</h2>
+            <h2 className="section-heading">成果物</h2>
           </div>
           <ArrowUpRight className="h-5 w-5 text-eyebrow" />
         </div>
@@ -98,7 +90,7 @@ export function BottomGrid({ job }: BottomGridProps) {
                     className="flex items-center gap-3 rounded-lg border border-line bg-bg-2 p-3 transition-colors hover:border-science-blue hover:bg-navy-50"
                   >
                     <span
-                      className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg font-mono text-[10px] font-bold ${
+                      className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg font-mono text-xs font-bold ${
                         isPptx
                           ? 'bg-st-orange-bg text-st-orange-dark'
                           : 'bg-navy-100 text-science-blue'
@@ -114,7 +106,7 @@ export function BottomGrid({ job }: BottomGridProps) {
                       <strong className="block truncate text-xs font-bold text-science-blue">
                         {artifact.name}
                       </strong>
-                      <small className="text-[11px] text-ink-muted">
+                      <small className="text-xs text-ink-muted">
                         {bytes(artifact.bytes)} · Open artifact
                       </small>
                     </span>
@@ -126,7 +118,7 @@ export function BottomGrid({ job }: BottomGridProps) {
           )}
         </div>
 
-        <p className="mt-4 border-t border-line pt-3 text-[11px] leading-relaxed text-ink-muted">
+        <p className="mt-4 border-t border-line pt-3 text-xs leading-relaxed text-ink-muted">
           Artifacts are served locally. The demo uses descriptive quicklook analysis; it does not
           assign XPS peaks or make validated scientific claims.
         </p>

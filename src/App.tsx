@@ -1,4 +1,4 @@
-import { Plus, Upload } from 'lucide-react';
+import { Upload } from 'lucide-react';
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { AppStateResponse, StageKey, WorkflowJob } from '../shared/types.ts';
@@ -7,7 +7,7 @@ import { BottomGrid } from './components/BottomGrid.tsx';
 import { KanbanSection } from './components/KanbanSection.tsx';
 import { MetricsGrid } from './components/MetricsGrid.tsx';
 import { RailwayAndInspector } from './components/RailwayAndInspector.tsx';
-import { Sidebar } from './components/Sidebar.tsx';
+import { SectionNavigation } from './components/SectionNavigation.tsx';
 import { TraceSection } from './components/TraceSection.tsx';
 import { clock, pickDefaultStage } from './utils/workflow.ts';
 
@@ -35,15 +35,21 @@ export function App() {
     updatedAt: '',
   });
   const [initialLoading, setInitialLoading] = useState(true);
-  const [connection, setConnection] = useState<'connecting' | 'online' | 'reconnecting'>(
-    'connecting',
-  );
+  const [stateAvailable, setStateAvailable] = useState(false);
+  const [streamConnection, setStreamConnection] = useState<
+    'connecting' | 'online' | 'reconnecting'
+  >('connecting');
+  const connection =
+    streamConnection === 'online' && !initialLoading && !stateAvailable
+      ? 'reconnecting'
+      : streamConnection;
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [selectedStage, setSelectedStage] = useState<StageKey>('ingest');
   const [showAllLogs, setShowAllLogs] = useState(false);
   const [activeHash, setActiveHash] = useState<string>(() => window.location.hash || '#overview');
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [reviewDemo, setReviewDemo] = useState(false);
   const [dragVisible, setDragVisible] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -73,7 +79,7 @@ export function App() {
       if (!response.ok) throw new Error(`${response.status}`);
       const next = (await response.json()) as AppStateResponse;
       setState(next);
-      setConnection('online');
+      setStateAvailable(true);
       setInitialLoading(false);
       setSelectedJobId((prev) => {
         if (prev && next.jobs.some((job) => job.id === prev)) return prev;
@@ -84,7 +90,7 @@ export function App() {
         return firstJob?.id || null;
       });
     } catch {
-      setConnection('reconnecting');
+      setStateAvailable(false);
       setInitialLoading(false);
     } finally {
       loadingRef.current = false;
@@ -100,11 +106,15 @@ export function App() {
   useEffect(() => {
     void refresh();
     const source = new EventSource('/api/stream');
+    source.onopen = () => {
+      setStreamConnection('online');
+      void refresh();
+    };
     source.onmessage = () => {
       void refresh();
     };
     source.onerror = () => {
-      setConnection('reconnecting');
+      setStreamConnection('reconnecting');
     };
     return () => {
       source.close();
@@ -194,13 +204,9 @@ export function App() {
     [state.jobs, selectedJobId],
   );
 
-  const activeAgents = useMemo(() => {
-    const agents = new Set(state.jobs.map((job) => (job.agent || '').toLowerCase()));
-    return {
-      codex: agents.has('codex'),
-      claude: agents.has('claude'),
-      demo: agents.has('demo') || state.jobs.length === 0,
-    };
+  const agentNames = useMemo(() => {
+    const names = state.jobs.flatMap((job) => (job.agent ? [job.agent] : []));
+    return [...new Set(names)].join(' / ');
   }, [state.jobs]);
 
   const handleSelectJob = useCallback(
@@ -255,88 +261,79 @@ export function App() {
   };
 
   return (
-    <div className="flex min-h-screen bg-white text-ink">
-      <Sidebar activeHash={activeHash} onNavigate={setActiveHash} activeAgents={activeAgents} />
-
-      <main id="overview" className="min-w-0 flex-1 bg-white">
-        {/* Top bar */}
-        <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-line bg-white/95 px-4 backdrop-blur-xs sm:px-8">
-          <div className="flex items-center gap-2 text-xs text-ink-muted">
-            <span className="font-en font-bold text-science-blue lg:hidden">RAILFLOW</span>
-            <span className="lg:hidden">/</span>
-            <span className="font-en hidden sm:inline">Workspaces</span>
-            <span className="hidden sm:inline">/</span>
-            <span className="font-en">Science Tokyo</span>
-            <span>/</span>
-            <strong className="font-en font-semibold text-science-blue">Overview</strong>
-          </div>
-
-          <div className="flex items-center gap-2.5 text-xs">
-            <span
-              className={`h-2 w-2 rounded-full ${
-                connection === 'online' ? 'bg-st-green' : 'bg-st-orange animate-st-pulse'
-              }`}
-            />
-            <span className="font-medium text-ink">
-              {connection === 'online'
-                ? 'Local server online'
-                : connection === 'connecting'
-                  ? 'Connecting'
-                  : 'Reconnecting…'}
+    <div id="overview" className="min-h-screen bg-white text-ink">
+      <header className="border-t-4 border-science-blue">
+        <div className="page-width flex min-h-16 flex-wrap items-center justify-between gap-x-4 gap-y-1 py-2">
+          <div className="flex items-baseline gap-3 text-science-blue sm:gap-5">
+            <span lang="en" className="font-en text-xl font-semibold sm:text-2xl">
+              Science Tokyo
             </span>
-            <span className="hidden h-3.5 w-px bg-line sm:inline-block" />
-            <span className="hidden font-mono text-ink-muted tabular-nums sm:inline">
-              {clock(new Date(nowMs).toISOString())}
-            </span>
-          </div>
-        </header>
-
-        <div className="mx-auto max-w-[1620px] px-4 py-6 sm:px-8 sm:py-7">
-          {/* Hero Header Card with Science Tokyo Arch Graphic Element (anchored to 3+ edges) */}
-          <div className="relative overflow-hidden rounded-xl border border-line bg-white shadow-2xs">
-            <svg
-              className="pointer-events-none absolute inset-0 h-full w-full"
-              viewBox="0 0 1200 180"
-              preserveAspectRatio="none"
-              aria-hidden="true"
+            <a
+              href="#overview"
+              className="border-l border-science-sub pl-3 font-en text-sm font-bold tracking-wide sm:pl-5"
             >
-              <rect width="1200" height="180" fill="#ffffff" />
-              <polygon points="0,0 1200,0 1200,10 0,24" fill="#1c3177" />
-              <polygon points="880,180 1200,82 1200,180" fill="#f2f4f9" />
-              <polygon points="1010,180 1200,132 1200,180" fill="#7f96c2" />
-            </svg>
+              RAILFLOW
+            </a>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-ink-muted">
+            <span
+              aria-hidden="true"
+              className={`size-2 rounded-full ${connection === 'online' ? 'bg-st-green' : 'bg-st-orange'}`}
+            />
+            <span>
+              {connection === 'online'
+                ? 'オンライン'
+                : connection === 'connecting'
+                  ? '接続を開始しています'
+                  : '再接続中'}
+            </span>
+            <time className="hidden border-l border-line pl-3 font-mono sm:inline">
+              {clock(new Date(nowMs).toISOString())}
+            </time>
+          </div>
+        </div>
+      </header>
 
-            <div className="relative flex flex-col justify-between gap-5 px-5 pb-6 pt-8 sm:flex-row sm:items-center sm:px-7">
-              <div className="max-w-2xl">
-                <p className="font-en text-[11px] font-bold tracking-[0.15em] text-eyebrow uppercase">
-                  Institute of Science Tokyo · Monitoring / Research Automation
-                </p>
-                <h1 className="font-en mt-1.5 text-2xl font-bold tracking-tight text-science-blue sm:text-3xl">
-                  Ambient workflows
-                </h1>
-                <p className="mt-2 text-sm leading-relaxed text-ink-muted">
-                  ファイル投入から解析、科学的検証、成果物生成まで。すべての工程をひとつの実行履歴で追跡します。
-                </p>
-              </div>
-
-              <div className="flex shrink-0 flex-wrap items-center gap-2.5">
+      <main>
+        <div className="monitor-hero">
+          <div aria-hidden="true" className="hero-arches" />
+          <div className="page-width relative py-7 sm:py-10">
+            <div className="hero-copy">
+              <h1
+                lang="en"
+                className="font-en text-4xl font-bold leading-tight text-science-blue sm:text-5xl"
+              >
+                Ambient workflows
+              </h1>
+              <p className="mt-2 max-w-xl text-base leading-7">
+                ファイル投入から解析、検証、成果物の生成まで、ジョブごとの実行状況を確認できます。
+              </p>
+              <div className="mt-5 flex flex-wrap gap-3">
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="inline-flex items-center gap-2 rounded-lg border border-science-blue bg-white px-4 py-2.5 text-xs font-bold text-science-blue transition-colors hover:bg-bg-2"
+                  className="monitor-button"
                 >
-                  <Upload className="h-4 w-4" />
                   ファイル投入
                 </button>
                 <button
                   type="button"
-                  onClick={(event) => void handleDemoRun(event.shiftKey)}
+                  onClick={(event) => void handleDemoRun(reviewDemo || event.shiftKey)}
                   title="Shift + Click で人間のレビュー承認ゲートを有効にして実行"
-                  className="inline-flex items-center gap-2 rounded-lg bg-science-blue px-4 py-2.5 text-xs font-bold text-white shadow-xs transition-colors hover:bg-navy-800"
+                  lang="en"
+                  className="monitor-button font-en"
                 >
-                  <Plus className="h-4 w-4" />
                   Demo run
                 </button>
+                <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={reviewDemo}
+                    onChange={(event) => setReviewDemo(event.target.checked)}
+                    className="size-4 accent-science-blue"
+                  />
+                  デモをレビューで一時停止
+                </label>
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -347,7 +344,9 @@ export function App() {
               </div>
             </div>
           </div>
-
+        </div>
+        <SectionNavigation activeHash={activeHash} />
+        <div className="page-width pb-10">
           {/* KPI Metrics */}
           <MetricsGrid jobs={state.jobs} loading={initialLoading} />
 
@@ -388,12 +387,14 @@ export function App() {
           {/* 05 / Recent Events & 06 / Artifacts */}
           <BottomGrid job={selectedJob} />
 
-          {/* Footer */}
-          <footer className="mt-8 flex flex-wrap items-center justify-between gap-2 border-t border-line pt-4 text-[11px] text-ink-muted">
-            <span className="font-en font-semibold text-science-blue">
-              Science Tokyo · RAILFLOW / AMBIENT EXECUTION MONITOR
+          <footer className="mt-10 flex flex-wrap justify-between gap-3 border-t-2 border-science-blue pt-4 text-sm text-ink-muted">
+            <span lang="en" className="font-en font-semibold text-science-blue">
+              Institute of Science Tokyo
             </span>
-            <span>Observe the work. Keep the agent independent.</span>
+            <span>
+              実行履歴のエージェント　
+              {agentNames || '記録なし'}
+            </span>
           </footer>
         </div>
       </main>

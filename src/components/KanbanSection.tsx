@@ -11,13 +11,6 @@ interface KanbanSectionProps {
   onRefresh: () => void;
 }
 
-const COLUMN_DOT: Record<'queued' | 'running' | 'review' | 'done', string> = {
-  queued: 'border-2 border-ink-muted bg-white',
-  running: 'bg-navy-700 animate-st-pulse',
-  review: 'bg-st-orange',
-  done: 'bg-st-green',
-};
-
 export function KanbanSection({
   jobs,
   selectedJobId,
@@ -29,19 +22,10 @@ export function KanbanSection({
     <section id="board" className="mt-9 scroll-mt-6">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <span className="font-en text-[11px] font-bold tracking-[0.14em] text-eyebrow uppercase">
-            02 / Work Queue
-          </span>
-          <h2 className="mt-0.5 text-lg font-bold tracking-tight text-science-blue">
-            Workflow board <span className="font-normal text-ink-muted">/ Kanban</span>
-          </h2>
+          <h2 className="section-heading">ジョブボード</h2>
         </div>
 
         <div className="flex items-center gap-2.5">
-          <span className="hidden items-center gap-1.5 rounded-md border border-line bg-bg-2 px-2.5 py-1 font-en text-[10px] font-bold tracking-wider text-eyebrow sm:inline-flex">
-            <span className="h-1.5 w-1.5 rounded-full bg-st-green animate-st-pulse" />
-            AUTO UPDATING
-          </span>
           <button
             type="button"
             onClick={onRefresh}
@@ -53,7 +37,7 @@ export function KanbanSection({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {KANBAN_COLUMNS.map((column) => {
           const columnJobs = jobs.filter((job) =>
             column.id === 'review'
@@ -62,24 +46,18 @@ export function KanbanSection({
           );
 
           return (
-            <div
-              key={column.id}
-              className="flex min-h-[210px] flex-col rounded-xl border border-line bg-bg-2 p-3"
-            >
-              <div className="mb-3 flex items-center gap-2 border-b border-line pb-2.5">
-                <span className={`h-2.5 w-2.5 rounded-full ${COLUMN_DOT[column.id]}`} />
-                <strong className="font-en text-xs font-bold text-science-blue">
+            <div key={column.id} className="flex min-w-0 flex-col bg-bg-2 p-4 sm:min-h-48">
+              <div className="mb-3 flex items-baseline justify-between gap-2">
+                <h3 lang="en" className="font-en text-base font-semibold text-ink">
                   {column.label}
-                </strong>
-                <span className="ml-auto rounded-md bg-bg-1 px-2 py-0.5 font-mono text-[11px] font-bold text-science-blue">
+                </h3>
+                <span className="font-en text-sm text-ink-muted tabular-nums">
                   {columnJobs.length}
                 </span>
               </div>
 
               {columnJobs.length === 0 ? (
-                <div className="flex flex-1 items-center justify-center rounded-lg border border-dashed border-navy-300 bg-white/60 p-4 text-center text-xs text-ink-muted">
-                  {column.hint}
-                </div>
+                <div className="py-3 text-sm text-ink-muted">{column.hint}</div>
               ) : (
                 <div className="space-y-2.5">
                   {columnJobs.slice(0, 5).map((job) => {
@@ -107,20 +85,19 @@ export function KanbanSection({
                         key={job.id}
                         type="button"
                         onClick={() => onSelectJob(job.id)}
+                        aria-pressed={selected}
                         title={job.lastMessage}
                         className={`block w-full rounded-lg border p-3 text-left transition-all ${
                           selected
-                            ? 'border-science-blue bg-white shadow-sm ring-1 ring-science-blue/25'
-                            : 'border-line bg-white hover:-translate-y-0.5 hover:border-eyebrow hover:shadow-xs'
+                            ? 'border-science-blue bg-white ring-1 ring-science-blue'
+                            : 'border-line bg-white hover:border-eyebrow'
                         }`}
                       >
-                        <span className="block font-mono text-[10px] text-eyebrow">{job.id}</span>
+                        <span className="block font-mono text-xs text-eyebrow">{job.id}</span>
                         <strong className="mt-1 block truncate text-xs font-bold text-ink">
                           {job.file}
                         </strong>
-                        <span className="mt-0.5 block truncate text-[11px] text-ink-muted">
-                          {tag}
-                        </span>
+                        <span className="mt-0.5 block truncate text-xs text-ink-muted">{tag}</span>
                         <div className="my-2.5 h-1.5 overflow-hidden rounded-full bg-bg-1">
                           <div
                             className={`h-full rounded-full transition-all ${
@@ -135,9 +112,9 @@ export function KanbanSection({
                             style={{ width: `${(done / 6) * 100}%` }}
                           />
                         </div>
-                        <div className="flex items-center justify-between text-[10px] text-ink-muted tabular-nums">
+                        <div className="flex items-center justify-between text-xs text-ink-muted tabular-nums">
                           <span className="font-en font-semibold text-science-blue">
-                            ◆ {(job.agent || 'unassigned').toUpperCase()}
+                            {(job.agent || 'unassigned').toUpperCase()}
                           </span>
                           <span className="font-mono">
                             {done}/6 ·{' '}

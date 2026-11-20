@@ -70,16 +70,16 @@ warning = (
     else "Descriptive quicklook only. No background subtraction, peak assignment, calibration or physically validated fitting has been performed."
 )
 
-report = f'''<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>RAILFLOW • {html.escape(run_id)} report</title>
+report = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>RAILFLOW • {html.escape(run_id)} report</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"><style>
 *{{box-sizing:border-box}}
-body{{margin:0;background:#ffffff;color:#333333;font-family:'Noto Sans JP','Yu Gothic Medium','YuGothic',sans-serif;line-height:1.6}}
+body{{margin:0;background:#ffffff;color:#333333;font-family:'Hind','Noto Sans JP',sans-serif;line-height:1.6}}
 .band{{position:relative;background:#1c3177;color:#ffffff;padding:36px 24px 44px;overflow:hidden}}
 .band svg{{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}}
 .band-inner{{position:relative;max-width:1040px;margin:0 auto}}
-.eyebrow{{display:inline-block;font-size:12px;font-weight:700;letter-spacing:.12em;color:#cfdbed;text-transform:uppercase}}
+.eyebrow{{display:inline-block;font-size:12px;font-weight:700;color:#cfdbed}}
 h1{{font-size:34px;line-height:1.2;margin:10px 0 8px;color:#ffffff;letter-spacing:-.02em}}
-.meta{{color:#cfdbed;font-size:13px;margin:0}}
+.meta{{color:#cfdbed;font-size:14px;margin:0;overflow-wrap:anywhere}}
 main{{max-width:1040px;margin:0 auto;padding:28px 24px 48px}}
 h2{{font-size:20px;color:#1c3177;margin:0 0 16px}}
 .stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}}
