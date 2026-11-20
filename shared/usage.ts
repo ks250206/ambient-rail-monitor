@@ -44,9 +44,19 @@ export class UsageAccumulator {
   accept(value: unknown) {
     const event = object(value);
     if (!event) return;
+    if (
+      this.record.engine === 'codex' &&
+      (event.type === 'turn.failed' || event.type === 'error')
+    ) {
+      this.record = { ...this.record, complete: false };
+      return;
+    }
     if (this.record.engine === 'codex' && event.type === 'turn.completed') {
       const raw = object(event.usage);
-      if (!raw) return;
+      if (!raw) {
+        this.record = { ...this.record, complete: false };
+        return;
+      }
       const input = count(raw.input_tokens),
         output = count(raw.output_tokens),
         cacheRead = count(raw.cached_input_tokens ?? 0),
@@ -57,8 +67,10 @@ export class UsageAccumulator {
         cacheRead === null ||
         cacheWrite === null ||
         input < cacheRead + cacheWrite
-      )
+      ) {
+        this.record = { ...this.record, complete: false };
         return;
+      }
       const previous = this.record.models[0];
       this.record = {
         engine: 'codex',
@@ -79,19 +91,26 @@ export class UsageAccumulator {
     }
     if (this.record.engine === 'claude' && event.type === 'result') {
       const modelUsage = object(event.modelUsage);
-      const models: ModelUsage[] = [];
+      let models: ModelUsage[] = [];
       if (modelUsage && Object.keys(modelUsage).length <= 50) {
+        let valid = true;
         for (const [model, value] of Object.entries(modelUsage)) {
           const raw = object(value);
-          if (!raw || model.length > 120) return;
+          if (!raw || model.length > 120) {
+            valid = false;
+            break;
+          }
           const input = count(raw.inputTokens),
             output = count(raw.outputTokens),
             cacheRead = count(raw.cacheReadInputTokens ?? 0),
             cacheWrite = count(raw.cacheCreationInputTokens ?? 0);
-          if (input === null || output === null || cacheRead === null || cacheWrite === null)
-            return;
+          if (input === null || output === null || cacheRead === null || cacheWrite === null) {
+            valid = false;
+            break;
+          }
           models.push({ model, input, output, cacheRead, cacheWrite });
         }
+        if (!valid) models = [];
       }
       const wholeRun = models.length > 0;
       if (!models.length) {
@@ -180,10 +199,22 @@ export function usageSummary(job: WorkflowJob) {
     cacheWrite = 0,
     estimatedCostUsd = 0,
     reportedCostUsd = 0;
-  for (const start of attempts) {
-    const events = job.events.filter(
-      (event) => event.stage === start.stage && event.attempt === start.attempt,
-    );
+  for (let i = 0; i < attempts.length; i++) {
+    const start = attempts[i];
+    const nextSameStage = attempts
+      .slice(i + 1)
+      .find((event) => event.stage === start.stage)?.sequence;
+    const events =
+      start.attempt !== undefined
+        ? job.events.filter(
+            (event) => event.stage === start.stage && event.attempt === start.attempt,
+          )
+        : job.events.filter(
+            (event) =>
+              event.stage === start.stage &&
+              event.sequence >= start.sequence &&
+              (nextSameStage === undefined || event.sequence < nextSameStage),
+          );
     if (events.some((event) => event.type === 'stage.cache' && event.cache?.hit)) continue;
     const task = job.stages.find((task) => task.key === start.stage);
     const spec = job.workflow?.project.stages.find(
@@ -191,6 +222,16 @@ export function usageSummary(job: WorkflowJob) {
     );
     const runtime = events.find((event) => event.runtime)?.runtime;
     const usage = events.findLast((event) => event.type === 'stage.usage')?.usage;
+    if (
+      !usage &&
+      events.some(
+        (event) =>
+          event.type === 'gate.evaluated' &&
+          event.gate?.scope === 'input' &&
+          event.gate.result.status !== 'pass',
+      )
+    )
+      continue;
     const claimed = job.events.findLast(
       (event) => event.type === 'job.claimed' && event.sequence < start.sequence,
     );

@@ -5,6 +5,24 @@ import type { WorkflowTemplate } from '../../shared/templates.ts';
 import { jsonRequest, queryClient, request } from '../api.ts';
 
 type Catalog = { builtins: WorkflowTemplate[]; saved: WorkflowTemplate[] };
+
+function sameTemplate(a: WorkflowTemplate, b: WorkflowTemplate) {
+  return (
+    a.template.name === b.template.name &&
+    a.template.revision === b.template.revision &&
+    a.template.hash === b.template.hash
+  );
+}
+
+function hasExecutableSteps(template: WorkflowTemplate): boolean {
+  return (
+    Boolean(template.definition.runtime?.python) ||
+    template.definition.stages.some((stage) =>
+      ['command', 'python', 'http'].includes(stage.runner?.kind ?? 'ai'),
+    )
+  );
+}
+
 export function TemplatePicker({
   onChange,
   onBlocked,
@@ -17,15 +35,20 @@ export function TemplatePicker({
     queryFn: () => request<Catalog>('/api/templates'),
   });
   const [selected, setSelected] = useState<WorkflowTemplate | null>(null);
+  const [isExternal, setIsExternal] = useState(false);
+  const [confirmedExec, setConfirmedExec] = useState(false);
   const [error, setError] = useState('');
+  const [deletingKey, setDeletingKey] = useState('');
   const generation = useRef(0);
-  const select = async (value: unknown) => {
+  const select = async (value: unknown, external = false) => {
     const ticket = ++generation.current;
     setSelected(null);
+    setIsExternal(false);
+    setConfirmedExec(false);
     onChange(null);
     setError('');
     onBlocked(true);
-    let failed = false;
+    let blocked = false;
     try {
       if (value === null) return;
       const result = await request<{ template: WorkflowTemplate }>(
@@ -33,20 +56,26 @@ export function TemplatePicker({
         jsonRequest('POST', { template: value }),
       );
       if (ticket !== generation.current) return;
+      const needsConfirm = external && hasExecutableSteps(result.template);
       setSelected(result.template);
+      setIsExternal(external);
+      setConfirmedExec(!needsConfirm);
       onChange(result.template);
+      blocked = needsConfirm;
     } catch (err) {
       if (ticket === generation.current) {
-        failed = true;
+        blocked = true;
         setError((err as Error).message);
       }
     } finally {
-      if (ticket === generation.current) onBlocked(failed);
+      if (ticket === generation.current) onBlocked(blocked);
     }
   };
   const upload = async (file?: File) => {
     const ticket = ++generation.current;
     setSelected(null);
+    setIsExternal(false);
+    setConfirmedExec(false);
     onChange(null);
     setError('');
     onBlocked(true);
@@ -56,45 +85,54 @@ export function TemplatePicker({
       if (file.size > 4_000_000) throw new Error('テンプレートは4 MB以内にしてください。');
       const text = await file.text();
       if (ticket !== generation.current) return;
-      await select(JSON.parse(text));
+      await select(JSON.parse(text), true);
+      return;
     } catch (err) {
       if (ticket === generation.current) {
         failed = true;
         setError((err as Error).message);
       }
     } finally {
-      if (ticket === generation.current) onBlocked(failed);
+      if (ticket === generation.current && failed) onBlocked(true);
+      else if (ticket === generation.current && !file) onBlocked(false);
+    }
+  };
+  const removeSaved = async (item: WorkflowTemplate) => {
+    const key = `${item.template.name}:${item.template.revision}:${item.template.hash}`;
+    setDeletingKey(key);
+    setError('');
+    try {
+      await request('/api/templates', jsonRequest('DELETE', item.template));
+      if (selected && sameTemplate(selected, item)) void select(null);
+      await queryClient.invalidateQueries({ queryKey: ['templates'] });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setDeletingKey('');
     }
   };
   const options = [...(catalog.data?.builtins ?? []), ...(catalog.data?.saved ?? [])];
+  const needsExecConfirm = Boolean(selected && isExternal && hasExecutableSteps(selected));
   return (
     <section className="wf-template" aria-label="テンプレートから作成">
       <h3>テンプレートから作成</h3>
       <label>
         保存済み・組み込みテンプレート
         <select
-          value={
-            selected
-              ? options.findIndex(
-                  (item) =>
-                    item.template.hash === selected.template.hash &&
-                    item.template.revision === selected.template.revision,
-                )
-              : ''
-          }
+          value={selected ? options.findIndex((item) => sameTemplate(item, selected)) : ''}
           onChange={(e) =>
-            void select(e.target.value === '' ? null : options[Number(e.target.value)])
+            void select(e.target.value === '' ? null : options[Number(e.target.value)], false)
           }
         >
           <option value="">使用しない / JSONを選択</option>
-          {selected &&
-            !options.some(
-              (item) =>
-                item.template.hash === selected.template.hash &&
-                item.template.revision === selected.template.revision,
-            ) && <option value={-1}>読み込んだJSON: {selected.template.name}</option>}
+          {selected && !options.some((item) => sameTemplate(item, selected)) && (
+            <option value={-1}>読み込んだJSON: {selected.template.name}</option>
+          )}
           {options.map((item, index) => (
-            <option key={index} value={index}>
+            <option
+              key={`${item.template.name}-${item.template.revision}-${item.template.hash}-${index}`}
+              value={index}
+            >
               {item.template.name} · {item.template.revision}
             </option>
           ))}
@@ -124,6 +162,32 @@ export function TemplatePicker({
           </button>
         </p>
       )}
+      {!!catalog.data?.saved.length && (
+        <details className="wf-disclosure">
+          <summary>保存済みテンプレートを管理（{catalog.data.saved.length} / 30件）</summary>
+          <ul className="upload-file-list">
+            {catalog.data.saved.map((item) => {
+              const key = `${item.template.name}:${item.template.revision}:${item.template.hash}`;
+              return (
+                <li key={key}>
+                  <span>
+                    {item.template.name} · 版 {item.template.revision} (
+                    {item.template.hash.slice(0, 8)})
+                  </span>
+                  <button
+                    type="button"
+                    className="wf-secondary"
+                    disabled={deletingKey === key}
+                    onClick={() => void removeSaved(item)}
+                  >
+                    削除
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </details>
+      )}
       <button type="button" className="wf-secondary" onClick={() => void select(null)}>
         テンプレートを解除して白紙から作成
       </button>
@@ -141,9 +205,55 @@ export function TemplatePicker({
           </p>
           <p>{selected.definition.purpose}</p>
           <p className="wf-help">
-            環境の版: {selected.definition.runtime?.revision || '指定なし'} · 内容hash:{' '}
+            環境の版: {selected.definition.runtime?.revision || '指定なし'} · Python:{' '}
+            {selected.definition.runtime?.python || 'ワーカー既定'} · 内容hash:{' '}
             {selected.template.hash.slice(0, 12)}
           </p>
+          {hasExecutableSteps(selected) && (
+            <details open={isExternal} className="wf-disclosure">
+              <summary>実行コマンド・Pythonコード・HTTP接続先の詳細</summary>
+              {selected.definition.runtime?.python && (
+                <p className="wf-help">
+                  環境プローブ・実行用 Python: <code>{selected.definition.runtime.python}</code>
+                </p>
+              )}
+              {selected.definition.stages
+                .filter((stage) => ['command', 'python', 'http'].includes(stage.runner?.kind ?? ''))
+                .map((stage) => (
+                  <div key={stage.key}>
+                    <strong>
+                      {stage.label} ({stage.key}) · {stage.runner!.kind}
+                    </strong>
+                    {stage.runner?.kind === 'command' && (
+                      <pre className="prompt-preview">
+                        {[stage.runner.program, ...stage.runner.args].join(' ')}
+                      </pre>
+                    )}
+                    {stage.runner?.kind === 'python' && (
+                      <pre className="prompt-preview">{stage.runner.code}</pre>
+                    )}
+                    {stage.runner?.kind === 'http' && (
+                      <pre className="prompt-preview">
+                        {stage.runner.method} {stage.runner.url}
+                      </pre>
+                    )}
+                  </div>
+                ))}
+            </details>
+          )}
+          {needsExecConfirm && (
+            <label className="wf-check">
+              <input
+                type="checkbox"
+                checked={confirmedExec}
+                onChange={(e) => {
+                  setConfirmedExec(e.target.checked);
+                  onBlocked(!e.target.checked);
+                }}
+              />
+              外部テンプレート内のコマンド・Python・HTTP・実行ファイル設定を確認し、ローカル実行を許可する
+            </label>
+          )}
           <p className="wf-help">
             下の名前で新しいプロジェクトを作成します。テンプレートの元のプロジェクトは変更されません。
           </p>
@@ -202,10 +312,10 @@ export function TemplateExport({ project }: { project: ProjectSpec }) {
         >
           テンプレートとして保存
         </button>
-        {revision.trim() && (
+        {name.trim() && revision.trim() && (
           <a
             className="wf-secondary"
-            href={`/api/projects/${project.id}/template?revision=${encodeURIComponent(revision)}&name=${encodeURIComponent(name)}`}
+            href={`/api/projects/${project.id}/template?revision=${encodeURIComponent(revision.trim())}&name=${encodeURIComponent(name.trim())}`}
             download
           >
             保存済み定義をJSONで書き出す

@@ -157,7 +157,7 @@ export function WorkflowSpecSection({
   let fieldName = 'プロジェクト設定';
   let promptPreview = '';
   try {
-    projectAutomation(payload);
+    const parsedAutomation = projectAutomation(payload);
     target = 'workflow-prompt';
     fieldName = '共通プロンプト';
     validateTemplate(automation.prompt ?? '');
@@ -201,15 +201,15 @@ export function WorkflowSpecSection({
     parseGraph(graph, payload.stages);
     if (
       payload.stages.some((item) => item.cache?.enabled) &&
-      (!graph || !automation.runtime?.revision)
+      (!graph || !parsedAutomation.runtime?.revision)
     )
       throw new Error('キャッシュにはWorkflow v2と実行環境の版が必要です。');
     if (
       !graph &&
-      (automation.runtime?.revision ||
-        automation.runtime?.python ||
-        Object.values(automation.runtime?.expected ?? {}).some(Boolean) ||
-        Object.keys(automation.runtime?.packages ?? {}).length)
+      (parsedAutomation.runtime?.revision ||
+        parsedAutomation.runtime?.python ||
+        Object.keys(parsedAutomation.runtime?.expected ?? {}).length ||
+        Object.keys(parsedAutomation.runtime?.packages ?? {}).length)
     )
       throw new Error('実行環境の固定にはWorkflow v2が必要です。');
     const draftProject = { ...project, ...payload };

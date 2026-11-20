@@ -269,7 +269,7 @@ export function ProjectManagement({
           )}
         </aside>
       </div>
-      <TemplateExport project={project} />
+      <TemplateExport key={`${project.id}:${project.name}`} project={project} />
     </section>
   );
 }

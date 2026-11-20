@@ -1,5 +1,14 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { expect, it } from 'vite-plus/test';
 import type { ClaimResponse, ProjectSpec, WorkflowJob } from '../shared/types.ts';
@@ -474,4 +483,63 @@ it('distinguishes unknown, zero, partial and per-model CLI usage without countin
     priceUsage(unknown.record, [{ ...rate, engine: 'claude', model: 'actual' }]).estimatedCostUsd,
   ).toBeCloseTo(0.00038, 8);
   expect(canonical({ b: 2, a: { y: 2, x: 1 } })).toBe(canonical({ a: { x: 1, y: 2 }, b: 2 }));
+});
+
+it('handles malformed cache metadata during prune, PEP 503 package normalization, template trimming, and CLI usage edge cases', async () => {
+  const { ResultCache } = await import('../shared/result-cache.ts');
+  const { normalizePackageName } = await import('../shared/reuse.ts');
+  const { templateOrigin } = await import('../shared/templates.ts');
+
+  // PEP 503 normalization collapses repeated separators.
+  expect(normalizePackageName('Foo__Bar._Baz')).toBe('foo-bar-baz');
+
+  // templateOrigin trims whitespace so duplicate name/revision checks cannot be bypassed.
+  const hash = 'a'.repeat(64);
+  expect(templateOrigin({ name: ' CSV ', revision: ' 1 ', hash })).toEqual({
+    name: 'CSV',
+    revision: '1',
+    hash,
+  });
+
+  // Codex turn.failed after turn.completed must clear complete flag.
+  const codex = new UsageAccumulator('codex', 'gpt-5');
+  codex.accept({ type: 'turn.completed', usage: { input_tokens: 100, output_tokens: 20 } });
+  expect(codex.record.complete).toBe(true);
+  codex.accept({ type: 'turn.failed' });
+  expect(codex.record.complete).toBe(false);
+
+  // Claude malformed modelUsage falls back to main_loop usage and preserves total_cost_usd.
+  const claude = new UsageAccumulator('claude', 'sonnet');
+  claude.accept({
+    type: 'result',
+    total_cost_usd: 0.12,
+    modelUsage: { bad: { inputTokens: -1, outputTokens: 10 } },
+    usage: { input_tokens: 50, output_tokens: 10 },
+  });
+  expect(claude.record.scope).toBe('main_loop');
+  expect(claude.record.complete).toBe(false);
+  expect(claude.record.models[0]).toMatchObject({ input: 50, output: 10 });
+  expect(claude.record.reportedCostUsd).toBe(0.12);
+
+  // ResultCache.prune and restore remove malformed entry.json without throwing.
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'railflow-cache-prune-'));
+  try {
+    const cache = new ResultCache(tmp, 1024);
+    const badKey = 'b'.repeat(64);
+    mkdirSync(path.join(tmp, badKey), { recursive: true });
+    writeFileSync(path.join(tmp, badKey, 'entry.json'), JSON.stringify({ output: { files: [] } }));
+    (cache as unknown as { prune(): void }).prune();
+    expect(existsSync(path.join(tmp, badKey))).toBe(false);
+
+    const badRestoreKey = 'c'.repeat(64);
+    mkdirSync(path.join(tmp, badRestoreKey), { recursive: true });
+    writeFileSync(
+      path.join(tmp, badRestoreKey, 'entry.json'),
+      JSON.stringify({ version: 1, key: badRestoreKey, projectId: 'p', output: { files: [] } }),
+    );
+    expect(cache.restore('p', badRestoreKey, path.join(tmp, 'out'))).toBeNull();
+    expect(existsSync(path.join(tmp, badRestoreKey))).toBe(false);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });

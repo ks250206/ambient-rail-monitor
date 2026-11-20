@@ -4,6 +4,7 @@ import {
   constants,
   copyFileSync,
   closeSync,
+  existsSync,
   fstatSync,
   mkdirSync,
   openSync,
@@ -198,21 +199,38 @@ export function copyOutput(
   destination: string,
   manifest: OutputManifest,
   readOnly = false,
+  excludeInternal = false,
 ): void {
   if (!verifyOutput(root, manifest, { excludeInternal: true }))
     throw new Error('合格済み出力のハッシュが変わっています。');
-  mkdirSync(destination, { recursive: true });
+  const existed = existsSync(destination);
+  if (!existed) mkdirSync(destination, { recursive: true });
+  const copied: string[] = [];
   try {
     for (const file of manifest.files) {
       requireRelativePath(file.path);
+      if (
+        excludeInternal &&
+        (file.path === '_inputs' ||
+          file.path === '_railflow' ||
+          file.path.startsWith('_inputs/') ||
+          file.path.startsWith('_railflow/'))
+      )
+        throw new Error('内部ディレクトリへの出力コピーは許可されません。');
       const target = path.join(destination, file.path);
       mkdirSync(path.dirname(target), { recursive: true });
       copyFileSync(safeFile(root, file.path), target, constants.COPYFILE_EXCL);
+      copied.push(target);
       chmodSync(target, (readOnly ? 0o400 : 0o600) | (file.executable ? 0o100 : 0));
     }
-    if (!verifyOutput(destination, manifest)) throw new Error('コピー中に出力が変わりました。');
+    if (!verifyOutput(destination, manifest, { excludeInternal }))
+      throw new Error('コピー中に出力が変わりました。');
   } catch (error) {
-    rmSync(destination, { recursive: true, force: true });
+    if (!existed) {
+      rmSync(destination, { recursive: true, force: true });
+    } else {
+      for (const target of copied) rmSync(target, { force: true });
+    }
     throw error;
   }
 }

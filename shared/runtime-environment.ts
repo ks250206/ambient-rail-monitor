@@ -12,11 +12,16 @@ async function executable(program: string, signal: AbortSignal, work: string) {
       ? [program]
       : (process.env.PATH ?? '')
           .split(path.delimiter)
+          .filter(Boolean)
           .flatMap((dir) =>
             process.platform === 'win32'
-              ? (process.env.PATHEXT ?? '.EXE;.CMD')
-                  .split(';')
-                  .map((ext) => path.join(dir, program + ext.toLowerCase()))
+              ? [
+                  path.join(dir, program),
+                  ...(process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD')
+                    .split(';')
+                    .filter(Boolean)
+                    .map((ext) => path.join(dir, program + ext.toLowerCase())),
+                ]
               : [path.join(dir, program)],
           );
   const file = choices
@@ -104,27 +109,49 @@ export async function inspectRuntime(
         (await probe(program, ['--version'])).match(
           /\b\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?\b/,
         )?.[0] ?? null;
-    } catch {
+    } catch (error) {
+      if (signal.aborted) throw error;
       result.toolVersion = null;
     }
   }
-  if (
-    runner.kind === 'python' ||
-    profile.python ||
-    profile.expected.python ||
-    Object.keys(profile.packages).length
-  ) {
+  const allowDemoExec = process.env.RAILFLOW_ALLOW_LOCAL_EXEC === '1';
+  const shouldProbePython =
+    (runner.kind === 'python' ||
+      profile.python ||
+      profile.expected.python ||
+      Object.keys(profile.packages).length > 0) &&
+    !(mode === 'demo' && profile.python && !allowDemoExec);
+  if (shouldProbePython) {
     try {
-      const raw = JSON.parse(
-        await probe(python, [
-          '-c',
-          'import json, platform, importlib.metadata as m\nprint(json.dumps({"version": platform.python_version(), "packages": {d.metadata["Name"].lower().replace("_", "-").replace(".", "-"): d.version for d in m.distributions() if d.metadata["Name"]}}))',
-        ]),
-      ) as { version: string; packages: Record<string, string> };
+      const marker = 'RAILFLOW_RUNTIME_JSON:';
+      const script = [
+        'import json, platform, re, importlib.metadata as m',
+        'pkgs = {}',
+        'for d in m.distributions():',
+        '  md = getattr(d, "metadata", None)',
+        '  name = md.get("Name") if md else None',
+        '  ver = getattr(d, "version", None)',
+        '  if not isinstance(name, str) or not isinstance(ver, str): continue',
+        '  norm = re.sub(r"[-_.]+", "-", name).lower()',
+        '  if not re.match(r"^[a-z0-9][a-z0-9._-]{0,79}$", norm) or len(ver) > 100: continue',
+        '  if norm not in pkgs and len(pkgs) < 3000: pkgs[norm] = ver',
+        `print(${JSON.stringify(marker)} + json.dumps({"version": platform.python_version(), "packages": pkgs}))`,
+      ].join('\n');
+      const output = await probe(python, ['-W', 'ignore', '-c', script]);
+      const line = output
+        .split(/\r?\n/)
+        .reverse()
+        .find((item) => item.startsWith(marker));
+      if (!line) throw new Error('missing runtime marker');
+      const raw = JSON.parse(line.slice(marker.length)) as {
+        version: string;
+        packages: Record<string, string>;
+      };
       result.python = raw.version;
       result.packages = raw.packages;
       if (runner.kind === 'python') result.toolVersion = raw.version;
-    } catch {
+    } catch (error) {
+      if (signal.aborted) throw error;
       result.python = null;
     }
   }

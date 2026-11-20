@@ -119,6 +119,19 @@ export class ResultCache {
         entry.version !== 1 ||
         entry.key !== key ||
         entry.projectId !== projectId ||
+        typeof entry.createdAt !== 'string' ||
+        !Number.isFinite(Date.parse(entry.createdAt)) ||
+        typeof entry.origin?.jobId !== 'string' ||
+        typeof entry.origin?.task !== 'string' ||
+        typeof entry.origin?.attempt !== 'number' ||
+        !Array.isArray(entry.output?.files) ||
+        entry.output.files.some(
+          (file) =>
+            file.path.startsWith('_inputs/') ||
+            file.path.startsWith('_railflow/') ||
+            file.path === '_inputs' ||
+            file.path === '_railflow',
+        ) ||
         !verifyOutput(path.join(root, 'files'), entry.output)
       )
         throw new Error('cache integrity');
@@ -127,7 +140,7 @@ export class ResultCache {
       return null;
     }
     // A copy error fails this attempt; partially copied files never become a cache miss.
-    copyOutput(path.join(root, 'files'), destination, entry.output);
+    copyOutput(path.join(root, 'files'), destination, entry.output, false, true);
     return entry;
   }
   store(job: WorkflowJob, task: JobStage, work: string): void {
@@ -189,7 +202,14 @@ export class ResultCache {
       try {
         const entry = JSON.parse(
           readFileSync(path.join(this.root, name, 'entry.json'), 'utf8'),
-        ) as Entry;
+        ) as Partial<Entry>;
+        if (
+          entry.version !== 1 ||
+          typeof entry.createdAt !== 'string' ||
+          !Number.isFinite(Date.parse(entry.createdAt)) ||
+          !Array.isArray(entry.output?.files)
+        )
+          throw new Error('invalid cache metadata');
         entries.push({
           name,
           bytes: entry.output.files.reduce((sum, file) => sum + file.bytes, 0),

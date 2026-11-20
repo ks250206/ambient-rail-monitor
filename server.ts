@@ -2153,6 +2153,8 @@ const server = http.createServer(async (req, res) => {
             item.status === 'queued' &&
             (item.workflow?.version !== 2 || body.protocol === 2 || body.protocol === 3) &&
             (!item.workflow?.project.runtime?.revision || body.protocol === 3) &&
+            (!item.workflow?.project.stages.some((stage) => stage.cache?.enabled) ||
+              body.protocol === 3) &&
             (!Object.keys(item.workflow?.project.runtime?.expected ?? {}).length ||
               body.protocol === 3) &&
             (!Object.keys(item.workflow?.project.runtime?.packages ?? {}).length ||
@@ -2554,6 +2556,9 @@ const server = http.createServer(async (req, res) => {
         input.type === 'review.required' ||
         input.type === 'agent.event';
       if (job.status !== 'running') throw new HttpError(409, 'このジョブは実行中ではありません。');
+      if (!job.workflow && step && stageEvent) {
+        extras.attempt = input.type === 'stage.started' ? step.attempts + 1 : step.attempts;
+      }
       if (job.workflow) {
         if (stageEvent && !step) throw new HttpError(400, '工程を指定してください。');
         if (step && stageEvent) {
@@ -3027,8 +3032,8 @@ const server = http.createServer(async (req, res) => {
       if (step) {
         try {
           resultCache.store(job, step, jobWorkspace(job));
-        } catch {
-          /* Optional cache. */
+        } catch (cacheErr) {
+          console.warn('Result cache store failed:', cacheErr);
         }
       }
       return deliverJSON(res, { ok: true });

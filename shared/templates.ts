@@ -49,7 +49,7 @@ export function templateOrigin(value: unknown): WorkflowTemplate['template'] | u
     !/^[a-f0-9]{64}$/.test(raw.hash)
   )
     throw new Error('テンプレート名・版・hashを確認してください。');
-  return { name: raw.name, revision: raw.revision, hash: raw.hash };
+  return { name: raw.name.trim(), revision: raw.revision.trim(), hash: raw.hash };
 }
 export function exportTemplate(
   project: ProjectSpec,
@@ -81,13 +81,20 @@ export function parseWorkflowTemplate(value: unknown): WorkflowTemplate {
     throw new Error('テンプレート定義がありません。');
   const definition = raw.definition as Record<string, unknown>;
   const readText = (value: unknown, label: string, max: number, required = false) => {
-    if (typeof value !== 'string' || value.length > max || (required && !value.trim()))
+    if (
+      typeof value !== 'string' ||
+      value.length > max ||
+      value.includes('\0') ||
+      (required && !value.trim())
+    )
       throw new Error(`${label}は${max}文字以内の文字列にしてください。`);
   };
   const readLlm = (value: unknown) => {
     if (!value || typeof value !== 'object' || Array.isArray(value))
       throw new Error('モデル設定が不正です。');
     const config = value as Record<string, unknown>;
+    if (Object.keys(config).some((key) => key !== 'model' && key !== 'effort'))
+      throw new Error('モデル設定に未対応の項目が含まれています。');
     readText(config.model, 'モデル名', 100);
     if (!/^[A-Za-z0-9._:/-]*$/.test(String(config.model)))
       throw new Error('モデル名の文字が不正です。');

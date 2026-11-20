@@ -40,6 +40,10 @@ export const DEFAULT_RUNTIME: RuntimeProfile = {
   expected: {},
   packages: {},
 };
+export function normalizePackageName(name: string): string {
+  return name.toLowerCase().replace(/[-_.]+/g, '-');
+}
+
 const string = (value: unknown, max = 200) => {
   if (typeof value !== 'string' || value.length > max || value.includes('\0'))
     throw new Error(`設定は${max}文字以内の文字列にしてください。`);
@@ -62,7 +66,7 @@ export function parseRuntime(value: unknown): RuntimeProfile {
       throw new Error('Pythonパッケージ名が不正です。');
     const parsed = string(version, 80);
     if (!parsed) throw new Error('パッケージの固定バージョンを指定してください。');
-    const normalized = key.toLowerCase().replaceAll('_', '-').replaceAll('.', '-');
+    const normalized = normalizePackageName(key);
     if (Object.hasOwn(packages, normalized)) throw new Error('Pythonパッケージが重複しています。');
     Object.defineProperty(packages, normalized, { value: parsed, enumerable: true });
   }

@@ -1,6 +1,25 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
-import { DEFAULT_RUNTIME, type PriceRate, type RuntimeProfile } from '../../shared/reuse.ts';
+import {
+  DEFAULT_RUNTIME,
+  normalizePackageName,
+  type PriceRate,
+  type RuntimeProfile,
+} from '../../shared/reuse.ts';
+
+interface PackageRow {
+  id: number;
+  name: string;
+  version: string;
+}
+
+function toPackageRecord(rows: PackageRow[]): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const row of rows) {
+    if (!Object.hasOwn(result, row.name)) result[row.name] = row.version;
+  }
+  return result;
+}
 
 export function RuntimeFields({
   value = DEFAULT_RUNTIME,
@@ -13,24 +32,47 @@ export function RuntimeFields({
   onRuntime: (value: RuntimeProfile) => void;
   onPricing: (value: PriceRate[]) => void;
 }) {
-  const packages = Object.entries(value.packages);
-  const [packageError, setPackageError] = useState('');
-  const changePackage = (index: number, name: string, version: string) => {
-    const normalize = (value: string) =>
-      value.toLowerCase().replaceAll('_', '-').replaceAll('.', '-');
-    if (packages.some(([existing], i) => i !== index && normalize(existing) === normalize(name))) {
-      setPackageError(
-        '同じ名前のパッケージがあります。名前を変えるか、その行のバージョンを編集してください。',
-      );
-      return;
+  const nextRowId = useRef(0);
+  const [rows, setRows] = useState<PackageRow[]>(() =>
+    Object.entries(value.packages).map(([name, version]) => ({
+      id: nextRowId.current++,
+      name,
+      version,
+    })),
+  );
+  const lastEmitted = useRef(JSON.stringify(value.packages));
+  useEffect(() => {
+    const serialized = JSON.stringify(value.packages);
+    if (serialized === lastEmitted.current) return;
+    lastEmitted.current = serialized;
+    setRows(
+      Object.entries(value.packages).map(([name, version]) => ({
+        id: nextRowId.current++,
+        name,
+        version,
+      })),
+    );
+  }, [value.packages]);
+
+  const seenNames = new Set<string>();
+  let duplicate = false;
+  for (const row of rows) {
+    const norm = normalizePackageName(row.name.trim());
+    if (norm && seenNames.has(norm)) {
+      duplicate = true;
+      break;
     }
-    setPackageError('');
-    onRuntime({
-      ...value,
-      packages: Object.fromEntries(
-        packages.map((pair, i) => (i === index ? [name, version] : pair)),
-      ),
-    });
+    if (norm) seenNames.add(norm);
+  }
+  const packageError = duplicate
+    ? '同じ名前のパッケージがあります。名前を変えるか、重複行を削除してください。'
+    : '';
+
+  const commitRows = (nextRows: PackageRow[]) => {
+    setRows(nextRows);
+    const nextPackages = toPackageRecord(nextRows);
+    lastEmitted.current = JSON.stringify(nextPackages);
+    onRuntime({ ...value, packages: nextPackages });
   };
   return (
     <details className="wf-runtime">
@@ -78,30 +120,35 @@ export function RuntimeFields({
           {packageError}
         </p>
       )}
-      {packages.map(([name, version], index) => (
-        <div className="wf-package" key={index}>
+      {rows.map((row, index) => (
+        <div className="wf-package" key={row.id}>
           <input
             aria-label={`パッケージ名 ${index + 1}`}
-            value={name}
+            value={row.name}
             placeholder="numpy"
-            onChange={(e) => changePackage(index, e.target.value, version)}
+            onChange={(e) =>
+              commitRows(
+                rows.map((item) => (item.id === row.id ? { ...item, name: e.target.value } : item)),
+              )
+            }
           />
           <input
             aria-label={`固定バージョン ${index + 1}`}
-            value={version}
+            value={row.version}
             placeholder="完全一致"
-            onChange={(e) => changePackage(index, name, e.target.value)}
+            onChange={(e) =>
+              commitRows(
+                rows.map((item) =>
+                  item.id === row.id ? { ...item, version: e.target.value } : item,
+                ),
+              )
+            }
           />
           <button
             type="button"
             className="wf-icon-button"
             aria-label={`パッケージ ${index + 1} を削除`}
-            onClick={() =>
-              onRuntime({
-                ...value,
-                packages: Object.fromEntries(packages.filter((_, i) => i !== index)),
-              })
-            }
+            onClick={() => commitRows(rows.filter((item) => item.id !== row.id))}
           >
             <Trash2 size={15} />
           </button>
@@ -110,11 +157,11 @@ export function RuntimeFields({
       <button
         type="button"
         className="wf-secondary"
-        disabled={packages.length >= 50}
+        disabled={rows.length >= 50}
         onClick={() => {
           let i = 1;
-          while (Object.hasOwn(value.packages, `package-${i}`)) i++;
-          onRuntime({ ...value, packages: { ...value.packages, [`package-${i}`]: '' } });
+          while (rows.some((item) => item.name === `package-${i}`)) i++;
+          commitRows([...rows, { id: nextRowId.current++, name: `package-${i}`, version: '' }]);
         }}
       >
         <Plus size={15} />

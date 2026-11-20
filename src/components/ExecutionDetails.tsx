@@ -86,8 +86,9 @@ export function StageExecutionDetails({
             : 'チェックポイントを再利用。元ジョブ '}
           <a href={monitorJobHref(job.projectId, stage.completion.jobId!)}>
             {stage.completion.jobId}
-          </a>{' '}
-          の試行 {stage.completion.attempt} を再利用しました。
+          </a>
+          {stage.completion.task ? ` (${stage.completion.task})` : ''} の試行{' '}
+          {stage.completion.attempt} を再利用しました。
         </p>
       )}
       {stage.cache && <p className="wf-help">{stage.cache.reason}</p>}

@@ -11,7 +11,7 @@ function RunComparison({ job }: { job: WorkflowJob }) {
     const metrics = usageSummary(run);
     return metrics.estimatedCostUsd === null
       ? '推定額なし'
-      : `$${metrics.estimatedCostUsd.toFixed(6)}（料金不明 ${metrics.unpricedAttempts} 試行）`;
+      : `$${metrics.estimatedCostUsd.toFixed(6)}（料金不明 ${metrics.unpricedAttempts} 試行${metrics.partialAttempts ? ` / 一部のみ ${metrics.partialAttempts} 試行` : ''}）`;
   };
   const keys = [
     ...new Set([
