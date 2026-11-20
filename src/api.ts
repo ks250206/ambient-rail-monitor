@@ -1,7 +1,7 @@
 import { QueryClient, useQuery } from '@tanstack/react-query';
 import { useState, useRef, useSyncExternalStore } from 'react';
 
-import type { ProjectSpec } from '../shared/types.ts';
+import type { AppStateResponse, ProjectSpec } from '../shared/types.ts';
 
 export const queryClient = new QueryClient();
 export async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -19,6 +19,14 @@ export function useProjects() {
   return useQuery({
     queryKey: ['projects'],
     queryFn: ({ signal }) => request<{ projects: ProjectSpec[] }>('/api/projects', { signal }),
+  });
+}
+
+export function useProjectJobs(projectId: string) {
+  return useQuery({
+    queryKey: ['monitor', projectId],
+    queryFn: ({ signal }) =>
+      request<AppStateResponse>(`/api/state?project=${encodeURIComponent(projectId)}`, { signal }),
   });
 }
 

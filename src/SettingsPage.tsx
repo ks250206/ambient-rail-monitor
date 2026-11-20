@@ -38,6 +38,11 @@ export function SettingsPage({ view }: { view: keyof typeof settingsTitles }) {
       : undefined);
   const { toast, showToast } = useToast();
   const select = (value: string) => {
+    if (view === 'list') {
+      rememberProjectId(value);
+      window.location.assign(pageHref('/projects', value));
+      return;
+    }
     setRequestedId(value);
     persistProjectId(value);
   };
@@ -63,8 +68,8 @@ export function SettingsPage({ view }: { view: keyof typeof settingsTitles }) {
           ) : (
             project &&
             view !== 'new' && (
-              <a href={pageHref(view === 'projects' ? '/workflow' : '/', project.id)}>
-                {view === 'projects' ? 'ワークフローへ' : '実行モニターへ'} <ArrowRight size={16} />
+              <a href={pageHref(view === 'projects' ? '/workflow' : '/jobs', project.id)}>
+                {view === 'projects' ? 'ワークフローへ' : 'ジョブ一覧へ'} <ArrowRight size={16} />
               </a>
             )
           )}

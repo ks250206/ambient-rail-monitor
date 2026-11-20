@@ -9,8 +9,8 @@ import { defineConfig } from 'vite-plus';
 const root = path.dirname(fileURLToPath(import.meta.url));
 const apiTarget = process.env.RAILFLOW_URL || 'http://127.0.0.1:4173';
 
-const settingsRoute: Connect.NextHandleFunction = (req, _res, next) => {
-  const match = req.url?.match(/^\/(projects|workflow)\/?(\?.*)?$/);
+const pageRoute: Connect.NextHandleFunction = (req, _res, next) => {
+  const match = req.url?.match(/^\/(projects|workflow|jobs)\/?(\?.*)?$/);
   if (match) req.url = '/' + match[1] + '.html' + (match[2] ?? '');
   next();
 };
@@ -20,12 +20,12 @@ export default defineConfig({
     react(),
     tailwindcss(),
     {
-      name: 'railflow-settings-routes',
+      name: 'railflow-page-routes',
       configureServer(server) {
-        server.middlewares.use(settingsRoute);
+        server.middlewares.use(pageRoute);
       },
       configurePreviewServer(server) {
-        server.middlewares.use(settingsRoute);
+        server.middlewares.use(pageRoute);
       },
     },
   ],
@@ -49,6 +49,7 @@ export default defineConfig({
       input: {
         main: path.resolve(root, 'index.html'),
         projects: path.resolve(root, 'projects.html'),
+        jobs: path.resolve(root, 'jobs.html'),
         workflow: path.resolve(root, 'workflow.html'),
       },
     },

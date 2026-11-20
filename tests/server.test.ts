@@ -292,6 +292,10 @@ describe('API integration', () => {
           '<title>ワークフロー — RAILFLOW | Science Tokyo</title>',
         );
 
+        const jobsPage = await fetch(`${api}/jobs/?project=xrd-lab`);
+        expect(jobsPage.status).toBe(200);
+        expect(await jobsPage.text()).toContain('data-page="jobs"');
+
         const management = await fetch(`${api}/projects/?project=xrd-lab`);
         expect(management.status).toBe(200);
         expect(await management.text()).toContain('data-page="projects"');

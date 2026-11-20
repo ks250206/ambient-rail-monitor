@@ -81,7 +81,7 @@ export function ArtifactViewer({ job, jobs }: ArtifactViewerProps) {
         {!job ? (
           <p className="py-5 text-sm text-ink-muted">ジョブを選択すると成果物が表示されます。</p>
         ) : (
-          <div className={`grid items-start gap-4 ${mode === 'compare' ? 'lg:grid-cols-2' : ''}`}>
+          <div className={`grid items-start gap-4 ${mode === 'compare' ? '@2xl:grid-cols-2' : ''}`}>
             <ArtifactPane key={job.id} job={job} label="選択中のジョブ" />
             {mode === 'compare' && (
               <ArtifactPane

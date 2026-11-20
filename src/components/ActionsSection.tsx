@@ -1,13 +1,11 @@
 import {
   Check,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   Download,
   ExternalLink,
   FileText,
   List,
-  Play,
   RotateCw,
   Search,
   SlidersHorizontal,
@@ -34,75 +32,33 @@ import {
 } from '../utils/workflow.ts';
 import { StatusIcon, StatusPill } from './StatusBadge.tsx';
 
-type RunFilter = 'all' | 'running' | 'done' | 'review';
 type StepDetailTab = 'summary' | 'logs';
 
-const ACTIONS_PAGE_SIZE = 7;
-
 interface ActionsSectionProps {
-  jobs: WorkflowJob[];
   selectedJob: WorkflowJob | null;
   selectedStage: StageKey;
   showAllLogs: boolean;
   project: ProjectSpec;
   nowMs: number;
-  onSelectJob: (jobId: string) => void;
   onSelectStage: (stage: StageKey) => void;
   onShowAllLogs: () => void;
   onApproveReview: (jobId: string) => void;
 }
 
-const FILTER_TABS: Array<{ id: RunFilter; label: string }> = [
-  { id: 'all', label: 'All' },
-  { id: 'running', label: 'Active' },
-  { id: 'done', label: 'Success' },
-  { id: 'review', label: 'Issues' },
-];
-
 export function ActionsSection({
-  jobs,
   selectedJob,
   selectedStage,
   showAllLogs,
   project,
   nowMs,
-  onSelectJob,
   onSelectStage,
   onShowAllLogs,
   onApproveReview,
 }: ActionsSectionProps) {
-  const [runFilter, setRunFilter] = useState<RunFilter>('all');
-  const [runSearch, setRunSearch] = useState('');
-  const [page, setPage] = useState(0);
   const [detailTab, setDetailTab] = useState<StepDetailTab>('summary');
   const [logSearch, setLogSearch] = useState('');
   const [showTimestamps, setShowTimestamps] = useState(true);
   const [expandedAttempts, setExpandedAttempts] = useState<Record<string, boolean>>({});
-
-  const filteredJobs = useMemo(() => {
-    const query = runSearch.trim().toLowerCase();
-    return jobs.filter((job) => {
-      const statusMatch =
-        runFilter === 'all' ||
-        (runFilter === 'running'
-          ? job.status === 'queued' || job.status === 'running'
-          : runFilter === 'review'
-            ? job.status === 'review' || job.status === 'failed'
-            : job.status === runFilter);
-      if (!statusMatch) return false;
-      if (!query) return true;
-      return `${job.id} ${job.file} ${job.agent || ''} ${job.worker || ''}`
-        .toLowerCase()
-        .includes(query);
-    });
-  }, [jobs, runFilter, runSearch]);
-
-  const totalPages = Math.max(1, Math.ceil(filteredJobs.length / ACTIONS_PAGE_SIZE));
-  const clampedPage = Math.min(page, totalPages - 1);
-  const pageJobs = filteredJobs.slice(
-    clampedPage * ACTIONS_PAGE_SIZE,
-    (clampedPage + 1) * ACTIONS_PAGE_SIZE,
-  );
 
   const spans = useMemo(() => (selectedJob ? getSpans(selectedJob) : []), [selectedJob]);
 
@@ -184,191 +140,16 @@ export function ActionsSection({
   return (
     <section
       id="actions"
-      aria-label="実行履歴と工程詳細"
+      aria-labelledby="job-detail-title"
       className="mt-8 scroll-mt-6 border-t-2 border-science-sub pt-4"
     >
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="section-heading">ジョブ詳細</h3>
+        <h3 id="job-detail-title" className="section-heading">
+          ジョブ詳細
+        </h3>
       </div>
 
-      <div className="grid min-h-[540px] grid-cols-1 overflow-hidden rounded-md border border-line bg-white xl:grid-cols-[minmax(285px,0.72fr)_minmax(0,1.68fr)]">
-        {/* Left pane: Run history list */}
-        <div className="flex min-w-0 flex-col border-b border-line bg-bg-2/70 xl:border-b-0 xl:border-r">
-          <div className="flex items-center justify-between px-4 pb-3 pt-4">
-            <div className="flex items-center gap-2">
-              <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-science-blue text-white">
-                <Play className="h-3.5 w-3.5 fill-current" />
-              </span>
-              <strong className="font-en text-[13px] font-bold text-science-blue">
-                ジョブの実行履歴
-              </strong>
-              <span className="rounded-full bg-bg-1 px-2 py-0.5 font-mono text-xs font-bold text-science-blue">
-                {jobs.length}
-              </span>
-            </div>
-            <span className="text-xs text-ink-muted">Newest first</span>
-          </div>
-
-          <div className="border-b border-line px-3.5 pb-3">
-            <label className="flex h-9 items-center gap-2 rounded-lg border border-line bg-white px-2.5 focus-within:border-eyebrow focus-within:ring-2 focus-within:ring-navy-100">
-              <Search className="h-3.5 w-3.5 shrink-0 text-ink-muted" />
-              <input
-                type="search"
-                value={runSearch}
-                onChange={(event) => {
-                  setRunSearch(event.target.value);
-                  setPage(0);
-                }}
-                placeholder="Search runs or files…"
-                aria-label="ジョブを検索"
-                className="w-full min-w-0 bg-transparent text-xs text-ink outline-none placeholder:text-ink-muted"
-              />
-            </label>
-
-            <div
-              className="mt-2.5 flex flex-wrap gap-1"
-              role="group"
-              aria-label="Filter run status"
-            >
-              {FILTER_TABS.map((tab) => {
-                const active = runFilter === tab.id;
-                return (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    aria-pressed={active}
-                    onClick={() => {
-                      setRunFilter(tab.id);
-                      setPage(0);
-                    }}
-                    className={`rounded-md px-2.5 py-1 font-en text-xs font-semibold transition-colors ${
-                      active
-                        ? 'bg-science-blue text-white shadow-2xs'
-                        : 'bg-white text-ink-muted hover:bg-bg-1 hover:text-science-blue'
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div
-            className="max-h-[340px] flex-1 overflow-y-auto xl:max-h-[520px]"
-            aria-label="ジョブの実行履歴"
-          >
-            {pageJobs.length === 0 ? (
-              <div className="flex min-h-[220px] flex-col items-center justify-center gap-2 p-6 text-center">
-                <Search className="h-6 w-6 text-eyebrow" />
-                <strong className="text-xs font-semibold text-science-blue">
-                  No matching runs
-                </strong>
-                <p className="text-xs text-ink-muted">
-                  {jobs.length
-                    ? 'Try another status or search term.'
-                    : 'Drop a file or start a demo run.'}
-                </p>
-              </div>
-            ) : (
-              pageJobs.map((job) => {
-                const done = job.stages.filter((stage) => stage.status === 'success').length;
-                const isSelected = selectedJob?.id === job.id;
-                const summaryLabel =
-                  job.status === 'done'
-                    ? 'Completed'
-                    : job.status === 'review'
-                      ? 'Attention required'
-                      : job.status === 'failed'
-                        ? 'Execution failed'
-                        : job.status === 'running'
-                          ? 'Processing'
-                          : 'Waiting for worker';
-                const resultTone =
-                  job.status === 'done'
-                    ? 'text-st-green-dark'
-                    : job.status === 'running'
-                      ? 'text-eyebrow'
-                      : job.status === 'review'
-                        ? 'text-st-orange-dark'
-                        : job.status === 'failed'
-                          ? 'text-st-red-dark'
-                          : 'text-ink-muted';
-
-                return (
-                  <button
-                    key={job.id}
-                    type="button"
-                    aria-pressed={isSelected}
-                    onClick={() => onSelectJob(job.id)}
-                    className={`flex w-full items-start gap-2.5 border-b border-line px-3.5 py-3 text-left transition-colors ${
-                      isSelected
-                        ? 'border-l-[3px] border-l-science-blue bg-white pl-3'
-                        : 'hover:bg-bg-1/70'
-                    }`}
-                  >
-                    <span className="pt-0.5">
-                      <StatusIcon status={job.status} size="sm" />
-                    </span>
-                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <strong className="truncate text-xs font-bold text-ink">{job.file}</strong>
-                      <span className="truncate text-xs text-ink-muted">
-                        {(job.agent || 'unassigned').toUpperCase()}
-                      </span>
-                      <span className="truncate font-mono text-xs text-ink-muted">
-                        {job.id} · {clockDate(job.createdAt)}
-                      </span>
-                    </span>
-                    <span className="flex shrink-0 flex-col items-end gap-0.5 text-right tabular-nums">
-                      <span className={`text-xs font-bold ${resultTone}`}>{summaryLabel}</span>
-                      <span className="font-mono text-xs text-ink">
-                        {job.startedAt
-                          ? actionDuration(job.startedAt, job.finishedAt, nowMs)
-                          : 'Queued'}
-                      </span>
-                      <span className="text-xs text-ink-muted">
-                        {done}/{job.stages.length} steps
-                      </span>
-                    </span>
-                  </button>
-                );
-              })
-            )}
-          </div>
-
-          <div className="flex items-center justify-between gap-2 border-t border-line bg-bg-1/70 px-3.5 py-2.5 text-xs text-ink-muted">
-            <span>
-              {filteredJobs.length
-                ? `${clampedPage * ACTIONS_PAGE_SIZE + 1}–${Math.min(
-                    (clampedPage + 1) * ACTIONS_PAGE_SIZE,
-                    filteredJobs.length,
-                  )} of ${filteredJobs.length}`
-                : '0 runs'}
-            </span>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                aria-label="Previous page"
-                disabled={clampedPage === 0}
-                onClick={() => setPage((prev) => Math.max(0, prev - 1))}
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-line bg-white text-science-blue hover:bg-bg-1 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                aria-label="Next page"
-                disabled={clampedPage + 1 >= totalPages}
-                onClick={() => setPage((prev) => Math.min(totalPages - 1, prev + 1))}
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-line bg-white text-science-blue hover:bg-bg-1 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Right pane: Run header + Vertical Steps Tabs + Unified Summary/Logs Grid */}
+      <div className="overflow-hidden rounded-md border border-line bg-white">
         <div
           id="job-detail"
           tabIndex={-1}
@@ -506,9 +287,9 @@ export function ActionsSection({
           </div>
 
           {/* Actions-style Vertical Steps + Stacked Summary/Logs Area */}
-          <div className="grid flex-1 grid-cols-1 lg:grid-cols-[minmax(220px,0.8fr)_minmax(0,1.6fr)]">
+          <div className="grid flex-1 grid-cols-1 @3xl:grid-cols-[minmax(220px,0.8fr)_minmax(0,1.6fr)]">
             {/* Vertical Steps Tabs */}
-            <div className="flex min-w-0 flex-col border-b border-line bg-bg-2/40 lg:border-b-0 lg:border-r">
+            <div className="flex min-w-0 flex-col border-b border-line bg-bg-2/40 @3xl:border-b-0 @3xl:border-r">
               <div className="flex items-center justify-between border-b border-line bg-bg-1/70 px-3.5 py-2.5 text-xs font-bold tracking-[0.12em] text-eyebrow uppercase">
                 <span className="font-en">Jobs &amp; Steps</span>
                 <span className="font-mono tracking-normal text-ink-muted">

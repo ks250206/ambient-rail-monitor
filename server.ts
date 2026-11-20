@@ -804,6 +804,7 @@ const MIME_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.webp': 'image/webp',
   '.ico': 'image/x-icon',
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
@@ -1193,7 +1194,7 @@ const server = http.createServer(async (req, res) => {
       const segment =
         route === ''
           ? 'index.html'
-          : route === '/projects' || route === '/workflow'
+          : ['/projects', '/workflow', '/jobs'].includes(route)
             ? route.slice(1) + '.html'
             : pathname.slice(1);
       if (segment.includes('..') || segment.startsWith('.')) {
@@ -1203,7 +1204,10 @@ const server = http.createServer(async (req, res) => {
       if (!file.startsWith(DIST + path.sep)) {
         return deliverJSON(res, { error: 'Invalid path' }, 400);
       }
-      if (!existsSync(file) && ['index.html', 'workflow.html', 'projects.html'].includes(segment)) {
+      if (
+        !existsSync(file) &&
+        ['index.html', 'workflow.html', 'projects.html', 'jobs.html'].includes(segment)
+      ) {
         res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' });
         res.end('Frontend build not found in dist/. Run "pnpm run build" or use "pnpm run dev".');
         return;

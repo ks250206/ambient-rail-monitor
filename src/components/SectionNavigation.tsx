@@ -1,6 +1,4 @@
 const sections = [
-  ['#workflow', 'ワークフロー'],
-  ['#board', 'ジョブボード'],
   ['#actions', 'ジョブ詳細'],
   ['#trace', 'トレース'],
   ['#events', 'イベント'],
@@ -13,7 +11,7 @@ export function SectionNavigation({ activeHash }: { activeHash: string }) {
       aria-label="ページ内ナビゲーション"
       className="border-y border-line bg-white md:sticky md:top-0 md:z-20"
     >
-      <div className="page-width grid grid-cols-3 sm:flex sm:flex-wrap">
+      <div className="grid grid-cols-2 sm:flex sm:flex-wrap">
         {sections.map(([hash, label]) => (
           <a
             key={hash}

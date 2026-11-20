@@ -248,10 +248,25 @@ export function persistProjectId(projectId: string): void {
   const url = new URL(window.location.href);
   if (url.searchParams.get('project') !== projectId) {
     url.searchParams.set('project', projectId);
+    url.searchParams.delete('job');
+    if (url.pathname.replace(/\/$/, '') === '/jobs') url.searchParams.delete('q');
     window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
   }
 }
 
-export function pageHref(basePath: '/' | '/workflow' | '/projects', projectId: string): string {
+export function pageHref(
+  basePath: '/' | '/workflow' | '/projects' | '/jobs',
+  projectId: string,
+): string {
   return `${basePath}?project=${encodeURIComponent(projectId)}`;
+}
+
+export function monitorJobHref(projectId: string, jobId: string): string {
+  return `${pageHref('/', projectId)}&job=${encodeURIComponent(jobId)}#job-detail`;
+}
+
+export function jobMatchesSearch(job: WorkflowJob, normalizedQuery: string): boolean {
+  return [job.id, job.file, job.agent, job.worker].some((field) =>
+    field?.toLowerCase().includes(normalizedQuery),
+  );
 }

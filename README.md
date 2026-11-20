@@ -6,12 +6,12 @@ A local-first proof of concept for **pull-based Codex / Claude Code scientific-a
 
 ![RAILFLOW workflow overview](docs/preview.png)
 
-Four synchronized operational views plus workflow specification editing:
+The RAILFLOW header link opens the landing page (`/`). From there, select a project to access its workflow, jobs, and execution monitor.
 
-- **Projects (`/projects`)** — create projects, edit their names and descriptions, and find their input and artifact directories. The project list is the entry point. Select a project to open its details, workflow, and monitor.
+- **Projects (`/projects`)** — create projects, edit their names and descriptions, and find their input and artifact directories. Select a project to open its details, workflow, jobs, and monitor.
 - **Workflow (`/workflow`)** — edit acceptance criteria, variable stage count (add/remove/reorder 1–20 stages), default and per-stage LLM model and reasoning effort (`--model`, `-c model_reasoning_effort` for Codex / `--effort` for Claude), and per-stage custom instructions saved to `data/projects.json` (`GET/POST /api/projects`, `PUT/DELETE /api/projects/:id`).
-- **Job board (Kanban)** — follows the project description and ordered workflow stages on the monitor (`/`). Select a job to inspect its steps, events, and outputs. [Job board](docs/board.png)
-- **Actions / Runs & stage details** — unified run history with Actions-style vertical step tabs and a single-grid right pane switching between **Summary** (LLM-generated `summary_<stage>.txt` with fallback to final agent output) and **Logs**, plus active/review/failed status filtering, collapsible attempts, timestamps, live durations, search, human review approval, and raw log download. [Step logs](docs/actions.png) · [Review gate](docs/review.png)
+- **Jobs (`/jobs`)** — submit files or demo runs and track their status on the board. Select a job to open it in the execution monitor. [Job board](docs/board.png)
+- **Actions / Runs & stage details** — a persistent run-history sidebar with Actions-style vertical step tabs and a single-grid right pane switching between **Summary** (LLM-generated `summary_<stage>.txt` with fallback to final agent output) and **Logs**, plus active/review/failed status filtering, collapsible attempts, timestamps, live durations, search, human review approval, and raw log download. [Step logs](docs/actions.png) · [Review gate](docs/review.png)
 - **Trace explorer & events** — individual execution attempts rendered against elapsed time with Science Tokyo colors and visible status labels, and raw agent events. The artifact viewer opens on the selected job. Compare it with another job in the same project, preview HTML reports, or download presentations.
 
 ## Tech stack
