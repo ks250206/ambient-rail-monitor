@@ -8,7 +8,7 @@ A local-first proof of concept for **pull-based Codex / Claude Code scientific-a
 
 Four synchronized operational views plus workflow specification editing:
 
-- **Projects (`/projects`)** — create projects, edit their names and descriptions, and find their input and artifact directories. The All projects tab lists each project by name, ID, and description.
+- **Projects (`/projects`)** — create projects, edit their names and descriptions, and find their input and artifact directories. The project list is the entry point. Select a project to open its details, workflow, and monitor.
 - **Workflow (`/workflow`)** — edit acceptance criteria, variable stage count (add/remove/reorder 1–20 stages), default and per-stage LLM model and reasoning effort (`--model`, `-c model_reasoning_effort` for Codex / `--effort` for Claude), and per-stage custom instructions saved to `data/projects.json` (`GET/POST /api/projects`, `PUT/DELETE /api/projects/:id`).
 - **Job board (Kanban)** — follows the project description and ordered workflow stages on the monitor (`/`). Select a job to inspect its steps, events, and outputs. [Job board](docs/board.png)
 - **Actions / Runs & stage details** — unified run history with Actions-style vertical step tabs and a single-grid right pane switching between **Summary** (LLM-generated `summary_<stage>.txt` with fallback to final agent output) and **Logs**, plus active/review/failed status filtering, collapsible attempts, timestamps, live durations, search, human review approval, and raw log download. [Step logs](docs/actions.png) · [Review gate](docs/review.png)

@@ -235,12 +235,16 @@ export function readInitialProjectId(): string {
   }
 }
 
-export function persistProjectId(projectId: string): void {
+export function rememberProjectId(projectId: string): void {
   try {
     window.localStorage.setItem(PROJECT_STORAGE_KEY, projectId);
   } catch {
     // Ignore storage quota / privacy errors.
   }
+}
+
+export function persistProjectId(projectId: string): void {
+  rememberProjectId(projectId);
   const url = new URL(window.location.href);
   if (url.searchParams.get('project') !== projectId) {
     url.searchParams.set('project', projectId);

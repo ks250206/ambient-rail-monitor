@@ -4,7 +4,7 @@ const sections = [
   ['#actions', 'ジョブ詳細'],
   ['#trace', 'トレース'],
   ['#events', 'イベント'],
-  ['#artifacts', '成果物閲覧'],
+  ['#artifacts', '成果物'],
 ];
 
 export function SectionNavigation({ activeHash }: { activeHash: string }) {

@@ -12,17 +12,28 @@ import { queryClient } from './api.ts';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import { SettingsPage } from './SettingsPage.tsx';
+import { SettingsPage, settingsTitles } from './SettingsPage.tsx';
 
 const container = document.getElementById('root');
 if (!container) {
   throw new Error('Root element #root not found');
 }
 
+const params = new URLSearchParams(window.location.search);
+const view =
+  container.dataset.page === 'workflow'
+    ? 'workflow'
+    : params.has('new')
+      ? 'new'
+      : params.get('project')
+        ? 'projects'
+        : 'list';
+document.title = `${settingsTitles[view]} — RAILFLOW | Science Tokyo`;
+
 createRoot(container).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <SettingsPage page={container.dataset.page === 'projects' ? 'projects' : 'workflow'} />
+      <SettingsPage view={view} />
     </QueryClientProvider>
   </StrictMode>,
 );

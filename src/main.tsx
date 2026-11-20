@@ -19,10 +19,14 @@ if (!container) {
   throw new Error('Root element #root not found');
 }
 
-createRoot(container).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <App />
-    </QueryClientProvider>
-  </StrictMode>,
-);
+if (!window.location.search && !window.location.hash) {
+  window.location.replace('/projects');
+} else {
+  createRoot(container).render(
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <App />
+      </QueryClientProvider>
+    </StrictMode>,
+  );
+}

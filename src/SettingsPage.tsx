@@ -1,26 +1,41 @@
 import { useMutation } from '@tanstack/react-query';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, Plus } from 'lucide-react';
 import { useState } from 'react';
 
 import type { ProjectSpec } from '../shared/types.ts';
 import { jsonRequest, queryClient, request, useProjects, useToast } from './api.ts';
-import { ProjectManagement } from './components/ProjectManagement.tsx';
-import { ProjectTabs } from './components/ProjectTabs.tsx';
+import { ProjectCreate, ProjectManagement } from './components/ProjectManagement.tsx';
+import { ProjectList } from './components/ProjectList.tsx';
 import { AppHeader } from './components/AppHeader.tsx';
 import {
   type WorkflowUpdatePayload,
   WorkflowSpecSection,
 } from './components/WorkflowSpecSection.tsx';
-import { pageHref, persistProjectId, readInitialProjectId } from './utils/workflow.ts';
+import {
+  pageHref,
+  persistProjectId,
+  readInitialProjectId,
+  rememberProjectId,
+} from './utils/workflow.ts';
 
 type ProjectResponse = { projects: ProjectSpec[]; project: ProjectSpec };
 
-export function SettingsPage({ page }: { page: 'projects' | 'workflow' }) {
-  const managing = page === 'projects';
+export const settingsTitles = {
+  list: 'プロジェクト一覧',
+  new: '新規プロジェクト',
+  projects: 'プロジェクト',
+  workflow: 'ワークフロー',
+};
+
+export function SettingsPage({ view }: { view: keyof typeof settingsTitles }) {
   const [requestedId, setRequestedId] = useState(readInitialProjectId);
   const projectsQuery = useProjects();
   const projects = projectsQuery.data?.projects ?? [];
-  const project = projects.find((item) => item.id === requestedId) ?? projects[0];
+  const project =
+    projects.find((item) => item.id === requestedId) ??
+    (view === 'workflow' && !new URLSearchParams(window.location.search).has('project')
+      ? projects[0]
+      : undefined);
   const { toast, showToast } = useToast();
   const select = (value: string) => {
     setRequestedId(value);
@@ -29,7 +44,7 @@ export function SettingsPage({ page }: { page: 'projects' | 'workflow' }) {
   return (
     <div className="min-h-screen bg-white text-ink">
       <AppHeader
-        currentPage={page}
+        currentPage={view}
         projects={projects}
         selectedProjectId={project?.id ?? requestedId}
         onSelectProject={select}
@@ -39,27 +54,52 @@ export function SettingsPage({ page }: { page: 'projects' | 'workflow' }) {
       />
       <main className="workflow-page page-width">
         <div className="workflow-title">
-          <h1>{managing ? 'プロジェクト' : 'ワークフロー'}</h1>
-          {project && (
-            <a href={pageHref(managing ? '/workflow' : '/', project.id)}>
-              {managing ? 'ワークフローへ' : '実行モニターへ'} <ArrowRight size={16} />
+          <h1>{settingsTitles[view]}</h1>
+          {view === 'list' ? (
+            <a href="/projects?new=1">
+              <Plus size={16} />
+              新規プロジェクト
             </a>
+          ) : (
+            project &&
+            view !== 'new' && (
+              <a href={pageHref(view === 'projects' ? '/workflow' : '/', project.id)}>
+                {view === 'projects' ? 'ワークフローへ' : '実行モニターへ'} <ArrowRight size={16} />
+              </a>
+            )
           )}
         </div>
-        {project &&
-          (managing ? (
-            <ProjectTabs projects={projects} onSelect={select}>
-              <ProjectManagement
-                key={project.id}
-                project={project}
-                projects={projects}
-                onSelect={select}
-                showToast={showToast}
-              />
-            </ProjectTabs>
-          ) : (
-            <WorkflowEditor key={project.id} project={project} showToast={showToast} />
-          ))}
+        {view === 'list' && projectsQuery.data && <ProjectList projects={projects} />}
+        {view === 'new' && (
+          <ProjectCreate
+            showToast={showToast}
+            onCancel={() => window.location.assign('/projects')}
+            onSelect={(id) => {
+              rememberProjectId(id);
+              window.location.replace(pageHref('/projects', id));
+            }}
+          />
+        )}
+        {view === 'projects' && project && (
+          <ProjectManagement
+            key={project.id}
+            project={project}
+            projects={projects}
+            onDeleted={() => window.location.replace('/projects')}
+            showToast={showToast}
+          />
+        )}
+        {view === 'workflow' && project && (
+          <WorkflowEditor key={project.id} project={project} showToast={showToast} />
+        )}
+        {(view === 'projects' || view === 'workflow') && !project && projectsQuery.isSuccess && (
+          <p role="status">
+            指定されたプロジェクトが見つかりません。{' '}
+            <a href="/projects" className="text-science-blue underline">
+              プロジェクト一覧へ戻る
+            </a>
+          </p>
+        )}
         {projectsQuery.isError && (
           <p role="alert">
             プロジェクトを取得できませんでした。{' '}

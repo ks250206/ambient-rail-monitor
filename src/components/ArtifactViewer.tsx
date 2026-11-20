@@ -54,7 +54,7 @@ export function ArtifactViewer({ job, jobs }: ArtifactViewerProps) {
 
   return (
     <div className="mt-3">
-      <div role="tablist" aria-label="成果物閲覧" className="flex border-b border-line">
+      <div role="tablist" aria-label="成果物" className="flex border-b border-line">
         {modes.map(({ id, label }) => (
           <button
             key={id}
@@ -107,6 +107,7 @@ interface ArtifactPaneProps {
 
 function ArtifactPane({ job, label, choices, onChoose }: ArtifactPaneProps) {
   const [selection, setSelection] = useState<{ jobId: string; file: string } | null>(null);
+  const fileGroup = useId();
   const files = job?.artifacts ?? [];
   const artifact =
     files.find((item) => selection?.jobId === job?.id && selection?.file === item.name) ??
@@ -118,10 +119,10 @@ function ArtifactPane({ job, label, choices, onChoose }: ArtifactPaneProps) {
 
   return (
     <section
-      aria-label={`${label}の成果物閲覧`}
+      aria-label={`${label}の成果物`}
       className="min-w-0 overflow-hidden rounded border border-line bg-white"
     >
-      <div className="grid gap-3 border-b border-line bg-bg-2 px-4 py-3 sm:grid-cols-2">
+      <div className="border-b border-line bg-bg-2 px-4 py-3">
         <div className="min-w-0">
           {choices && onChoose ? (
             <label className="grid gap-1">
@@ -151,24 +152,39 @@ function ArtifactPane({ job, label, choices, onChoose }: ArtifactPaneProps) {
             )
           )}
         </div>
-        {artifact && job && (
-          <label className="grid min-w-0 content-start gap-1">
-            <span className="text-xs font-bold text-ink-muted">ファイル</span>
-            <select
-              className={selectClass}
-              aria-label={`${label}の成果物`}
-              value={artifact.name}
-              onChange={(e) => setSelection({ jobId: job.id, file: e.target.value })}
-            >
-              {files.map((item) => (
-                <option key={item.name} value={item.name}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
       </div>
+      {job && (
+        <fieldset className="min-w-0 px-4 pt-3">
+          <legend className="float-left mb-2 w-full text-sm font-bold text-science-blue">
+            成果物 <span className="ml-1 tabular-nums">{files.length}件</span>
+          </legend>
+          {files.length > 0 && (
+            <ul className="clear-both divide-y divide-line border-y border-line">
+              {files.map((item) => (
+                <li key={item.name}>
+                  <label
+                    className={`flex cursor-pointer items-center gap-3 px-2 py-2.5 text-sm hover:bg-bg-2 ${item.name === artifact?.name ? 'bg-bg-2 font-semibold text-science-blue' : ''}`}
+                  >
+                    <input
+                      type="radio"
+                      name={fileGroup}
+                      value={item.name}
+                      aria-label={item.name}
+                      checked={item.name === artifact?.name}
+                      onChange={() => setSelection({ jobId: job.id, file: item.name })}
+                      className="shrink-0 accent-science-blue"
+                    />
+                    <span className="min-w-0 flex-1 break-all">{item.name}</span>
+                    <span className="shrink-0 text-xs font-normal tabular-nums text-ink-muted">
+                      {bytes(item.bytes)}
+                    </span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          )}
+        </fieldset>
+      )}
       {!job ? (
         <p className="px-4 py-6 text-sm text-ink-muted">
           {choices?.length
@@ -182,9 +198,7 @@ function ArtifactPane({ job, label, choices, onChoose }: ArtifactPaneProps) {
       ) : (
         <>
           <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 text-xs">
-            <p className="min-w-0 break-all text-ink-muted">
-              {artifact.name} · {bytes(artifact.bytes)}
-            </p>
+            <p className="min-w-0 break-all text-ink-muted">{artifact.name}</p>
             {isHtml ? (
               <a
                 href={artifact.uri}
