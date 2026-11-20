@@ -123,9 +123,10 @@ export function StageExecutionDetails({
           <ConditionEvidence result={gate.result} />
         </div>
       ))}
-      {stage.status === 'review' && stage.workspace && stage.reviewSequence !== undefined && (
-        <ReviewOutputs job={job} stage={stage} />
-      )}
+      {job.status === 'review' &&
+        stage.status === 'review' &&
+        stage.workspace &&
+        stage.reviewSequence !== undefined && <ReviewOutputs job={job} stage={stage} />}
       {config?.prompt && (
         <details>
           <summary>この試行で送信したプロンプト</summary>

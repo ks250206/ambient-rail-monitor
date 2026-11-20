@@ -1,10 +1,14 @@
 import { useMutation } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { WorkflowJob } from '../../shared/types.ts';
 import { jsonRequest, queryClient, request } from '../api.ts';
+import { NumberValue } from './NumberValue.tsx';
 
 export function JobControls({ job }: { job: WorkflowJob }) {
   const [priority, setPriority] = useState(job.priority ?? 0);
+  useEffect(() => {
+    setPriority(job.priority ?? 0);
+  }, [job.id, job.priority]);
   const action = useMutation({
     mutationFn: ({ name, data = {} }: { name: string; data?: unknown }) =>
       request(`/api/jobs/${job.id}/${name}`, jsonRequest('POST', data)),
@@ -45,17 +49,13 @@ export function JobControls({ job }: { job: WorkflowJob }) {
           <>
             <label>
               優先度（大きい順）
-              <input
-                type="number"
-                min={-100}
-                max={100}
-                value={priority}
-                onChange={(event) => setPriority(Number(event.target.value))}
-              />
+              <NumberValue value={priority} integer onChange={setPriority} />
             </label>
             <button
               className="wf-secondary"
-              disabled={action.isPending || priority === (job.priority ?? 0)}
+              disabled={
+                action.isPending || !Number.isInteger(priority) || priority === (job.priority ?? 0)
+              }
               onClick={() => action.mutate({ name: 'priority', data: { priority } })}
             >
               優先度を保存

@@ -1,7 +1,8 @@
 import { useMutation } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { AppStateResponse } from '../../shared/types.ts';
 import { jsonRequest, queryClient, request } from '../api.ts';
+import { NumberValue } from './NumberValue.tsx';
 
 export function QueuePanel({ queue }: { queue: NonNullable<AppStateResponse['queue']> }) {
   const [settings, setSettings] = useState({
@@ -9,10 +10,21 @@ export function QueuePanel({ queue }: { queue: NonNullable<AppStateResponse['que
     maxJobsPerWorker: queue.maxJobsPerWorker,
     maxRecoveries: queue.maxRecoveries,
   });
+  useEffect(() => {
+    setSettings({
+      maxConcurrentJobs: queue.maxConcurrentJobs,
+      maxJobsPerWorker: queue.maxJobsPerWorker,
+      maxRecoveries: queue.maxRecoveries,
+    });
+  }, [queue.maxConcurrentJobs, queue.maxJobsPerWorker, queue.maxRecoveries]);
   const save = useMutation({
     mutationFn: () => request('/api/queue', jsonRequest('PUT', settings)),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['monitor'] }),
   });
+  const invalid =
+    !Number.isInteger(settings.maxConcurrentJobs) ||
+    !Number.isInteger(settings.maxJobsPerWorker) ||
+    !Number.isInteger(settings.maxRecoveries);
   return (
     <details className="wf-disclosure">
       <summary>
@@ -24,23 +36,21 @@ export function QueuePanel({ queue }: { queue: NonNullable<AppStateResponse['que
       <fieldset disabled={save.isPending} className="wf-fields">
         {(
           [
-            ['maxConcurrentJobs', '全体の同時ジョブ数', 1, 32],
-            ['maxJobsPerWorker', 'ワーカーあたりの同時ジョブ数', 1, 16],
-            ['maxRecoveries', 'ジョブの自動復旧回数', 0, 20],
+            ['maxConcurrentJobs', '全体の同時ジョブ数'],
+            ['maxJobsPerWorker', 'ワーカーあたりの同時ジョブ数'],
+            ['maxRecoveries', 'ジョブの自動復旧回数'],
           ] as const
-        ).map(([key, label, min, max]) => (
+        ).map(([key, label]) => (
           <label key={key}>
             {label}
-            <input
-              type="number"
-              min={min}
-              max={max}
+            <NumberValue
               value={settings[key]}
-              onChange={(event) => setSettings({ ...settings, [key]: Number(event.target.value) })}
+              integer
+              onChange={(next) => setSettings({ ...settings, [key]: next })}
             />
           </label>
         ))}
-        <button className="wf-secondary" onClick={() => save.mutate()}>
+        <button className="wf-secondary" disabled={invalid} onClick={() => save.mutate()}>
           キュー設定を保存
         </button>
       </fieldset>

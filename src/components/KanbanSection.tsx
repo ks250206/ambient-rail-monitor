@@ -29,9 +29,9 @@ export function KanbanSection({ jobs }: { jobs: WorkflowJob[] }) {
             column.id === 'review'
               ? job.status === 'review' || job.status === 'failed'
               : column.id === 'queued'
-                ? ['queued', 'paused', 'pausing'].includes(job.status)
+                ? ['queued', 'paused'].includes(job.status)
                 : column.id === 'running'
-                  ? ['running', 'cancelling'].includes(job.status)
+                  ? ['running', 'pausing', 'cancelling'].includes(job.status)
                   : ['done', 'cancelled'].includes(job.status),
           )}
           nowMs={nowMs}

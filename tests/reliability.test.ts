@@ -288,3 +288,77 @@ it('restores paused reviews from SQLite and repairs a damaged JSONL export', asy
     await f.close();
   }
 });
+
+it('resumes incomplete artifact publication after a worker stops between report.html and report.pptx', async () => {
+  const f = await workflowFixture(undefined, { RAILFLOW_LEASE_MS: '800' });
+  try {
+    await f.json('/api/projects', {
+      id: 'partial-pub',
+      name: 'Partial Publication',
+      stages: [{ key: 'report' }],
+    });
+    const { job } = await f.json<{ job: WorkflowJob }>('/api/demo', { projectId: 'partial-pub' });
+    const claim = await f.json<ClaimResponse>('/api/jobs/claim', {
+      agent: 'codex',
+      worker: 'w1',
+    });
+    const token = claim.lease!.token;
+    const work = path.join(claim.paths!.work, '.attempts/report/1');
+    mkdirSync(work, { recursive: true });
+    writeFileSync(path.join(work, 'report.html'), '<h1>html</h1>');
+    writeFileSync(path.join(work, 'report.pptx'), 'pptx-bytes');
+    await f.json(`/api/jobs/${job.id}/events`, {
+      type: 'stage.started',
+      leaseToken: token,
+      stage: 'report',
+      attempt: 1,
+      workspace: '.attempts/report/1',
+    });
+    await f.json(`/api/jobs/${job.id}/events`, {
+      type: 'stage.executed',
+      leaseToken: token,
+      stage: 'report',
+      attempt: 1,
+    });
+    await f.json(`/api/jobs/${job.id}/events`, {
+      type: 'stage.succeeded',
+      leaseToken: token,
+      stage: 'report',
+      attempt: 1,
+      workspace: '.attempts/report/1',
+    });
+    mkdirSync(claim.paths!.artifacts, { recursive: true });
+    writeFileSync(path.join(claim.paths!.artifacts, 'report.html'), '<h1>html</h1>');
+    await f.json(`/api/jobs/${job.id}/events`, {
+      type: 'artifact.created',
+      leaseToken: token,
+      stage: 'report',
+      attempt: 1,
+      artifact: { name: 'report.html' },
+    });
+    // Worker dies before publishing report.pptx.
+    await f.json(`/api/jobs/${job.id}/release`, { leaseToken: token });
+    expect((await f.job(job.id)).status).toBe('queued');
+    expect((await f.job(job.id)).artifacts.map((item) => item.name)).toEqual(['report.html']);
+
+    f.worker(cliPrelude + `throw new Error('must not rerun accepted stage');`);
+    const done = await f.until(job.id, 'done');
+    expect(done.stages[0].attempts).toBe(1);
+    expect(done.artifacts.map((item) => item.name).sort()).toEqual(['report.html', 'report.pptx']);
+  } finally {
+    await f.close();
+  }
+});
+
+it('fails immediately on missing executable (ENOENT) without hanging in process-supervisor', async () => {
+  const { runCommand } = await import('../shared/process-runner.ts');
+  const start = performance.now();
+  await expect(
+    runCommand('railflow-nonexistent-binary-xyz', [], {
+      cwd: process.cwd(),
+      timeoutMs: 10_000,
+      timeoutKind: 'timeout',
+    }),
+  ).rejects.toMatchObject({ kind: 'execution_error' });
+  expect(performance.now() - start).toBeLessThan(3000);
+});

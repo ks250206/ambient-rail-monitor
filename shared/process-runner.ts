@@ -52,14 +52,8 @@ export async function runCommand(
     if (!child.pid || closed) return;
     try {
       child.kill(signal);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
-        try {
-          child.kill(signal);
-        } catch {
-          /* The process has already exited. */
-        }
-      }
+    } catch {
+      /* The supervisor has already exited. */
     }
   };
   const stop = (kind: FailureKind) => {
@@ -71,8 +65,9 @@ export async function runCommand(
     );
     telemetry.abort();
     if (closed) return;
+    child.stdin.end();
     killTree('SIGTERM');
-    killTimer ??= setTimeout(() => killTree('SIGKILL'), (options.graceMs ?? 500) + 500);
+    killTimer ??= setTimeout(() => killTree('SIGKILL'), (options.graceMs ?? 500) + 1500);
   };
   const onAbort = () => stop('interrupted');
   options.signal?.addEventListener('abort', onAbort, { once: true });

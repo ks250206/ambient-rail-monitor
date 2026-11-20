@@ -59,12 +59,7 @@ export function JobsPage({ project }: { project: ProjectSpec }) {
             更新
           </button>
         </div>
-        {query.data?.queue && (
-          <QueuePanel
-            key={`${query.data.queue.maxConcurrentJobs}-${query.data.queue.maxJobsPerWorker}-${query.data.queue.maxRecoveries}`}
-            queue={query.data.queue}
-          />
-        )}
+        {query.data?.queue && <QueuePanel queue={query.data.queue} />}
         <DatasetUpload
           projectId={project.id}
           onCreated={(job) => window.location.assign(monitorJobHref(project.id, job.id))}

@@ -239,7 +239,8 @@ export function groupStageAttempts(events: WorkflowEvent[]): AttemptGroup[] {
     if (
       event.type === 'stage.succeeded' ||
       event.type === 'stage.failed' ||
-      event.type === 'review.required'
+      event.type === 'review.required' ||
+      event.type === 'stage.interrupted'
     ) {
       current.end ??= event.at;
     }

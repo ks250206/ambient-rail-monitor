@@ -1,18 +1,23 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  copyFileSync,
+  closeSync,
+  constants,
   createReadStream,
   existsSync,
+  fstatSync,
   type FSWatcher,
   mkdirSync,
   lstatSync,
+  openSync,
   readdirSync,
+  readSync,
   renameSync,
   rmSync,
   readFileSync,
   statSync,
   watch,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import os from 'node:os';
@@ -811,66 +816,80 @@ function requireLease(job: WorkflowJob, token: unknown): Lease {
   return lease;
 }
 
+function cleanupPublication(job: WorkflowJob, leaseToken?: string) {
+  if (!leaseToken) return;
+  rmSync(path.join(jobWorkspace(job), '.publications', leaseToken), {
+    recursive: true,
+    force: true,
+  });
+}
+
 function settleLease(job: WorkflowJob, reason: string, cutoff = Date.now()) {
   const stoppingStatus = job.status;
-  for (const stage of job.stages) {
-    if (stage.status === 'running') {
-      appendEvent({
-        type: 'stage.interrupted',
-        jobId: job.id,
-        projectId: job.projectId,
-        stage: stage.key,
-        attempt: stage.attempts,
-        failureKind: 'interrupted',
-        elapsedMs: Math.max(0, cutoff - Date.parse(stage.startedAt!)),
-        message: reason + '。この試行の出力は引き継ぎません。',
-      });
-    } else if (stage.status === 'retry' && stage.retryAt) {
-      const started = job.events.findLast(
-        (event) =>
-          ['stage.retry', 'stage.retry.resumed'].includes(event.type) && event.stage === stage.key,
-      );
-      appendEvent({
-        type: 'stage.retry.paused',
-        retryRemainingMs: Math.max(0, Date.parse(stage.retryAt) - cutoff),
-        jobId: job.id,
-        projectId: job.projectId,
-        stage: stage.key,
-        elapsedMs: Math.max(
-          0,
-          Math.min(cutoff, Date.parse(stage.retryAt)) - Date.parse(started!.at),
-        ),
-        message: 'ワーカー停止までのリトライ待機時間を記録',
-      });
+  const activeLease = journal.lease(job.id);
+  try {
+    for (const stage of job.stages) {
+      if (stage.status === 'running') {
+        appendEvent({
+          type: 'stage.interrupted',
+          jobId: job.id,
+          projectId: job.projectId,
+          stage: stage.key,
+          attempt: stage.attempts,
+          failureKind: 'interrupted',
+          elapsedMs: Math.max(0, cutoff - Date.parse(stage.startedAt!)),
+          message: reason + '。この試行の出力は引き継ぎません。',
+        });
+      } else if (stage.status === 'retry' && stage.retryAt) {
+        const started = job.events.findLast(
+          (event) =>
+            ['stage.retry', 'stage.retry.resumed'].includes(event.type) &&
+            event.stage === stage.key,
+        );
+        appendEvent({
+          type: 'stage.retry.paused',
+          retryRemainingMs: Math.max(0, Date.parse(stage.retryAt) - cutoff),
+          jobId: job.id,
+          projectId: job.projectId,
+          stage: stage.key,
+          elapsedMs: Math.max(
+            0,
+            Math.min(cutoff, Date.parse(stage.retryAt)) - Date.parse(started!.at),
+          ),
+          message: 'ワーカー停止までのリトライ待機時間を記録',
+        });
+      }
     }
-  }
-  if (stoppingStatus === 'pausing' || stoppingStatus === 'cancelling') {
+    if (stoppingStatus === 'pausing' || stoppingStatus === 'cancelling') {
+      appendEvent({
+        type: stoppingStatus === 'pausing' ? 'job.paused' : 'job.cancelled',
+        jobId: job.id,
+        projectId: job.projectId,
+        message: reason,
+      });
+      return;
+    }
+    if ((job.recoveryCount ?? 0) >= queueSettings.maxRecoveries) {
+      appendEvent({
+        type: 'job.failed',
+        jobId: job.id,
+        projectId: job.projectId,
+        failureKind: 'interrupted',
+        message: 'ワーカーの自動復旧回数の上限に達しました。',
+      });
+      return;
+    }
+    if (!recoverFailures(job)) return;
     appendEvent({
-      type: stoppingStatus === 'pausing' ? 'job.paused' : 'job.cancelled',
+      type: 'job.recovered',
       jobId: job.id,
       projectId: job.projectId,
-      message: reason,
+      recoveryCount: (job.recoveryCount ?? 0) + 1,
+      message: reason + '。合格済み工程を保持してキューに戻しました。',
     });
-    return;
+  } finally {
+    cleanupPublication(job, activeLease?.token);
   }
-  if ((job.recoveryCount ?? 0) >= queueSettings.maxRecoveries) {
-    appendEvent({
-      type: 'job.failed',
-      jobId: job.id,
-      projectId: job.projectId,
-      failureKind: 'interrupted',
-      message: 'ワーカーの自動復旧回数の上限に達しました。',
-    });
-    return;
-  }
-  if (!recoverFailures(job)) return;
-  appendEvent({
-    type: 'job.recovered',
-    jobId: job.id,
-    projectId: job.projectId,
-    recoveryCount: (job.recoveryCount ?? 0) + 1,
-    message: reason + '。合格済み工程を保持してキューに戻しました。',
-  });
 }
 
 function recoverFailures(job: WorkflowJob): boolean {
@@ -879,15 +898,24 @@ function recoverFailures(job: WorkflowJob): boolean {
     const spec = job.workflow?.project.stages.find((item) => item.key === stage.key);
     const policy = resolveExecution(job.workflow?.project.execution, spec?.execution);
     if (stage.failureKind && canRetry(policy, stage.failureKind, (stage.retryCount ?? 0) + 1)) {
+      const delay = retryDelay(policy, (stage.retryCount ?? 0) + 1);
       appendEvent({
         type: 'stage.retry',
         jobId: job.id,
         projectId: job.projectId,
         stage: stage.key,
-        retryAt: new Date(
-          Date.now() + retryDelay(policy, (stage.retryCount ?? 0) + 1),
-        ).toISOString(),
+        retryAt: new Date(Date.now() + delay).toISOString(),
         message: '記録済みの失敗からリトライを予約',
+      });
+      // Pause the backoff timer until a worker claims the job so queued/paused time is excluded.
+      appendEvent({
+        type: 'stage.retry.paused',
+        jobId: job.id,
+        projectId: job.projectId,
+        stage: stage.key,
+        retryRemainingMs: delay,
+        elapsedMs: 0,
+        message: 'ワーカー再開までリトライ待機を保留',
       });
     } else if (
       policy.onFailure === 'review' &&
@@ -1735,12 +1763,15 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/jobs/claim' && req.method === 'POST') {
       const body = (await readJSON(req)) as ClaimRequestBody;
       recoverExpired();
-      const requestedProject = typeof body.projectId === 'string' ? body.projectId : null;
+      const requestedProject =
+        typeof body.projectId === 'string' && body.projectId.trim() ? body.projectId.trim() : null;
       const worker = String(body.worker || os.hostname()).slice(0, 80);
       const capacity =
         body.capacity === undefined
           ? queueSettings.maxJobsPerWorker
           : validate(() => boundedInteger(body.capacity, 'ワーカーの同時実行数', 16));
+      if (capacity < 1)
+        throw new HttpError(400, 'ワーカーの同時実行数は 1 以上で指定してください。');
       const leases = journal.leases();
       if (
         leases.length >= queueSettings.maxConcurrentJobs ||
@@ -1978,7 +2009,11 @@ const server = http.createServer(async (req, res) => {
               throw new HttpError(409, '中断されたリトライ待機がありません。');
             extras.retryAt = new Date(Date.now() + step.retryRemainingMs).toISOString();
           } else if (input.type === 'stage.retry.ready') {
-            if (step.status !== 'retry' || !step.retryAt)
+            if (
+              step.status !== 'retry' ||
+              !step.retryAt ||
+              Date.parse(step.retryAt) > Date.now() + 250
+            )
               throw new HttpError(409, 'リトライ待機中ではありません。');
           } else if (input.type === 'review.required') {
             if (!['running', 'failed'].includes(step.status))
@@ -2078,6 +2113,7 @@ const server = http.createServer(async (req, res) => {
         extras.failureKind = input.failureKind as FailureKind;
       }
       for (const key of ['retryAt', 'deadlineAt'] as const) {
+        if (key === 'retryAt' && input.type === 'stage.retry.resumed') continue;
         if (input[key] !== undefined) {
           if (typeof input[key] !== 'string' || !Number.isFinite(Date.parse(input[key])))
             throw new HttpError(400, '期限が不正です。');
@@ -2118,36 +2154,59 @@ const server = http.createServer(async (req, res) => {
       let artifact: ArtifactInfo | undefined;
       if (input.type === 'artifact.created') {
         const artifactName = asString(input.artifact?.name);
+        if (!artifactName || artifactName !== path.basename(artifactName)) {
+          return deliverJSON(res, { error: 'Artifact not found' }, 400);
+        }
+        if (job.artifacts.some((item) => item.name === artifactName)) {
+          throw new HttpError(409, 'この成果物は既に公開されています。');
+        }
         const artifactPath = path.join(
           jobWorkspace(job),
           '.publications',
           lease.token,
           artifactName,
         );
-        if (
-          !artifactName ||
-          artifactName !== path.basename(artifactName) ||
-          !existsSync(artifactPath) ||
-          !lstatSync(artifactPath).isFile() ||
-          lstatSync(artifactPath).isSymbolicLink() ||
-          lstatSync(artifactPath).nlink !== 1
-        ) {
-          return deliverJSON(res, { error: 'Artifact not found' }, 400);
-        }
         const destination = path.join(projectArtifactsPath(job.projectId), job.id, artifactName);
         mkdirSync(path.dirname(destination), { recursive: true });
         const temporary = destination + '.' + randomUUID();
+        let bytes = 0;
+        let sourceFd: number | undefined;
+        let outFd: number | undefined;
         try {
-          copyFileSync(artifactPath, temporary);
+          try {
+            sourceFd = openSync(
+              artifactPath,
+              constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+            );
+          } catch {
+            return deliverJSON(res, { error: 'Artifact not found' }, 400);
+          }
+          const st = fstatSync(sourceFd);
+          if (!st.isFile() || st.nlink !== 1) {
+            return deliverJSON(res, { error: 'Artifact not found' }, 400);
+          }
+          outFd = openSync(temporary, 'wx', 0o600);
+          const buffer = Buffer.alloc(256 * 1024);
+          while (true) {
+            const n = readSync(sourceFd, buffer, 0, buffer.length, null);
+            if (!n) break;
+            bytes += n;
+            let offset = 0;
+            while (offset < n) offset += writeSync(outFd, buffer, offset, n - offset);
+          }
+          closeSync(outFd);
+          outFd = undefined;
           requireLease(job, lease.token);
           renameSync(temporary, destination);
         } finally {
+          if (sourceFd !== undefined) closeSync(sourceFd);
+          if (outFd !== undefined) closeSync(outFd);
           rmSync(temporary, { force: true });
         }
         artifact = {
           name: artifactName,
           uri: `/artifacts/${encodeURIComponent(job.projectId)}/${job.id}/${encodeURIComponent(artifactName)}`,
-          bytes: statSync(artifactPath).size,
+          bytes,
         };
       }
 
@@ -2179,6 +2238,11 @@ const server = http.createServer(async (req, res) => {
         undefined,
         requestId ? { id: requestId, token: lease.token } : undefined,
       );
+      if (
+        ['review.required', 'job.completed', 'job.failed', 'job.cancelled'].includes(input.type)
+      ) {
+        cleanupPublication(job, lease.token);
+      }
       return deliverJSON(res, { ok: true, event });
     }
 

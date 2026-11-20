@@ -9,25 +9,36 @@ const child = spawn(command, args, {
   detached: process.platform !== 'win32',
   stdio: ['ignore', 'inherit', 'inherit'],
 });
+const rawGrace = Number(process.env.RAILFLOW_SUPERVISOR_GRACE_MS);
+const graceMs = Number.isFinite(rawGrace) && rawGrace >= 0 ? rawGrace : 500;
 let timer: ReturnType<typeof setTimeout> | undefined;
+let stopping = false;
+let exited = false;
+let winTaskKilled = false;
 const kill = (signal: NodeJS.Signals) => {
-  if (!child.pid) return;
+  if (!child.pid || exited) return;
   try {
     if (process.platform === 'win32') {
+      if (winTaskKilled) return;
+      winTaskKilled = true;
       const task = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-      task.on('error', () => child.kill(signal));
+      task.on('error', () => {
+        try {
+          child.kill(signal);
+        } catch {
+          /* Process already exited. */
+        }
+      });
     } else process.kill(-child.pid, signal);
   } catch {
     /* The process group has already exited. */
   }
 };
 const stop = () => {
-  if (timer) return;
+  if (stopping || exited) return;
+  stopping = true;
   kill('SIGTERM');
-  timer = setTimeout(
-    () => kill('SIGKILL'),
-    Math.max(0, Number(process.env.RAILFLOW_SUPERVISOR_GRACE_MS) || 500),
-  );
+  timer = setTimeout(() => kill('SIGKILL'), graceMs);
 };
 process.stdin.on('end', stop);
 process.stdin.on('error', stop);
@@ -35,11 +46,15 @@ process.stdin.resume();
 process.on('SIGTERM', stop);
 process.on('SIGINT', stop);
 child.on('error', (error) => {
+  exited = true;
+  if (timer) clearTimeout(timer);
   console.error(error.message);
-  process.exitCode = 1;
+  process.stdin.destroy();
+  process.exit(1);
 });
-child.on('close', (code) => {
+child.on('exit', (code) => {
   kill('SIGKILL');
+  exited = true;
   if (timer) clearTimeout(timer);
   process.stdin.destroy();
   process.exit(code ?? 1);
