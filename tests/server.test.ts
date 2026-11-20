@@ -288,7 +288,9 @@ describe('API integration', () => {
         const wfHtml = await fetch(`${api}/workflow`);
         expect(wfHtml.status).toBe(200);
         expect(wfHtml.headers.get('content-security-policy')).toMatch(/script-src 'self'/);
-        expect(await wfHtml.text()).toMatch(/ワークフロー定義/);
+        expect(await wfHtml.text()).toContain(
+          '<title>ワークフロー — RAILFLOW | Science Tokyo</title>',
+        );
 
         const management = await fetch(`${api}/projects/?project=xrd-lab`);
         expect(management.status).toBe(200);

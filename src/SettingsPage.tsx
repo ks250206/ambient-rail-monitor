@@ -5,6 +5,7 @@ import { useState } from 'react';
 import type { ProjectSpec } from '../shared/types.ts';
 import { jsonRequest, queryClient, request, useProjects, useToast } from './api.ts';
 import { ProjectManagement } from './components/ProjectManagement.tsx';
+import { ProjectTabs } from './components/ProjectTabs.tsx';
 import { AppHeader } from './components/AppHeader.tsx';
 import {
   type WorkflowUpdatePayload,
@@ -38,22 +39,24 @@ export function SettingsPage({ page }: { page: 'projects' | 'workflow' }) {
       />
       <main className="workflow-page page-width">
         <div className="workflow-title">
-          <h1>{managing ? 'プロジェクト管理' : 'ワークフロー定義'}</h1>
+          <h1>{managing ? 'プロジェクト' : 'ワークフロー'}</h1>
           {project && (
             <a href={pageHref(managing ? '/workflow' : '/', project.id)}>
-              {managing ? 'ワークフロー定義へ' : '実行モニターへ'} <ArrowRight size={16} />
+              {managing ? 'ワークフローへ' : '実行モニターへ'} <ArrowRight size={16} />
             </a>
           )}
         </div>
         {project &&
           (managing ? (
-            <ProjectManagement
-              key={project.id}
-              project={project}
-              projects={projects}
-              onSelect={select}
-              showToast={showToast}
-            />
+            <ProjectTabs projects={projects} onSelect={select}>
+              <ProjectManagement
+                key={project.id}
+                project={project}
+                projects={projects}
+                onSelect={select}
+                showToast={showToast}
+              />
+            </ProjectTabs>
           ) : (
             <WorkflowEditor key={project.id} project={project} showToast={showToast} />
           ))}

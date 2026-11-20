@@ -3,8 +3,8 @@ import { useClock } from '../api.ts';
 import { clock, pageHref } from '../utils/workflow.ts';
 
 const pages = [
-  { id: 'projects', path: '/projects', label: 'プロジェクト管理' },
-  { id: 'workflow', path: '/workflow', label: 'ワークフロー定義' },
+  { id: 'projects', path: '/projects', label: 'プロジェクト' },
+  { id: 'workflow', path: '/workflow', label: 'ワークフロー' },
   { id: 'monitor', path: '/', label: '実行モニター' },
 ] as const;
 
