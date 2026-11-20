@@ -20,6 +20,15 @@ const EMPTY_WORKFLOW: WorkflowSpec = {
   title: '科学データ解析ワークフロー',
   purpose: '',
   acceptanceCriteria: '',
+  llm: { model: '', effort: '' },
+  stageLlm: {
+    ingest: { model: '', effort: '' },
+    preprocess: { model: '', effort: '' },
+    analysis: { model: '', effort: '' },
+    validate: { model: '', effort: '' },
+    visualize: { model: '', effort: '' },
+    publish: { model: '', effort: '' },
+  },
   stageInstructions: {
     ingest: '',
     preprocess: '',

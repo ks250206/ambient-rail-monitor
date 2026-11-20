@@ -18,6 +18,8 @@ import { fileURLToPath } from 'node:url';
 import type {
   ArtifactInfo,
   EventType,
+  LlmConfig,
+  ReasoningEffort,
   StageDefinition,
   StageKey,
   WorkerEventType,
@@ -50,6 +52,23 @@ const STAGES: StageDefinition[] = [
   { key: 'publish', label: 'HTML / PPTX生成', short: 'Publish' },
 ];
 
+const VALID_EFFORTS = new Set<ReasoningEffort>(['', 'low', 'medium', 'high', 'xhigh', 'max']);
+
+function emptyLlmConfig(): LlmConfig {
+  return { model: '', effort: '' };
+}
+
+function normalizeLlmConfig(raw: unknown): LlmConfig {
+  const input = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const rawModel = typeof input.model === 'string' ? input.model.trim() : '';
+  const model = rawModel.replace(/[^A-Za-z0-9._:/-]/g, '').slice(0, 100);
+  const rawEffort = typeof input.effort === 'string' ? input.effort.trim().toLowerCase() : '';
+  const effort: ReasoningEffort = VALID_EFFORTS.has(rawEffort as ReasoningEffort)
+    ? (rawEffort as ReasoningEffort)
+    : '';
+  return { model, effort };
+}
+
 const DEFAULT_WORKFLOW: Omit<WorkflowSpec, 'updatedAt'> = {
   title: '科学データ解析ワークフロー',
   purpose:
@@ -60,6 +79,15 @@ const DEFAULT_WORKFLOW: Omit<WorkflowSpec, 'updatedAt'> = {
     '- 記述的クイックルックと物理的に検証されたピーク帰属を明確に区別すること',
     '- 最終成果物として自己完結した report.html（任意で report.pptx）を生成すること',
   ].join('\n'),
+  llm: emptyLlmConfig(),
+  stageLlm: {
+    ingest: emptyLlmConfig(),
+    preprocess: emptyLlmConfig(),
+    analysis: emptyLlmConfig(),
+    validate: emptyLlmConfig(),
+    visualize: emptyLlmConfig(),
+    publish: emptyLlmConfig(),
+  },
   stageInstructions: {
     ingest: '列構成・行数・区切り形式・欠損や外れ値の有無を確認し、01_ingest.md に整理する。',
     preprocess: '実施した前処理と前提条件をすべて 02_preprocess.md に記録する。',
@@ -107,6 +135,10 @@ function normalizeWorkflowSpec(raw: unknown): WorkflowSpec {
     input.stageInstructions && typeof input.stageInstructions === 'object'
       ? (input.stageInstructions as Record<string, unknown>)
       : {};
+  const rawStageLlm =
+    input.stageLlm && typeof input.stageLlm === 'object'
+      ? (input.stageLlm as Record<string, unknown>)
+      : {};
 
   const stageInstructions = Object.fromEntries(
     STAGES.map((stage) => {
@@ -119,6 +151,10 @@ function normalizeWorkflowSpec(raw: unknown): WorkflowSpec {
     }),
   ) as Record<StageKey, string>;
 
+  const stageLlm = Object.fromEntries(
+    STAGES.map((stage) => [stage.key, normalizeLlmConfig(rawStageLlm[stage.key])]),
+  ) as Record<StageKey, LlmConfig>;
+
   return {
     title:
       typeof input.title === 'string' && input.title.trim()
@@ -130,6 +166,8 @@ function normalizeWorkflowSpec(raw: unknown): WorkflowSpec {
       typeof input.acceptanceCriteria === 'string'
         ? input.acceptanceCriteria.slice(0, 4000)
         : DEFAULT_WORKFLOW.acceptanceCriteria,
+    llm: normalizeLlmConfig(input.llm),
+    stageLlm,
     stageInstructions,
     updatedAt: typeof input.updatedAt === 'string' ? input.updatedAt : new Date().toISOString(),
   };
@@ -147,6 +185,10 @@ function loadWorkflowSpec(): WorkflowSpec {
   }
   return {
     ...DEFAULT_WORKFLOW,
+    llm: { ...DEFAULT_WORKFLOW.llm },
+    stageLlm: Object.fromEntries(
+      STAGES.map((stage) => [stage.key, { ...DEFAULT_WORKFLOW.stageLlm[stage.key] }]),
+    ) as Record<StageKey, LlmConfig>,
     stageInstructions: { ...DEFAULT_WORKFLOW.stageInstructions },
     updatedAt: new Date().toISOString(),
   };

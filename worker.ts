@@ -9,6 +9,7 @@ import { publishAgentReports } from './shared/publish-reports.ts';
 import type {
   ClaimPaths,
   ClaimResponse,
+  LlmConfig,
   StageKey,
   WorkerEventType,
   WorkflowJob,
@@ -78,6 +79,7 @@ interface RawCliEvent {
   type?: string;
   subtype?: string;
   is_error?: boolean;
+  result?: string;
   event?: { type?: string };
   item?: {
     type?: string;
@@ -90,7 +92,7 @@ interface RawCliEvent {
     message?: string;
   };
   message?: {
-    content?: Array<{ name?: string; text?: string }>;
+    content?: Array<{ type?: string; name?: string; text?: string }>;
   };
 }
 
@@ -132,6 +134,22 @@ function parseAgentEvent(evt: RawCliEvent): string | ParsedAgentEvent | null {
   return null;
 }
 
+function extractAgentMessageText(evt: RawCliEvent): string | null {
+  if (evt.type === 'item.completed' && evt.item?.type === 'agent_message' && evt.item.text) {
+    return evt.item.text.trim();
+  }
+  if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
+    const textParts = evt.message.content
+      .map((part) => (typeof part.text === 'string' ? part.text.trim() : ''))
+      .filter(Boolean);
+    if (textParts.length > 0) return textParts.join('\n');
+  }
+  if (evt.type === 'result' && typeof evt.result === 'string' && evt.result.trim()) {
+    return evt.result.trim();
+  }
+  return null;
+}
+
 const STAGE_PROMPTS: Record<StageKey, string> = {
   ingest:
     'Inspect the input data format and metadata. Record column names, units if explicitly present, missing values and anomalies in 01_ingest.md.',
@@ -146,6 +164,26 @@ const STAGE_PROMPTS: Record<StageKey, string> = {
   publish:
     'Create a self-contained report.html and optionally report.pptx in the root of the current workspace. The worker publishes these files after this stage. Include methodology, plots, result summary and limitations. Provide source code where possible.',
 };
+
+function resolveStageLlm(stage: StageKey, workflow?: WorkflowSpec): LlmConfig {
+  const stageCfg = workflow?.stageLlm?.[stage];
+  const baseCfg = workflow?.llm;
+  return {
+    model: stageCfg?.model?.trim() || baseCfg?.model?.trim() || '',
+    effort: stageCfg?.effort || baseCfg?.effort || '',
+  };
+}
+
+function formatLlmTag(llm: LlmConfig): string {
+  const parts: string[] = [];
+  if (llm.model) parts.push(`model=${llm.model}`);
+  if (llm.effort) parts.push(`effort=${llm.effort}`);
+  return parts.length > 0 ? ` [${parts.join(', ')}]` : '';
+}
+
+function summaryFileName(stage: StageKey): string {
+  return `summary_${stage}.txt`;
+}
 
 interface QuickStats {
   headers: string[];
@@ -203,6 +241,7 @@ function buildDemoStageSummary(
   stats: QuickStats | null,
   reports: string[],
   customInstruction: string,
+  llm: LlmConfig,
 ): string {
   const columns = stats?.headers.slice(0, 2).join(', ') || '不明な列構成';
   const base = (() => {
@@ -230,13 +269,33 @@ function buildDemoStageSummary(
     }
   })();
 
-  if (customInstruction.trim()) {
-    return `${base}（カスタム指示を参照）`;
-  }
-  return base;
+  const notes: string[] = [];
+  if (customInstruction.trim()) notes.push('カスタム指示を参照');
+  if (llm.model || llm.effort) notes.push(`指定LLM${formatLlmTag(llm)} ※デモは模擬実行`);
+  return notes.length > 0 ? `${base}（${notes.join(' / ')}）` : base;
 }
 
-function extractAgentStageSummary(stage: StageKey, paths: ClaimPaths, reports: string[]): string {
+function extractAgentStageSummary(
+  stage: StageKey,
+  paths: ClaimPaths,
+  reports: string[],
+  lastAgentMessage: string,
+): string {
+  // 1. Prefer the explicit LLM-written summary file requested in the stage prompt.
+  const explicitSummaryPath = path.join(paths.work, summaryFileName(stage));
+  if (existsSync(explicitSummaryPath)) {
+    const content = readFileSync(explicitSummaryPath, 'utf8').trim();
+    if (content) {
+      return content.slice(0, 1200);
+    }
+  }
+
+  // 2. Fallback to the LLM's final response message for this stage.
+  if (lastAgentMessage.trim()) {
+    return lastAgentMessage.trim().slice(0, 1200);
+  }
+
+  // 3. Fallback to published artifacts or stage markdown notes.
   if (stage === 'publish' && reports.length > 0) {
     return `成果物（${reports.join(', ')}）を出力・公開しました。`;
   }
@@ -266,9 +325,11 @@ async function runAgent(
   job: WorkflowJob,
   stage: StageKey,
   paths: ClaimPaths,
-  workflow?: WorkflowSpec,
-): Promise<void> {
+  workflow: WorkflowSpec | undefined,
+  llm: LlmConfig,
+): Promise<string> {
   const customInstruction = workflow?.stageInstructions?.[stage]?.trim() || '';
+  const summaryFile = summaryFileName(stage);
   const workflowContext = workflow
     ? [
         `WORKFLOW: ${workflow.title}`,
@@ -291,13 +352,32 @@ async function runAgent(
     `Do not read files outside this workspace except the provided input. ` +
     `Task: ${STAGE_PROMPTS[stage]}\n` +
     (customInstruction ? `Custom stage instructions:\n${customInstruction}\n` : '') +
+    `Summary output requirement: Before finishing this stage, write a concise 2-4 line plain-text summary in Japanese to "${summaryFile}" in the workspace root, covering what was executed, key findings or metrics, and any caveats or unresolved items.\n` +
     `Do not claim scientific certainty without evidence. If a validation requires human review, explain it in the report.`;
 
   const command = MODE === 'codex' ? 'codex' : 'claude';
   const args =
     MODE === 'codex'
-      ? ['exec', '--json', '--sandbox', 'workspace-write', prompt]
-      : ['-p', '--output-format', 'stream-json', '--verbose', prompt];
+      ? [
+          'exec',
+          '--json',
+          '--sandbox',
+          'workspace-write',
+          ...(llm.model ? ['--model', llm.model] : []),
+          ...(llm.effort
+            ? ['-c', `model_reasoning_effort="${llm.effort === 'max' ? 'xhigh' : llm.effort}"`]
+            : []),
+          prompt,
+        ]
+      : [
+          '-p',
+          '--output-format',
+          'stream-json',
+          '--verbose',
+          ...(llm.model ? ['--model', llm.model] : []),
+          ...(llm.effort ? ['--effort', llm.effort] : []),
+          prompt,
+        ];
 
   const child = spawn(command, args, {
     cwd: paths.work,
@@ -307,6 +387,7 @@ async function runAgent(
 
   let stderr = '';
   let eventCount = 0;
+  let lastAgentMessage = '';
 
   const stderrPromise = (async () => {
     for await (const chunk of child.stderr) {
@@ -324,6 +405,10 @@ async function runAgent(
         evt = JSON.parse(line) as RawCliEvent;
       } catch {
         continue;
+      }
+      const messageText = extractAgentMessageText(evt);
+      if (messageText) {
+        lastAgentMessage = messageText;
       }
       const event = parseAgentEvent(evt);
       if (event && eventCount < 160) {
@@ -352,6 +437,7 @@ async function runAgent(
   if (exitCode !== 0) {
     throw new Error(`${command} exited ${String(exitCode)}: ${stderr.slice(-450)}`);
   }
+  return lastAgentMessage;
 }
 
 async function generateDemoReport(job: WorkflowJob, paths: ClaimPaths): Promise<void> {
@@ -391,11 +477,14 @@ async function processJob(
     if (job.stages.find((item) => item.key === stage)?.status === 'success') continue;
 
     const customInstruction = workflow?.stageInstructions?.[stage] || '';
+    const llm = resolveStageLlm(stage, workflow);
+    const llmTag = formatLlmTag(llm);
     let success = false;
     let publishedReports: string[] = [];
+    let lastAgentMessage = '';
 
     for (let attempt = 1; attempt <= 2 && !success; attempt += 1) {
-      await emit(job, 'stage.started', stage, `${stage}: ${attempt}回目の処理を開始`);
+      await emit(job, 'stage.started', stage, `${stage}: ${attempt}回目の処理を開始${llmTag}`);
       try {
         if (MODE === 'demo') {
           await sleep(stage === 'analysis' ? 2100 : 1100 + Math.random() * 800);
@@ -404,7 +493,7 @@ async function processJob(
           }
           if (stage === 'publish') await generateDemoReport(job, paths);
         } else {
-          await runAgent(job, stage, paths, workflow);
+          lastAgentMessage = await runAgent(job, stage, paths, workflow, llm);
         }
 
         if (stage === 'publish') {
@@ -424,8 +513,15 @@ async function processJob(
 
         const summary =
           MODE === 'demo'
-            ? buildDemoStageSummary(stage, job, quickStats, publishedReports, customInstruction)
-            : extractAgentStageSummary(stage, paths, publishedReports);
+            ? buildDemoStageSummary(
+                stage,
+                job,
+                quickStats,
+                publishedReports,
+                customInstruction,
+                llm,
+              )
+            : extractAgentStageSummary(stage, paths, publishedReports, lastAgentMessage);
 
         await emit(job, 'stage.succeeded', stage, `${stage}: 完了`, { summary });
         success = true;

@@ -124,7 +124,7 @@ describe('API integration', () => {
         return res.ok;
       });
 
-      // Update workflow spec (purpose, acceptance criteria, custom stage instructions)
+      // Update workflow spec (purpose, acceptance criteria, LLM model/effort, custom stage instructions)
       const putRes = await fetch(`${api}/api/workflow`, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
@@ -132,6 +132,15 @@ describe('API integration', () => {
           title: 'XPS 実験解析',
           purpose: 'スペクトル CSV を検品・解析してレポートを作成する',
           acceptanceCriteria: '- 単位の欠損を明示すること\n- HTML レポートを出力すること',
+          llm: { model: 'gpt-5.4', effort: 'high' },
+          stageLlm: {
+            ingest: { model: 'gpt-5.3-codex', effort: 'low' },
+            preprocess: { model: '', effort: '' },
+            analysis: { model: '', effort: 'xhigh' },
+            validate: { model: '', effort: '' },
+            visualize: { model: '', effort: '' },
+            publish: { model: '', effort: '' },
+          },
           stageInstructions: {
             ingest: '列名と欠損行数を必ず確認する',
             preprocess: '',
@@ -145,6 +154,9 @@ describe('API integration', () => {
       expect(putRes.status).toBe(200);
       const putBody = (await putRes.json()) as { workflow: WorkflowSpec };
       expect(putBody.workflow.title).toBe('XPS 実験解析');
+      expect(putBody.workflow.llm).toEqual({ model: 'gpt-5.4', effort: 'high' });
+      expect(putBody.workflow.stageLlm.ingest).toEqual({ model: 'gpt-5.3-codex', effort: 'low' });
+      expect(putBody.workflow.stageLlm.analysis).toEqual({ model: '', effort: 'xhigh' });
       expect(putBody.workflow.stageInstructions.ingest).toBe('列名と欠損行数を必ず確認する');
       expect(existsSync(path.join(temp, 'data', 'workflow-spec.json'))).toBe(true);
 
@@ -158,6 +170,8 @@ describe('API integration', () => {
       });
       expect(claim.body.job?.id).toBe(id);
       expect(claim.body.workflow?.title).toBe('XPS 実験解析');
+      expect(claim.body.workflow?.llm).toEqual({ model: 'gpt-5.4', effort: 'high' });
+      expect(claim.body.workflow?.stageLlm.ingest.model).toBe('gpt-5.3-codex');
       expect(claim.body.workflow?.stageInstructions.analysis).toBe(
         '54 eV 付近の最大強度を報告する',
       );

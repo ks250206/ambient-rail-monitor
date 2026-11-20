@@ -4,6 +4,13 @@ export type StageStatus = 'pending' | 'running' | 'success' | 'failed' | 'retry'
 
 export type JobStatus = 'queued' | 'running' | 'review' | 'done' | 'failed';
 
+export type ReasoningEffort = '' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export interface LlmConfig {
+  model: string;
+  effort: ReasoningEffort;
+}
+
 export type EventType =
   | 'job.created'
   | 'job.claimed'
@@ -45,6 +52,8 @@ export interface WorkflowSpec {
   title: string;
   purpose: string;
   acceptanceCriteria: string;
+  llm: LlmConfig;
+  stageLlm: Record<StageKey, LlmConfig>;
   stageInstructions: Record<StageKey, string>;
   updatedAt: string;
 }

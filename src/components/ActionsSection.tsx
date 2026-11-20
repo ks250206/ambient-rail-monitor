@@ -178,6 +178,13 @@ export function ActionsSection({
     ? workflow.stageInstructions[activeStage.key]?.trim() || ''
     : '';
 
+  const effectiveStageLlm = activeStage
+    ? {
+        model: workflow.stageLlm?.[activeStage.key]?.model || workflow.llm?.model || '',
+        effort: workflow.stageLlm?.[activeStage.key]?.effort || workflow.llm?.effort || '',
+      }
+    : { model: '', effort: '' };
+
   return (
     <section
       id="actions"
@@ -682,14 +689,22 @@ export function ActionsSection({
 
                   {/* Result Summary Box */}
                   <div className="mt-3 rounded-md border border-line bg-white p-3">
-                    <div className="flex items-center gap-1.5 text-xs font-bold text-eyebrow">
-                      <FileText className="h-3.5 w-3.5" />
-                      <span>結果の概要</span>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-eyebrow">
+                        <FileText className="h-3.5 w-3.5" />
+                        <span>結果の概要</span>
+                      </div>
+                      {(effectiveStageLlm.model || effectiveStageLlm.effort) && (
+                        <span className="rounded bg-bg-1 px-2 py-0.5 font-mono text-[11px] font-semibold text-science-blue">
+                          LLM: {effectiveStageLlm.model || 'CLI既定'}
+                          {effectiveStageLlm.effort ? ` · effort=${effectiveStageLlm.effort}` : ''}
+                        </span>
+                      )}
                     </div>
                     <p className="mt-1.5 whitespace-pre-wrap text-xs leading-relaxed text-ink">
                       {activeStage.summary ||
                         activeStageFallbackMessage ||
-                        'この工程はまだ開始していません。完了すると結果の概要がここに表示されます。'}
+                        'この工程はまだ開始していません。完了すると LLM が要約した結果の概要がここに表示されます。'}
                     </p>
                   </div>
 

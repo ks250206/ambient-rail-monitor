@@ -9,8 +9,8 @@ A local-first proof of concept for **pull-based Codex / Claude Code scientific-a
 Four synchronized operational views plus workflow specification editing:
 
 - **Job board (Kanban)** — first view showing queue, running, review/blocked, and completed jobs. [Job board](docs/board.png)
-- **Actions / Runs & stage details** — unified run history, inline 6-stage pipeline overview, per-step result summaries, active/review/failed status filtering, collapsible attempts, expandable timestamped logs, live durations, search, human review approval, and raw log download. [Step logs](docs/actions.png) · [Review gate](docs/review.png)
-- **Workflow specification & custom instructions** — editable workflow title, purpose, acceptance criteria, and per-stage custom instructions saved to `data/workflow-spec.json` (`GET/PUT /api/workflow`) and passed to workers on claim.
+- **Actions / Runs & stage details** — unified run history, inline 6-stage pipeline overview, per-step LLM-generated result summaries (`summary_<stage>.txt` with fallback to final agent output), active/review/failed status filtering, collapsible attempts, expandable timestamped logs, live durations, search, human review approval, and raw log download. [Step logs](docs/actions.png) · [Review gate](docs/review.png)
+- **Workflow specification, LLM model/effort & custom instructions** — editable workflow title, purpose, acceptance criteria, default and per-stage LLM model and reasoning effort (`--model`, `-c model_reasoning_effort` for Codex / `--effort` for Claude), and per-stage custom instructions saved to `data/workflow-spec.json` (`GET/PUT /api/workflow`) and passed to workers on claim.
 - **Trace explorer & events** — individual execution attempts rendered against elapsed time with Science Tokyo colors and visible status labels, raw agent events, and artifacts.
 
 ## Tech stack
