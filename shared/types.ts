@@ -1,4 +1,4 @@
-export type StageKey = 'ingest' | 'preprocess' | 'analysis' | 'validate' | 'visualize' | 'publish';
+export type StageKey = string;
 
 export type StageStatus = 'pending' | 'running' | 'success' | 'failed' | 'retry' | 'review';
 
@@ -34,6 +34,24 @@ export interface StageDefinition {
   short: string;
 }
 
+export interface WorkflowStageSpec extends StageDefinition {
+  instruction: string;
+  llm: LlmConfig;
+}
+
+export interface ProjectSpec {
+  id: string;
+  name: string;
+  purpose: string;
+  acceptanceCriteria: string;
+  llm: LlmConfig;
+  stages: WorkflowStageSpec[];
+  inboxDir: string;
+  artifactsDir: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface JobStage extends StageDefinition {
   status: StageStatus;
   attempts: number;
@@ -48,19 +66,10 @@ export interface ArtifactInfo {
   bytes: number;
 }
 
-export interface WorkflowSpec {
-  title: string;
-  purpose: string;
-  acceptanceCriteria: string;
-  llm: LlmConfig;
-  stageLlm: Record<StageKey, LlmConfig>;
-  stageInstructions: Record<StageKey, string>;
-  updatedAt: string;
-}
-
 export interface WorkflowEvent {
   type: EventType;
   jobId: string;
+  projectId?: string;
   at: string;
   sequence: number;
   stage?: StageKey | null;
@@ -73,12 +82,14 @@ export interface WorkflowEvent {
   hash?: string;
   demo?: boolean;
   needsReview?: boolean;
+  stages?: StageDefinition[];
   agent?: string;
   worker?: string;
 }
 
 export interface WorkflowJob {
   id: string;
+  projectId: string;
   file: string;
   bytes: number;
   hash: string;
@@ -98,10 +109,11 @@ export interface WorkflowJob {
 }
 
 export interface AppStateResponse {
+  projects: ProjectSpec[];
+  project: ProjectSpec;
   jobs: WorkflowJob[];
   events: WorkflowEvent[];
   stages: StageDefinition[];
-  workflow: WorkflowSpec;
   updatedAt: string;
 }
 
@@ -114,7 +126,7 @@ export interface ClaimPaths {
 export interface ClaimResponse {
   job: WorkflowJob | null;
   paths?: ClaimPaths;
-  workflow?: WorkflowSpec;
+  project?: ProjectSpec;
 }
 
 export interface StageSpan {

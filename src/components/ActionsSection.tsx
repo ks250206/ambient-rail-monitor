@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
-import type { StageKey, WorkflowJob, WorkflowSpec } from '../../shared/types.ts';
+import type { ProjectSpec, StageKey, WorkflowJob } from '../../shared/types.ts';
 import {
   ACTION_STATUS_LABELS,
   actionDuration,
@@ -29,6 +29,7 @@ import {
   getSpans,
   groupStageAttempts,
   normalizeActionStatus,
+  pageHref,
   STAGE_STATUS_LABELS,
 } from '../utils/workflow.ts';
 import { StatusIcon, StatusPill } from './StatusBadge.tsx';
@@ -43,7 +44,7 @@ interface ActionsSectionProps {
   selectedJob: WorkflowJob | null;
   selectedStage: StageKey;
   showAllLogs: boolean;
-  workflow: WorkflowSpec;
+  project: ProjectSpec;
   nowMs: number;
   onSelectJob: (jobId: string) => void;
   onSelectStage: (stage: StageKey) => void;
@@ -63,7 +64,7 @@ export function ActionsSection({
   selectedJob,
   selectedStage,
   showAllLogs,
-  workflow,
+  project,
   nowMs,
   onSelectJob,
   onSelectStage,
@@ -140,6 +141,7 @@ export function ActionsSection({
   const completedStages = selectedJob
     ? selectedJob.stages.filter((stage) => stage.status === 'success').length
     : 0;
+  const totalStages = Math.max(1, selectedJob?.stages.length || 1);
 
   const activeStage =
     selectedJob?.stages.find((stage) => stage.key === selectedStage) ||
@@ -171,16 +173,16 @@ export function ActionsSection({
     return relevant.at(-1)?.message || null;
   }, [activeStageEvents]);
 
-  const customStageInstruction = activeStage
-    ? workflow.stageInstructions[activeStage.key]?.trim() || ''
-    : '';
+  const matchingProjectStage = activeStage
+    ? project.stages.find((stage) => stage.key === activeStage.key)
+    : undefined;
 
-  const effectiveStageLlm = activeStage
-    ? {
-        model: workflow.stageLlm?.[activeStage.key]?.model || workflow.llm?.model || '',
-        effort: workflow.stageLlm?.[activeStage.key]?.effort || workflow.llm?.effort || '',
-      }
-    : { model: '', effort: '' };
+  const customStageInstruction = matchingProjectStage?.instruction?.trim() || '';
+
+  const effectiveStageLlm = {
+    model: matchingProjectStage?.llm?.model || project.llm?.model || '',
+    effort: matchingProjectStage?.llm?.effort || project.llm?.effort || '',
+  };
 
   const activeTab: StepDetailTab = showAllLogs ? 'logs' : detailTab;
 
@@ -193,7 +195,7 @@ export function ActionsSection({
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="section-heading">実行履歴・工程詳細</h2>
         <span className="text-xs text-ink-muted">
-          ステップを選ぶと、右ペインで「結果の概要」と「ログ」を切り替えて確認できます
+          ステップを選ぶと、右ペインで「Summary」と「Logs」を切り替えて確認できます
         </span>
       </div>
 
@@ -319,7 +321,7 @@ export function ActionsSection({
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <strong className="truncate text-xs font-bold text-ink">{job.file}</strong>
                       <span className="truncate text-xs text-ink-muted">
-                        {workflow.title} · {(job.agent || 'unassigned').toUpperCase()}
+                        {project.name} · {(job.agent || 'unassigned').toUpperCase()}
                       </span>
                       <span className="truncate font-mono text-xs text-ink-muted">
                         {job.id} · {clockDate(job.createdAt)}
@@ -374,18 +376,18 @@ export function ActionsSection({
           </div>
         </div>
 
-        {/* Right pane: Run header + Vertical Steps Tabs + Unified Single-Grid Detail/Log Area */}
+        {/* Right pane: Run header + Vertical Steps Tabs + Unified Summary/Logs Grid */}
         <div className="flex min-w-0 flex-col">
           {/* Run Header */}
           <div className="border-b border-line bg-white px-5 py-4">
             {!selectedJob ? (
               <div className="flex min-h-[120px] items-center justify-center text-xs text-ink-muted">
-                実行履歴からジョブを選択すると、工程ごとの結果概要とログを確認できます。
+                実行履歴からジョブを選択すると、工程ごとの Summary と Logs を確認できます。
               </div>
             ) : (
               <>
                 <div className="flex items-center justify-between gap-2 text-xs">
-                  <span className="font-bold text-eyebrow">{workflow.title}</span>
+                  <span className="font-bold text-eyebrow">{project.name}</span>
                   <span className="font-mono text-ink-muted">{selectedJob.id}</span>
                 </div>
 
@@ -464,7 +466,7 @@ export function ActionsSection({
                       <div
                         className="h-full rounded-full bg-science-blue transition-all"
                         style={{
-                          width: `${(completedStages / selectedJob.stages.length) * 100}%`,
+                          width: `${(completedStages / totalStages) * 100}%`,
                         }}
                       />
                     </div>
@@ -515,7 +517,7 @@ export function ActionsSection({
             )}
           </div>
 
-          {/* Actions-style Vertical Steps + Stacked Tabbed Detail/Log Pane */}
+          {/* Actions-style Vertical Steps + Stacked Summary/Logs Area */}
           <div className="grid flex-1 grid-cols-1 lg:grid-cols-[minmax(220px,0.8fr)_minmax(0,1.6fr)]">
             {/* Vertical Steps Tabs */}
             <div className="flex min-w-0 flex-col border-b border-line bg-bg-2/40 lg:border-b-0 lg:border-r">
@@ -615,15 +617,15 @@ export function ActionsSection({
               </div>
             </div>
 
-            {/* Right column: Single unified grid area switching between "工程詳細・結果概要" and "ログ" */}
+            {/* Right column: Single unified grid area switching between Summary and Logs */}
             <div className="flex min-w-0 flex-col bg-white text-ink">
-              {/* Unified header with tabs */}
+              {/* Unified header with Summary / Logs tabs */}
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-bg-1 px-3.5 py-2">
                 <div className="flex min-w-0 items-center gap-2">
                   {selectedJob && !showAllLogs && activeStage ? (
                     <div
                       role="tablist"
-                      aria-label="工程詳細とログの切り替え"
+                      aria-label="Summary と Logs の切り替え"
                       className="inline-flex rounded-md border border-line bg-white p-0.5"
                     >
                       <button
@@ -631,28 +633,28 @@ export function ActionsSection({
                         role="tab"
                         aria-selected={activeTab === 'summary'}
                         onClick={() => setDetailTab('summary')}
-                        className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-bold transition-colors ${
+                        className={`inline-flex items-center gap-1.5 rounded px-3 py-1 font-en text-xs font-bold transition-colors ${
                           activeTab === 'summary'
                             ? 'bg-science-blue text-white'
                             : 'text-ink-muted hover:text-science-blue'
                         }`}
                       >
                         <FileText className="h-3.5 w-3.5" />
-                        <span>{activeStage.label}</span>
+                        <span>Summary</span>
                       </button>
                       <button
                         type="button"
                         role="tab"
                         aria-selected={activeTab === 'logs'}
                         onClick={() => setDetailTab('logs')}
-                        className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 font-en text-xs font-bold transition-colors ${
+                        className={`inline-flex items-center gap-1.5 rounded px-3 py-1 font-en text-xs font-bold transition-colors ${
                           activeTab === 'logs'
                             ? 'bg-science-blue text-white'
                             : 'text-ink-muted hover:text-science-blue'
                         }`}
                       >
                         <Terminal className="h-3.5 w-3.5" />
-                        <span>{activeStage.short} / logs</span>
+                        <span>Logs</span>
                         <span
                           className={`rounded px-1 font-mono text-[10px] ${
                             activeTab === 'logs'
@@ -668,7 +670,7 @@ export function ActionsSection({
                     <div className="flex min-w-0 items-center gap-2">
                       <Terminal className="h-3.5 w-3.5 shrink-0 text-science-blue" />
                       <strong className="truncate font-en text-sm font-semibold text-science-blue">
-                        {selectedJob ? 'All run logs' : 'Step details & logs'}
+                        {selectedJob ? 'All run logs' : 'Summary & Logs'}
                       </strong>
                     </div>
                   )}
@@ -691,7 +693,7 @@ export function ActionsSection({
                 )}
               </div>
 
-              {/* Stacked panel body (fixed balanced height matching the vertical steps list) */}
+              {/* Stacked panel body */}
               {activeTab === 'summary' && selectedJob && activeStage ? (
                 <div className="flex min-h-[340px] flex-1 flex-col justify-between p-4">
                   <div>
@@ -718,7 +720,7 @@ export function ActionsSection({
                           <span>結果の概要</span>
                         </div>
                         {(effectiveStageLlm.model || effectiveStageLlm.effort) && (
-                          <span className="rounded bg-white px-2 py-0.5 font-mono text-[11px] font-semibold text-science-blue border border-line">
+                          <span className="rounded border border-line bg-white px-2 py-0.5 font-mono text-[11px] font-semibold text-science-blue">
                             LLM: {effectiveStageLlm.model || 'CLI既定'}
                             {effectiveStageLlm.effort
                               ? ` · effort=${effectiveStageLlm.effort}`
@@ -785,7 +787,7 @@ export function ActionsSection({
                           </p>
                         </div>
                         <a
-                          href="/workflow"
+                          href={pageHref('/workflow', project.id)}
                           className="shrink-0 text-xs font-semibold text-eyebrow underline hover:text-science-blue"
                         >
                           定義ページで編集
@@ -806,13 +808,13 @@ export function ActionsSection({
                   </div>
 
                   <div className="mt-4 flex items-center justify-between border-t border-line pt-2.5 text-xs text-ink-muted">
-                    <span>詳細ログは上の「{activeStage.short} / logs」タブで確認できます</span>
+                    <span>詳細ログは「Logs」タブから確認できます</span>
                     <button
                       type="button"
                       onClick={() => setDetailTab('logs')}
-                      className="font-semibold text-eyebrow underline hover:text-science-blue"
+                      className="font-en font-semibold text-eyebrow underline hover:text-science-blue"
                     >
-                      ログを見る ({stageHistory.length})
+                      Logs ({stageHistory.length})
                     </button>
                   </div>
                 </div>

@@ -1,7 +1,7 @@
-import { SlidersHorizontal, Upload } from 'lucide-react';
+import { FolderOpen, SlidersHorizontal, Upload } from 'lucide-react';
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { AppStateResponse, StageKey, WorkflowJob, WorkflowSpec } from '../shared/types.ts';
+import type { AppStateResponse, ProjectSpec, StageKey, WorkflowJob } from '../shared/types.ts';
 import { ActionsSection } from './components/ActionsSection.tsx';
 import { AppHeader } from './components/AppHeader.tsx';
 import { BottomGrid } from './components/BottomGrid.tsx';
@@ -9,34 +9,28 @@ import { KanbanSection } from './components/KanbanSection.tsx';
 import { MetricsGrid } from './components/MetricsGrid.tsx';
 import { SectionNavigation } from './components/SectionNavigation.tsx';
 import { TraceSection } from './components/TraceSection.tsx';
-import { pickDefaultStage } from './utils/workflow.ts';
+import {
+  pageHref,
+  persistProjectId,
+  pickDefaultStage,
+  readInitialProjectId,
+} from './utils/workflow.ts';
 
 interface ToastState {
   text: string;
   error: boolean;
 }
 
-const EMPTY_WORKFLOW: WorkflowSpec = {
-  title: '科学データ解析ワークフロー',
+const EMPTY_PROJECT: ProjectSpec = {
+  id: 'default',
+  name: '科学データ解析ワークフロー',
   purpose: '',
   acceptanceCriteria: '',
   llm: { model: '', effort: '' },
-  stageLlm: {
-    ingest: { model: '', effort: '' },
-    preprocess: { model: '', effort: '' },
-    analysis: { model: '', effort: '' },
-    validate: { model: '', effort: '' },
-    visualize: { model: '', effort: '' },
-    publish: { model: '', effort: '' },
-  },
-  stageInstructions: {
-    ingest: '',
-    preprocess: '',
-    analysis: '',
-    validate: '',
-    visualize: '',
-    publish: '',
-  },
+  stages: [],
+  inboxDir: 'projects/default/inbox',
+  artifactsDir: 'projects/default/artifacts',
+  createdAt: '',
   updatedAt: '',
 };
 
@@ -52,11 +46,13 @@ async function postJson<T>(route: string, payload: unknown): Promise<T> {
 }
 
 export function App() {
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(() => readInitialProjectId());
   const [state, setState] = useState<AppStateResponse>({
+    projects: [],
+    project: EMPTY_PROJECT,
     jobs: [],
     events: [],
     stages: [],
-    workflow: EMPTY_WORKFLOW,
     updatedAt: '',
   });
   const [initialLoading, setInitialLoading] = useState(true);
@@ -80,8 +76,11 @@ export function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const loadingRef = useRef(false);
   const pendingRefreshRef = useRef(false);
+  const selectedProjectRef = useRef(selectedProjectId);
   const toastTimerRef = useRef<number | null>(null);
   const dragDepthRef = useRef(0);
+
+  selectedProjectRef.current = selectedProjectId;
 
   const showToast = useCallback((text: string, error = false) => {
     setToast({ text, error });
@@ -93,19 +92,26 @@ export function App() {
     }, 3900);
   }, []);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (projectOverride?: string) => {
     if (loadingRef.current) {
       pendingRefreshRef.current = true;
       return;
     }
     loadingRef.current = true;
+    const targetProject = projectOverride || selectedProjectRef.current;
     try {
-      const response = await fetch('/api/state', { cache: 'no-store' });
+      const response = await fetch(`/api/state?project=${encodeURIComponent(targetProject)}`, {
+        cache: 'no-store',
+      });
       if (!response.ok) throw new Error(`${response.status}`);
       const next = (await response.json()) as AppStateResponse;
       setState(next);
       setStateAvailable(true);
       setInitialLoading(false);
+      if (next.project.id !== selectedProjectRef.current) {
+        setSelectedProjectId(next.project.id);
+      }
+      persistProjectId(next.project.id);
       setSelectedJobId((prev) => {
         if (prev && next.jobs.some((job) => job.id === prev)) return prev;
         const firstJob = next.jobs[0] || null;
@@ -129,7 +135,10 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    void refresh();
+    void refresh(selectedProjectId);
+  }, [refresh, selectedProjectId]);
+
+  useEffect(() => {
     const source = new EventSource('/api/stream');
     source.onopen = () => {
       setStreamConnection('online');
@@ -164,19 +173,23 @@ export function App() {
   const uploadFile = useCallback(
     async (file: File | undefined) => {
       if (!file) return;
+      const projectId = selectedProjectRef.current;
       try {
-        const result = await fetch(`/api/upload?filename=${encodeURIComponent(file.name)}`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/octet-stream' },
-          body: file,
-        });
+        const result = await fetch(
+          `/api/upload?filename=${encodeURIComponent(file.name)}&project=${encodeURIComponent(projectId)}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/octet-stream' },
+            body: file,
+          },
+        );
         const answer = (await result.json()) as { job?: WorkflowJob; error?: string };
         if (!result.ok || !answer.job) throw new Error(answer.error || 'Upload failed');
         setSelectedJobId(answer.job.id);
-        setSelectedStage('ingest');
+        setSelectedStage(answer.job.stages[0]?.key || 'ingest');
         setShowAllLogs(false);
-        showToast(`${file.name} を投入しました`);
-        await refresh();
+        showToast(`${file.name} を ${projectId} へ投入しました`);
+        await refresh(projectId);
       } catch (err) {
         showToast(err instanceof Error ? err.message : 'Upload failed', true);
       }
@@ -234,6 +247,13 @@ export function App() {
     return [...new Set(names)].join(' / ');
   }, [state.jobs]);
 
+  const handleSelectProject = useCallback((projectId: string) => {
+    setSelectedProjectId(projectId);
+    setSelectedJobId(null);
+    setShowAllLogs(false);
+    persistProjectId(projectId);
+  }, []);
+
   const handleSelectJob = useCallback(
     (jobId: string) => {
       setSelectedJobId(jobId);
@@ -251,15 +271,19 @@ export function App() {
 
   const handleDemoRun = useCallback(
     async (review: boolean) => {
+      const projectId = selectedProjectRef.current;
       try {
-        const answer = await postJson<{ job: WorkflowJob }>('/api/demo', { review });
+        const answer = await postJson<{ job: WorkflowJob }>('/api/demo', {
+          projectId,
+          review,
+        });
         setSelectedJobId(answer.job.id);
-        setSelectedStage('ingest');
+        setSelectedStage(answer.job.stages[0]?.key || 'ingest');
         setShowAllLogs(false);
         showToast(
           review ? 'デモジョブを追加しました（レビュー承認あり）' : 'デモジョブを追加しました',
         );
-        await refresh();
+        await refresh(projectId);
       } catch (err) {
         showToast(err instanceof Error ? err.message : 'Request failed', true);
       }
@@ -287,7 +311,14 @@ export function App() {
 
   return (
     <div id="overview" className="min-h-screen bg-white text-ink">
-      <AppHeader currentPage="monitor" connection={connection} nowMs={nowMs} />
+      <AppHeader
+        currentPage="monitor"
+        projects={state.projects}
+        selectedProjectId={selectedProjectId}
+        onSelectProject={handleSelectProject}
+        connection={connection}
+        nowMs={nowMs}
+      />
 
       <main>
         <div className="monitor-hero">
@@ -295,13 +326,15 @@ export function App() {
           <div className="page-width relative py-7 sm:py-10">
             <div className="hero-copy">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-bold text-eyebrow">{state.workflow.title}</span>
+                <span className="text-xs font-bold text-eyebrow">
+                  {state.project.name}（{state.project.stages.length}工程）
+                </span>
                 <a
-                  href="/workflow"
+                  href={pageHref('/workflow', selectedProjectId)}
                   className="inline-flex items-center gap-1 rounded border border-line bg-white px-2 py-0.5 text-[11px] font-semibold text-science-blue hover:bg-bg-2"
                 >
                   <SlidersHorizontal className="h-3 w-3" />
-                  定義・LLM 設定を編集
+                  定義・工程・LLM を編集
                 </a>
               </div>
               <h1
@@ -311,8 +344,18 @@ export function App() {
                 Ambient workflows
               </h1>
               <p className="mt-2 max-w-xl text-base leading-7">
-                {state.workflow.purpose ||
+                {state.project.purpose ||
                   'ファイル投入から解析、検証、成果物の生成まで、ジョブごとの実行状況を確認できます。'}
+              </p>
+              <p className="mt-2 inline-flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-muted">
+                <span className="inline-flex items-center gap-1">
+                  <FolderOpen className="h-3.5 w-3.5 text-eyebrow" />
+                  Inbox: <code className="font-mono text-ink">{state.project.inboxDir}</code>
+                </span>
+                <span>
+                  Artifacts:{' '}
+                  <code className="font-mono text-ink">{state.project.artifactsDir}</code>
+                </span>
               </p>
               <div className="mt-5 flex flex-wrap gap-3">
                 <button
@@ -352,7 +395,7 @@ export function App() {
           </div>
         </div>
 
-        <SectionNavigation activeHash={activeHash} />
+        <SectionNavigation activeHash={activeHash} projectId={selectedProjectId} />
 
         <div className="page-width pb-10">
           {/* KPI Metrics */}
@@ -367,13 +410,13 @@ export function App() {
             onRefresh={() => void refresh()}
           />
 
-          {/* 02 / Unified Execution History & Tabbed Step Summary/Logs */}
+          {/* 02 / Unified Execution History & Tabbed Summary/Logs */}
           <ActionsSection
             jobs={state.jobs}
             selectedJob={selectedJob}
             selectedStage={selectedStage}
             showAllLogs={showAllLogs}
-            workflow={state.workflow}
+            project={state.project}
             nowMs={nowMs}
             onSelectJob={handleSelectJob}
             onSelectStage={handleSelectStage}
@@ -418,9 +461,11 @@ export function App() {
         <div className="fixed inset-0 z-50 grid place-items-center bg-science-blue/85 backdrop-blur-xs">
           <div className="flex h-[58vh] w-[66vw] flex-col items-center justify-center rounded-2xl border-2 border-dashed border-navy-200 bg-white/10 text-white">
             <Upload className="h-12 w-12 text-white" />
-            <strong className="mt-3 text-2xl font-bold">解析データをドロップ</strong>
+            <strong className="mt-3 text-2xl font-bold">
+              {state.project.name} へ解析データをドロップ
+            </strong>
             <small className="font-en mt-2 text-sm text-navy-200">
-              CSV · TSV · JSON · TXT · DAT
+              CSV · TSV · JSON · TXT · DAT → {state.project.inboxDir}
             </small>
           </div>
         </div>

@@ -3,6 +3,7 @@ import {
   appendFileSync,
   createReadStream,
   existsSync,
+  type FSWatcher,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -19,38 +20,32 @@ import type {
   ArtifactInfo,
   EventType,
   LlmConfig,
+  ProjectSpec,
   ReasoningEffort,
   StageDefinition,
-  StageKey,
   WorkerEventType,
   WorkflowEvent,
   WorkflowJob,
-  WorkflowSpec,
+  WorkflowStageSpec,
 } from './shared/types.ts';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const HOME = process.env.RAILFLOW_HOME ? path.resolve(process.env.RAILFLOW_HOME) : ROOT;
 const DIST = path.join(ROOT, 'dist');
-const INBOX = path.join(HOME, 'inbox');
+const LEGACY_INBOX = path.join(HOME, 'inbox');
 const DATA = path.join(HOME, 'data');
-const ARTIFACTS = path.join(HOME, 'artifacts');
-const WORK = path.join(HOME, 'work');
+const LEGACY_ARTIFACTS = path.join(HOME, 'artifacts');
+const LEGACY_WORK = path.join(HOME, 'work');
+const PROJECTS_ROOT = path.join(HOME, 'projects');
 const EVENTS = path.join(DATA, 'events.jsonl');
-const WORKFLOW_FILE = path.join(DATA, 'workflow-spec.json');
+const PROJECTS_FILE = path.join(DATA, 'projects.json');
+const LEGACY_WORKFLOW_FILE = path.join(DATA, 'workflow-spec.json');
 const MAX_UPLOAD = 20 * 1024 * 1024;
+const DEFAULT_PROJECT_ID = 'default';
 
-for (const dir of [INBOX, DATA, ARTIFACTS, WORK]) {
+for (const dir of [LEGACY_INBOX, DATA, LEGACY_ARTIFACTS, LEGACY_WORK, PROJECTS_ROOT]) {
   mkdirSync(dir, { recursive: true });
 }
-
-const STAGES: StageDefinition[] = [
-  { key: 'ingest', label: '取込・形式検証', short: 'Ingest' },
-  { key: 'preprocess', label: '前処理・校正', short: 'Preprocess' },
-  { key: 'analysis', label: 'データ解析', short: 'Analysis' },
-  { key: 'validate', label: '科学的妥当性確認', short: 'Validation' },
-  { key: 'visualize', label: '図表・可視化', short: 'Visualization' },
-  { key: 'publish', label: 'HTML / PPTX生成', short: 'Publish' },
-];
 
 const VALID_EFFORTS = new Set<ReasoningEffort>(['', 'low', 'medium', 'high', 'xhigh', 'max']);
 
@@ -58,45 +53,63 @@ function emptyLlmConfig(): LlmConfig {
   return { model: '', effort: '' };
 }
 
-function normalizeLlmConfig(raw: unknown): LlmConfig {
-  const input = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-  const rawModel = typeof input.model === 'string' ? input.model.trim() : '';
-  const model = rawModel.replace(/[^A-Za-z0-9._:/-]/g, '').slice(0, 100);
-  const rawEffort = typeof input.effort === 'string' ? input.effort.trim().toLowerCase() : '';
-  const effort: ReasoningEffort = VALID_EFFORTS.has(rawEffort as ReasoningEffort)
-    ? (rawEffort as ReasoningEffort)
-    : '';
-  return { model, effort };
+function defaultStages(): WorkflowStageSpec[] {
+  return [
+    {
+      key: 'ingest',
+      label: '取込・形式検証',
+      short: 'Ingest',
+      instruction:
+        '列構成・行数・区切り形式・欠損や外れ値の有無を確認し、01_ingest.md に整理する。',
+      llm: emptyLlmConfig(),
+    },
+    {
+      key: 'preprocess',
+      label: '前処理・校正',
+      short: 'Preprocess',
+      instruction: '実施した前処理と前提条件をすべて 02_preprocess.md に記録する。',
+      llm: emptyLlmConfig(),
+    },
+    {
+      key: 'analysis',
+      label: 'データ解析',
+      short: 'Analysis',
+      instruction: '再現可能なスクリプトで定量解析を行い、中間データと 03_analysis.md を保存する。',
+      llm: emptyLlmConfig(),
+    },
+    {
+      key: 'validate',
+      label: '科学的妥当性確認',
+      short: 'Validation',
+      instruction: '単位・フィット品質・限界や未解決の確認事項を 04_validation.md に明記する。',
+      llm: emptyLlmConfig(),
+    },
+    {
+      key: 'visualize',
+      label: '図表・可視化',
+      short: 'Visualization',
+      instruction: '単位とキャプションを付けた図を作成し、05_visualization.md にまとめる。',
+      llm: emptyLlmConfig(),
+    },
+    {
+      key: 'publish',
+      label: 'HTML / PPTX生成',
+      short: 'Publish',
+      instruction: '手法・図表・結果概要・限界を含む report.html（任意で report.pptx）を作成する。',
+      llm: emptyLlmConfig(),
+    },
+  ];
 }
 
-const DEFAULT_WORKFLOW: Omit<WorkflowSpec, 'updatedAt'> = {
-  title: '科学データ解析ワークフロー',
-  purpose:
-    '投入された実験データ（CSV / TSV / JSON / TXT / DAT）を6工程で自動処理し、各段階の検証記録と再現可能な HTML / PPTX レポートを生成します。',
-  acceptanceCriteria: [
-    '- 入力データの列名・単位・欠損値と異常値を記録すること（不明な単位や条件は推測しない）',
-    '- 変換・解析の処理手順とスクリプトをジョブの作業ディレクトリに保存すること',
-    '- 記述的クイックルックと物理的に検証されたピーク帰属を明確に区別すること',
-    '- 最終成果物として自己完結した report.html（任意で report.pptx）を生成すること',
-  ].join('\n'),
-  llm: emptyLlmConfig(),
-  stageLlm: {
-    ingest: emptyLlmConfig(),
-    preprocess: emptyLlmConfig(),
-    analysis: emptyLlmConfig(),
-    validate: emptyLlmConfig(),
-    visualize: emptyLlmConfig(),
-    publish: emptyLlmConfig(),
-  },
-  stageInstructions: {
-    ingest: '列構成・行数・区切り形式・欠損や外れ値の有無を確認し、01_ingest.md に整理する。',
-    preprocess: '実施した前処理と前提条件をすべて 02_preprocess.md に記録する。',
-    analysis: '再現可能なスクリプトで定量解析を行い、中間データと 03_analysis.md を保存する。',
-    validate: '単位・フィット品質・限界や未解決の確認事項を 04_validation.md に明記する。',
-    visualize: '単位とキャプションを付けた図を作成し、05_visualization.md にまとめる。',
-    publish: '手法・図表・結果概要・限界を含む report.html（任意で report.pptx）を作成する。',
-  },
-};
+const DEFAULT_PURPOSE =
+  '投入された実験データ（CSV / TSV / JSON / TXT / DAT）を定義した工程で自動処理し、各段階の検証記録と再現可能な HTML / PPTX レポートを生成します。';
+
+const DEFAULT_ACCEPTANCE = [
+  '- 入力データの列名・単位・欠損値と異常値を記録すること（不明な単位や条件は推測しない）',
+  '- 変換・解析の処理手順とスクリプトをジョブの作業ディレクトリに保存すること',
+  '- 記述的クイックルックと物理的に検証されたピーク帰属を明確に区別すること',
+  '- 最終成果物として自己完結した report.html（任意で report.pptx）を生成すること',
+].join('\n');
 
 const WORKER_EVENT_TYPES = new Set<WorkerEventType>([
   'stage.started',
@@ -117,6 +130,8 @@ interface ObservedFile {
   ingested: boolean;
 }
 
+const projects = new Map<string, ProjectSpec>();
+const inboxWatchers = new Map<string, FSWatcher>();
 const jobs = new Map<string, WorkflowJob>();
 const allEvents: WorkflowEvent[] = [];
 const subscribers = new Set<ServerResponse>();
@@ -129,72 +144,221 @@ function asString(value: unknown): string {
   return '';
 }
 
-function normalizeWorkflowSpec(raw: unknown): WorkflowSpec {
+function slugifyId(raw: string, fallback: string): string {
+  const cleaned = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^[-_]+|[-_]+$/g, '')
+    .slice(0, 48);
+  return cleaned || fallback;
+}
+
+function normalizeLlmConfig(raw: unknown): LlmConfig {
   const input = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-  const rawInstructions =
-    input.stageInstructions && typeof input.stageInstructions === 'object'
-      ? (input.stageInstructions as Record<string, unknown>)
-      : {};
-  const rawStageLlm =
-    input.stageLlm && typeof input.stageLlm === 'object'
-      ? (input.stageLlm as Record<string, unknown>)
-      : {};
+  const rawModel = typeof input.model === 'string' ? input.model.trim() : '';
+  const model = rawModel.replace(/[^A-Za-z0-9._:/-]/g, '').slice(0, 100);
+  const rawEffort = typeof input.effort === 'string' ? input.effort.trim().toLowerCase() : '';
+  const effort: ReasoningEffort = VALID_EFFORTS.has(rawEffort as ReasoningEffort)
+    ? (rawEffort as ReasoningEffort)
+    : '';
+  return { model, effort };
+}
 
-  const stageInstructions = Object.fromEntries(
-    STAGES.map((stage) => {
-      const value = rawInstructions[stage.key];
-      const text =
-        typeof value === 'string'
-          ? value.slice(0, 2000)
-          : DEFAULT_WORKFLOW.stageInstructions[stage.key];
-      return [stage.key, text];
-    }),
-  ) as Record<StageKey, string>;
+function normalizeStages(raw: unknown, fallback: WorkflowStageSpec[]): WorkflowStageSpec[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return fallback.map((stage) => ({ ...stage, llm: { ...stage.llm } }));
+  }
 
-  const stageLlm = Object.fromEntries(
-    STAGES.map((stage) => [stage.key, normalizeLlmConfig(rawStageLlm[stage.key])]),
-  ) as Record<StageKey, LlmConfig>;
+  const seen = new Set<string>();
+  const normalized: WorkflowStageSpec[] = [];
+
+  for (const [index, entry] of raw.slice(0, 20).entries()) {
+    if (!entry || typeof entry !== 'object') continue;
+    const item = entry as Record<string, unknown>;
+    const label =
+      typeof item.label === 'string' && item.label.trim()
+        ? item.label.trim().slice(0, 80)
+        : `工程 ${index + 1}`;
+    const short =
+      typeof item.short === 'string' && item.short.trim()
+        ? item.short.trim().slice(0, 40)
+        : label.slice(0, 24);
+    let baseKey = slugifyId(
+      typeof item.key === 'string' && item.key.trim() ? item.key : short,
+      `stage_${index + 1}`,
+    );
+    let key = baseKey;
+    let suffix = 2;
+    while (seen.has(key)) {
+      key = `${baseKey}_${suffix}`;
+      suffix += 1;
+    }
+    seen.add(key);
+
+    normalized.push({
+      key,
+      label,
+      short,
+      instruction: typeof item.instruction === 'string' ? item.instruction.slice(0, 2000) : '',
+      llm: normalizeLlmConfig(item.llm),
+    });
+  }
+
+  return normalized.length > 0
+    ? normalized
+    : fallback.map((stage) => ({ ...stage, llm: { ...stage.llm } }));
+}
+
+function projectInboxPath(projectId: string): string {
+  return path.join(PROJECTS_ROOT, projectId, 'inbox');
+}
+
+function projectArtifactsPath(projectId: string): string {
+  return path.join(PROJECTS_ROOT, projectId, 'artifacts');
+}
+
+function projectWorkPath(projectId: string): string {
+  return path.join(PROJECTS_ROOT, projectId, 'work');
+}
+
+function ensureProjectDirs(projectId: string): void {
+  for (const dir of [
+    projectInboxPath(projectId),
+    projectArtifactsPath(projectId),
+    projectWorkPath(projectId),
+  ]) {
+    mkdirSync(dir, { recursive: true });
+  }
+}
+
+function toDisplayRelative(absPath: string): string {
+  return path.relative(HOME, absPath).replaceAll('\\', '/');
+}
+
+function buildProjectSpec(
+  id: string,
+  raw: Record<string, unknown>,
+  existing?: ProjectSpec,
+): ProjectSpec {
+  const now = new Date().toISOString();
+  const baseStages = existing?.stages ?? defaultStages();
+  const stages = normalizeStages(raw.stages, baseStages);
+  ensureProjectDirs(id);
 
   return {
-    title:
-      typeof input.title === 'string' && input.title.trim()
-        ? input.title.trim().slice(0, 120)
-        : DEFAULT_WORKFLOW.title,
+    id,
+    name:
+      typeof raw.name === 'string' && raw.name.trim()
+        ? raw.name.trim().slice(0, 120)
+        : typeof raw.title === 'string' && raw.title.trim()
+          ? raw.title.trim().slice(0, 120)
+          : existing?.name || '科学データ解析ワークフロー',
     purpose:
-      typeof input.purpose === 'string' ? input.purpose.slice(0, 2000) : DEFAULT_WORKFLOW.purpose,
+      typeof raw.purpose === 'string'
+        ? raw.purpose.slice(0, 2000)
+        : (existing?.purpose ?? DEFAULT_PURPOSE),
     acceptanceCriteria:
-      typeof input.acceptanceCriteria === 'string'
-        ? input.acceptanceCriteria.slice(0, 4000)
-        : DEFAULT_WORKFLOW.acceptanceCriteria,
-    llm: normalizeLlmConfig(input.llm),
-    stageLlm,
-    stageInstructions,
-    updatedAt: typeof input.updatedAt === 'string' ? input.updatedAt : new Date().toISOString(),
+      typeof raw.acceptanceCriteria === 'string'
+        ? raw.acceptanceCriteria.slice(0, 4000)
+        : (existing?.acceptanceCriteria ?? DEFAULT_ACCEPTANCE),
+    llm: raw.llm !== undefined ? normalizeLlmConfig(raw.llm) : (existing?.llm ?? emptyLlmConfig()),
+    stages,
+    inboxDir: toDisplayRelative(projectInboxPath(id)),
+    artifactsDir: toDisplayRelative(projectArtifactsPath(id)),
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : existing?.createdAt || now,
+    updatedAt: now,
   };
 }
 
-function loadWorkflowSpec(): WorkflowSpec {
-  if (existsSync(WORKFLOW_FILE)) {
+function saveProjects(): void {
+  writeFileSync(PROJECTS_FILE, `${JSON.stringify([...projects.values()], null, 2)}\n`, 'utf8');
+}
+
+function loadProjects(): void {
+  projects.clear();
+
+  if (existsSync(PROJECTS_FILE)) {
     try {
-      const parsed = JSON.parse(readFileSync(WORKFLOW_FILE, 'utf8')) as unknown;
-      return normalizeWorkflowSpec(parsed);
+      const parsed = JSON.parse(readFileSync(PROJECTS_FILE, 'utf8')) as unknown;
+      if (Array.isArray(parsed)) {
+        for (const entry of parsed) {
+          if (!entry || typeof entry !== 'object') continue;
+          const item = entry as Record<string, unknown>;
+          const id = slugifyId(asString(item.id), DEFAULT_PROJECT_ID);
+          if (projects.has(id)) continue;
+          const spec = buildProjectSpec(id, item);
+          if (typeof item.updatedAt === 'string') spec.updatedAt = item.updatedAt;
+          projects.set(id, spec);
+        }
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error('Failed to read workflow spec, using default:', message);
+      console.error('Failed to read projects.json, using default:', message);
+    }
+  } else if (existsSync(LEGACY_WORKFLOW_FILE)) {
+    // Migrate previous single workflow-spec.json into the default project.
+    try {
+      const legacy = JSON.parse(readFileSync(LEGACY_WORKFLOW_FILE, 'utf8')) as Record<
+        string,
+        unknown
+      >;
+      const base = defaultStages();
+      const rawInst =
+        legacy.stageInstructions && typeof legacy.stageInstructions === 'object'
+          ? (legacy.stageInstructions as Record<string, unknown>)
+          : {};
+      const rawStageLlm =
+        legacy.stageLlm && typeof legacy.stageLlm === 'object'
+          ? (legacy.stageLlm as Record<string, unknown>)
+          : {};
+      const migratedStages = base.map((stage) => ({
+        ...stage,
+        instruction:
+          typeof rawInst[stage.key] === 'string'
+            ? (rawInst[stage.key] as string).slice(0, 2000)
+            : stage.instruction,
+        llm: normalizeLlmConfig(rawStageLlm[stage.key]),
+      }));
+      const spec = buildProjectSpec(DEFAULT_PROJECT_ID, {
+        ...legacy,
+        stages: migratedStages,
+      });
+      projects.set(DEFAULT_PROJECT_ID, spec);
+      saveProjects();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('Failed to migrate workflow-spec.json:', message);
     }
   }
-  return {
-    ...DEFAULT_WORKFLOW,
-    llm: { ...DEFAULT_WORKFLOW.llm },
-    stageLlm: Object.fromEntries(
-      STAGES.map((stage) => [stage.key, { ...DEFAULT_WORKFLOW.stageLlm[stage.key] }]),
-    ) as Record<StageKey, LlmConfig>,
-    stageInstructions: { ...DEFAULT_WORKFLOW.stageInstructions },
-    updatedAt: new Date().toISOString(),
-  };
+
+  if (projects.size === 0) {
+    const spec = buildProjectSpec(DEFAULT_PROJECT_ID, {
+      name: '科学データ解析ワークフロー',
+    });
+    projects.set(DEFAULT_PROJECT_ID, spec);
+    saveProjects();
+  }
 }
 
-let workflowSpec: WorkflowSpec = loadWorkflowSpec();
+loadProjects();
+
+function getDefaultProject(): ProjectSpec {
+  const first = projects.get(DEFAULT_PROJECT_ID) ?? projects.values().next().value;
+  if (!first) {
+    const created = buildProjectSpec(DEFAULT_PROJECT_ID, {});
+    projects.set(DEFAULT_PROJECT_ID, created);
+    return created;
+  }
+  return first;
+}
+
+function getProjectOrDefault(projectId: string | null | undefined): ProjectSpec {
+  if (projectId && projects.has(projectId)) {
+    return projects.get(projectId)!;
+  }
+  return getDefaultProject();
+}
 
 function broadcastUpdate(payloadObject: Record<string, unknown>): void {
   const payload = `data: ${JSON.stringify(payloadObject)}\n\n`;
@@ -207,12 +371,20 @@ function broadcastUpdate(payloadObject: Record<string, unknown>): void {
   }
 }
 
-function isStageKey(value: unknown): value is StageKey {
-  return typeof value === 'string' && STAGES.some((stage) => stage.key === value);
-}
-
 function isWorkerEventType(value: unknown): value is WorkerEventType {
   return typeof value === 'string' && WORKER_EVENT_TYPES.has(value as WorkerEventType);
+}
+
+function resolveJobStageDefs(event: WorkflowEvent, projectId: string): StageDefinition[] {
+  if (Array.isArray(event.stages) && event.stages.length > 0) {
+    return event.stages.map((stage) => ({
+      key: stage.key,
+      label: stage.label,
+      short: stage.short,
+    }));
+  }
+  const project = getProjectOrDefault(projectId);
+  return project.stages.map(({ key, label, short }) => ({ key, label, short }));
 }
 
 function rebuild(event: WorkflowEvent): void {
@@ -220,8 +392,11 @@ function rebuild(event: WorkflowEvent): void {
   eventSerial = Math.max(eventSerial, Number(event.sequence) || 0);
   if (event.type === 'job.created') {
     if (jobs.has(event.jobId)) return;
+    const projectId = event.projectId || DEFAULT_PROJECT_ID;
+    const stageDefs = resolveJobStageDefs(event, projectId);
     jobs.set(event.jobId, {
       id: event.jobId,
+      projectId,
       file: event.file ?? 'unknown.csv',
       bytes: event.bytes ?? 0,
       hash: event.hash ?? '',
@@ -233,7 +408,7 @@ function rebuild(event: WorkflowEvent): void {
       worker: null,
       startedAt: null,
       finishedAt: null,
-      stages: STAGES.map((stage) => ({
+      stages: stageDefs.map((stage) => ({
         ...stage,
         status: 'pending',
         attempts: 0,
@@ -319,6 +494,9 @@ function rebuild(event: WorkflowEvent): void {
       if (step) {
         step.status = 'success';
         if (event.summary) step.summary = event.summary;
+      } else {
+        const reviewStage = job.stages.find((stage) => stage.status === 'review');
+        if (reviewStage) reviewStage.status = 'success';
       }
       break;
     case 'artifact.created':
@@ -360,7 +538,7 @@ function appendEvent(data: NewEventPayload): WorkflowEvent {
   };
   appendFileSync(EVENTS, `${JSON.stringify(event)}\n`);
   rebuild(event);
-  broadcastUpdate({ sequence: event.sequence });
+  broadcastUpdate({ sequence: event.sequence, projectId: event.projectId });
   return event;
 }
 
@@ -401,42 +579,62 @@ function readBody(req: IncomingMessage, limit = 100_000): Promise<Buffer> {
   });
 }
 
+function findJobInputFile(job: WorkflowJob): string {
+  const projectFile = path.join(projectInboxPath(job.projectId), job.file);
+  if (existsSync(projectFile)) return projectFile;
+  return path.join(LEGACY_INBOX, job.file);
+}
+
+function findJobArtifactFile(job: WorkflowJob, artifactName: string): string {
+  const projectFile = path.join(projectArtifactsPath(job.projectId), job.id, artifactName);
+  if (existsSync(projectFile)) return projectFile;
+  return path.join(LEGACY_ARTIFACTS, job.id, artifactName);
+}
+
 function enqueue(
   file: string,
-  options: { demo?: boolean; needsReview?: boolean } = {},
+  options: { projectId?: string; inboxRoot?: string; demo?: boolean; needsReview?: boolean } = {},
 ): WorkflowJob {
-  const { demo = false, needsReview = false } = options;
+  const project = getProjectOrDefault(options.projectId);
   const basename = cleanName(file);
-  const absolute = path.join(INBOX, basename);
+  const inboxDir = options.inboxRoot || projectInboxPath(project.id);
+  const absolute = path.join(inboxDir, basename);
   const bytes = readFileSync(absolute);
   const hash = createHash('sha256').update(bytes).digest('hex');
 
   const existing = Array.from(jobs.values()).find(
-    (job) => job.file === basename && job.hash === hash,
+    (job) => job.projectId === project.id && job.file === basename && job.hash === hash,
   );
   if (existing) return existing;
 
   const id = `run_${randomUUID().slice(0, 8)}`;
+  const stageDefs: StageDefinition[] = project.stages.map(({ key, label, short }) => ({
+    key,
+    label,
+    short,
+  }));
   appendEvent({
     type: 'job.created',
     jobId: id,
+    projectId: project.id,
     file: basename,
     bytes: bytes.length,
     hash,
-    demo,
-    needsReview,
+    demo: Boolean(options.demo),
+    needsReview: Boolean(options.needsReview),
+    stages: stageDefs,
   });
-  mkdirSync(path.join(WORK, id), { recursive: true });
-  mkdirSync(path.join(ARTIFACTS, id), { recursive: true });
+  mkdirSync(path.join(projectWorkPath(project.id), id), { recursive: true });
+  mkdirSync(path.join(projectArtifactsPath(project.id), id), { recursive: true });
   const created = jobs.get(id);
   if (!created) throw new Error(`Failed to register job ${id}`);
   return created;
 }
 
-function scanInbox(): void {
+function scanInboxDir(dir: string, projectId: string): void {
   let names: string[] = [];
   try {
-    names = readdirSync(INBOX);
+    names = readdirSync(dir);
   } catch {
     return;
   }
@@ -444,21 +642,22 @@ function scanInbox(): void {
   for (const name of names) {
     if (!/\.(csv|tsv|json|txt|dat)$/i.test(name)) continue;
     try {
-      const st = statSync(path.join(INBOX, name));
+      const st = statSync(path.join(dir, name));
       if (!st.isFile() || st.size > MAX_UPLOAD) continue;
+      const obsKey = `${dir}::${name}`;
       const signature = `${st.size}:${st.mtimeMs}`;
-      const previous = observed.get(name);
+      const previous = observed.get(obsKey);
       if (previous?.signature === signature) {
         if (
           !previous.ingested &&
           Date.now() - previous.seenAt > 1200 &&
           Date.now() - st.mtimeMs > 700
         ) {
-          observed.set(name, { signature, seenAt: previous.seenAt, ingested: true });
-          enqueue(name);
+          observed.set(obsKey, { signature, seenAt: previous.seenAt, ingested: true });
+          enqueue(name, { projectId, inboxRoot: dir });
         }
       } else {
-        observed.set(name, { signature, seenAt: Date.now(), ingested: false });
+        observed.set(obsKey, { signature, seenAt: Date.now(), ingested: false });
       }
     } catch {
       // File may still be written or removed concurrently.
@@ -466,21 +665,43 @@ function scanInbox(): void {
   }
 }
 
-try {
-  const watcher = watch(INBOX, { persistent: false }, () => {
-    const timer = setTimeout(scanInbox, 350);
-    timer.unref();
-  });
-  watcher.on('error', (err) => console.warn('Inbox watcher:', err.message));
-} catch (err) {
-  const message = err instanceof Error ? err.message : String(err);
-  console.warn('FS watch unavailable; using polling fallback:', message);
+function scanAllInboxes(): void {
+  for (const project of projects.values()) {
+    scanInboxDir(projectInboxPath(project.id), project.id);
+  }
+  scanInboxDir(LEGACY_INBOX, getDefaultProject().id);
 }
 
-setInterval(scanInbox, 1000).unref();
-scanInbox();
+function ensureInboxWatcher(dir: string): void {
+  if (inboxWatchers.has(dir)) return;
+  try {
+    const watcher = watch(dir, { persistent: false }, () => {
+      const timer = setTimeout(scanAllInboxes, 350);
+      timer.unref();
+    });
+    watcher.on('error', (err) => console.warn(`Inbox watcher (${dir}):`, err.message));
+    inboxWatchers.set(dir, watcher);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`FS watch unavailable (${dir}); using polling fallback:`, message);
+  }
+}
 
-function makeSample(review = false): WorkflowJob {
+function syncInboxWatchers(): void {
+  for (const project of projects.values()) {
+    ensureProjectDirs(project.id);
+    ensureInboxWatcher(projectInboxPath(project.id));
+  }
+  ensureInboxWatcher(LEGACY_INBOX);
+}
+
+syncInboxWatchers();
+setInterval(scanAllInboxes, 1000).unref();
+scanAllInboxes();
+
+function makeSample(projectId?: string, review = false): WorkflowJob {
+  const project = getProjectOrDefault(projectId);
+  ensureProjectDirs(project.id);
   const id = randomUUID().slice(0, 6);
   const name = `LiMg_XPS_${id}.csv`;
   const rows = ['BindingEnergy_eV,Intensity_a_u'];
@@ -493,8 +714,14 @@ function makeSample(review = false): WorkflowJob {
       Math.sin(i * 1.7) * 9;
     rows.push(`${x.toFixed(3)},${y.toFixed(2)}`);
   }
-  writeFileSync(path.join(INBOX, name), rows.join('\n'));
-  return enqueue(name, { demo: true, needsReview: review });
+  const inboxDir = projectInboxPath(project.id);
+  writeFileSync(path.join(inboxDir, name), rows.join('\n'));
+  return enqueue(name, {
+    projectId: project.id,
+    inboxRoot: inboxDir,
+    demo: true,
+    needsReview: review,
+  });
 }
 
 function serveFile(
@@ -548,12 +775,14 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 interface DemoRequestBody {
+  projectId?: string;
   review?: boolean;
 }
 
 interface ClaimRequestBody {
   agent?: string;
   worker?: string;
+  projectId?: string;
 }
 
 interface EventRequestBody {
@@ -577,28 +806,112 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (pathname === '/api/state' && req.method === 'GET') {
+      const requestedProjectId = url.searchParams.get('project');
+      const activeProject = getProjectOrDefault(requestedProjectId);
+      const allSortedJobs = [...jobs.values()].sort((a, b) =>
+        b.createdAt.localeCompare(a.createdAt),
+      );
+      const filteredJobs = requestedProjectId
+        ? allSortedJobs.filter((job) => job.projectId === activeProject.id)
+        : allSortedJobs;
+      const jobIds = new Set(filteredJobs.map((job) => job.id));
+      const filteredEvents = requestedProjectId
+        ? allEvents.filter((event) => jobIds.has(event.jobId)).slice(-300)
+        : allEvents.slice(-300);
+
       return deliverJSON(res, {
-        jobs: [...jobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-        events: allEvents.slice(-300),
-        stages: STAGES,
-        workflow: workflowSpec,
+        projects: [...projects.values()],
+        project: activeProject,
+        jobs: filteredJobs,
+        events: filteredEvents,
+        stages: activeProject.stages.map(({ key, label, short }) => ({ key, label, short })),
         updatedAt: new Date().toISOString(),
       });
     }
 
+    if (pathname === '/api/projects' && req.method === 'GET') {
+      return deliverJSON(res, { projects: [...projects.values()] });
+    }
+
+    if (pathname === '/api/projects' && req.method === 'POST') {
+      const raw = JSON.parse((await readBody(req, 100_000)).toString('utf8') || '{}') as Record<
+        string,
+        unknown
+      >;
+      const rawName = asString(raw.name || raw.title).trim();
+      if (!rawName) {
+        return deliverJSON(res, { error: 'Project name is required' }, 400);
+      }
+      const requestedId = asString(raw.id).trim();
+      const baseId = slugifyId(requestedId || rawName, `project-${randomUUID().slice(0, 6)}`);
+      let id = baseId;
+      let suffix = 2;
+      while (projects.has(id)) {
+        id = `${baseId}-${suffix}`;
+        suffix += 1;
+      }
+      const created = buildProjectSpec(id, { ...raw, name: rawName });
+      projects.set(id, created);
+      saveProjects();
+      syncInboxWatchers();
+      broadcastUpdate({ projectId: id, projectUpdatedAt: created.updatedAt });
+      return deliverJSON(res, { project: created, projects: [...projects.values()] }, 201);
+    }
+
+    const projectMatch = pathname.match(/^\/api\/projects\/([a-z0-9_-]+)$/);
+    if (projectMatch && req.method === 'GET') {
+      const project = projects.get(projectMatch[1]);
+      if (!project) return deliverJSON(res, { error: 'Project not found' }, 404);
+      return deliverJSON(res, { project });
+    }
+
+    if (projectMatch && req.method === 'PUT') {
+      const projectId = projectMatch[1];
+      const existing = projects.get(projectId);
+      if (!existing) return deliverJSON(res, { error: 'Project not found' }, 404);
+      const raw = JSON.parse((await readBody(req, 100_000)).toString('utf8') || '{}') as Record<
+        string,
+        unknown
+      >;
+      const updated = buildProjectSpec(projectId, raw, existing);
+      projects.set(projectId, updated);
+      saveProjects();
+      broadcastUpdate({ projectId, projectUpdatedAt: updated.updatedAt });
+      return deliverJSON(res, { project: updated, projects: [...projects.values()] });
+    }
+
+    if (projectMatch && req.method === 'DELETE') {
+      const projectId = projectMatch[1];
+      if (!projects.has(projectId)) return deliverJSON(res, { error: 'Project not found' }, 404);
+      if (projects.size <= 1) {
+        return deliverJSON(res, { error: 'At least one project must remain' }, 400);
+      }
+      const dir = projectInboxPath(projectId);
+      inboxWatchers.get(dir)?.close();
+      inboxWatchers.delete(dir);
+      projects.delete(projectId);
+      saveProjects();
+      broadcastUpdate({ deletedProjectId: projectId });
+      return deliverJSON(res, { ok: true, projects: [...projects.values()] });
+    }
+
+    // Legacy single-workflow endpoints mapped to requested or default project.
     if (pathname === '/api/workflow' && req.method === 'GET') {
-      return deliverJSON(res, { workflow: workflowSpec });
+      const project = getProjectOrDefault(url.searchParams.get('project'));
+      return deliverJSON(res, { project });
     }
 
     if (pathname === '/api/workflow' && req.method === 'PUT') {
-      const body = JSON.parse((await readBody(req, 100_000)).toString('utf8') || '{}') as unknown;
-      workflowSpec = normalizeWorkflowSpec({
-        ...(body && typeof body === 'object' ? (body as Record<string, unknown>) : {}),
-        updatedAt: new Date().toISOString(),
-      });
-      writeFileSync(WORKFLOW_FILE, `${JSON.stringify(workflowSpec, null, 2)}\n`, 'utf8');
-      broadcastUpdate({ workflowUpdatedAt: workflowSpec.updatedAt });
-      return deliverJSON(res, { workflow: workflowSpec });
+      const target = getProjectOrDefault(url.searchParams.get('project'));
+      const raw = JSON.parse((await readBody(req, 100_000)).toString('utf8') || '{}') as Record<
+        string,
+        unknown
+      >;
+      const updated = buildProjectSpec(target.id, raw, target);
+      projects.set(target.id, updated);
+      saveProjects();
+      broadcastUpdate({ projectId: target.id, projectUpdatedAt: updated.updatedAt });
+      return deliverJSON(res, { project: updated });
     }
 
     if (pathname === '/api/stream' && req.method === 'GET') {
@@ -626,10 +939,12 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === '/api/demo' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as DemoRequestBody;
-      return deliverJSON(res, { job: makeSample(Boolean(body.review)) }, 201);
+      return deliverJSON(res, { job: makeSample(body.projectId, Boolean(body.review)) }, 201);
     }
 
     if (pathname === '/api/upload' && req.method === 'POST') {
+      const project = getProjectOrDefault(url.searchParams.get('project'));
+      ensureProjectDirs(project.id);
       const name = cleanName(url.searchParams.get('filename'));
       if (!/\.(csv|tsv|txt|json|dat)$/i.test(name)) {
         return deliverJSON(res, { error: 'Supported extensions: csv,tsv,txt,json,dat' }, 400);
@@ -639,31 +954,44 @@ const server = http.createServer(async (req, res) => {
         return deliverJSON(res, { error: 'Empty file' }, 400);
       }
       const safe = `${path.parse(name).name.slice(0, 70)}_${randomUUID().slice(0, 5)}${path.extname(name)}`;
-      writeFileSync(path.join(INBOX, safe), body, { flag: 'wx' });
-      return deliverJSON(res, { job: enqueue(safe) }, 201);
+      const inboxDir = projectInboxPath(project.id);
+      writeFileSync(path.join(inboxDir, safe), body, { flag: 'wx' });
+      return deliverJSON(
+        res,
+        { job: enqueue(safe, { projectId: project.id, inboxRoot: inboxDir }) },
+        201,
+      );
     }
 
     if (pathname === '/api/jobs/claim' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as ClaimRequestBody;
+      const requestedProject =
+        typeof body.projectId === 'string' && body.projectId.trim() ? body.projectId.trim() : null;
       const job = [...jobs.values()]
-        .filter((item) => item.status === 'queued')
+        .filter(
+          (item) =>
+            item.status === 'queued' && (!requestedProject || item.projectId === requestedProject),
+        )
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
       if (!job) return deliverJSON(res, { job: null });
 
+      const project = getProjectOrDefault(job.projectId);
+      ensureProjectDirs(project.id);
       appendEvent({
         type: 'job.claimed',
         jobId: job.id,
+        projectId: job.projectId,
         agent: String(body.agent || 'demo').slice(0, 30),
         worker: String(body.worker || os.hostname()).slice(0, 80),
       });
       return deliverJSON(res, {
         job: jobs.get(job.id),
         paths: {
-          input: path.join(INBOX, job.file),
-          work: path.join(WORK, job.id),
-          artifacts: path.join(ARTIFACTS, job.id),
+          input: findJobInputFile(job),
+          work: path.join(projectWorkPath(job.projectId), job.id),
+          artifacts: path.join(projectArtifactsPath(job.projectId), job.id),
         },
-        workflow: workflowSpec,
+        project,
       });
     }
 
@@ -673,6 +1001,7 @@ const server = http.createServer(async (req, res) => {
       if (!job) return deliverJSON(res, { error: 'Job not found' }, 404);
       const output = `${[
         `Railflow run ${job.id}`,
+        `Project: ${job.projectId}`,
         `File: ${job.file}`,
         `Status: ${job.status}`,
         `Agent: ${job.agent || 'unassigned'}`,
@@ -705,14 +1034,15 @@ const server = http.createServer(async (req, res) => {
       if (!isWorkerEventType(input.type)) {
         return deliverJSON(res, { error: 'Unsupported event' }, 400);
       }
-      if (input.stage !== undefined && input.stage !== null && !isStageKey(input.stage)) {
+      const stageKey = typeof input.stage === 'string' && input.stage.trim() ? input.stage : null;
+      if (stageKey && !job.stages.some((stage) => stage.key === stageKey)) {
         return deliverJSON(res, { error: 'Unsupported stage' }, 400);
       }
 
       let artifact: ArtifactInfo | undefined;
       if (input.type === 'artifact.created') {
         const artifactName = asString(input.artifact?.name);
-        const artifactPath = path.join(ARTIFACTS, job.id, artifactName);
+        const artifactPath = findJobArtifactFile(job, artifactName);
         if (
           !artifactName ||
           artifactName !== path.basename(artifactName) ||
@@ -722,7 +1052,7 @@ const server = http.createServer(async (req, res) => {
         }
         artifact = {
           name: artifactName,
-          uri: `/artifacts/${job.id}/${encodeURIComponent(artifactName)}`,
+          uri: `/artifacts/${encodeURIComponent(job.projectId)}/${job.id}/${encodeURIComponent(artifactName)}`,
           bytes: statSync(artifactPath).size,
         };
       }
@@ -732,7 +1062,8 @@ const server = http.createServer(async (req, res) => {
       appendEvent({
         type: input.type,
         jobId: job.id,
-        stage: isStageKey(input.stage) ? input.stage : null,
+        projectId: job.projectId,
+        stage: stageKey,
         message: asString(input.message).slice(0, 600),
         summary: rawSummary ? rawSummary.slice(0, 1200) : undefined,
         artifact,
@@ -746,25 +1077,39 @@ const server = http.createServer(async (req, res) => {
       const job = jobs.get(reviewMatch[1]);
       if (!job) return deliverJSON(res, { error: 'Job not found' }, 404);
       if (job.status !== 'review') return deliverJSON(res, { error: 'Not in review' }, 409);
+      const reviewStage = job.stages.find((stage) => stage.status === 'review')?.key ?? null;
       appendEvent({
         type: 'review.approved',
         jobId: job.id,
-        stage: 'validate',
+        projectId: job.projectId,
+        stage: reviewStage,
         message: '人間がレビューを承認',
       });
       return deliverJSON(res, { ok: true });
     }
 
     if (pathname.startsWith('/artifacts/') && (req.method === 'GET' || req.method === 'HEAD')) {
-      const match = pathname.match(/^\/artifacts\/(run_[a-f0-9]{8})\/([^/]+)$/);
-      if (!match || !jobs.has(match[1])) {
+      // Support both project-scoped /artifacts/:projectId/:jobId/:file and legacy /artifacts/:jobId/:file
+      const scopedMatch = pathname.match(
+        /^\/artifacts\/([a-z0-9_-]+)\/(run_[a-f0-9]{8})\/([^/]+)$/,
+      );
+      const legacyMatch = pathname.match(/^\/artifacts\/(run_[a-f0-9]{8})\/([^/]+)$/);
+      const jobId = scopedMatch ? scopedMatch[2] : legacyMatch ? legacyMatch[1] : null;
+      const artifact = scopedMatch ? scopedMatch[3] : legacyMatch ? legacyMatch[2] : null;
+      if (!jobId || !artifact) {
         return deliverJSON(res, { error: 'Not found' }, 404);
       }
-      const artifact = match[2];
+      const job = jobs.get(jobId);
+      if (!job) {
+        return deliverJSON(res, { error: 'Not found' }, 404);
+      }
+      if (scopedMatch && scopedMatch[1] !== job.projectId) {
+        return deliverJSON(res, { error: 'Not found' }, 404);
+      }
       if (artifact !== path.basename(artifact)) {
         return deliverJSON(res, { error: 'Invalid path' }, 400);
       }
-      const file = path.join(ARTIFACTS, match[1], artifact);
+      const file = findJobArtifactFile(job, artifact);
       return serveFile(
         res,
         file,

@@ -61,6 +61,7 @@ export function KanbanSection({
               ) : (
                 <div className="space-y-2.5">
                   {columnJobs.slice(0, 5).map((job) => {
+                    const total = Math.max(1, job.stages.length);
                     const done = job.stages.filter((stage) => stage.status === 'success').length;
                     const activeStage = job.stages.find(
                       (stage) =>
@@ -76,7 +77,7 @@ export function KanbanSection({
                           ? 'Approval required'
                           : job.status === 'failed'
                             ? 'Failed'
-                            : '6-stage pipeline';
+                            : `${job.stages.length}-stage pipeline`;
                     const start = job.startedAt || job.createdAt;
                     const selected = job.id === selectedJobId;
 
@@ -109,7 +110,7 @@ export function KanbanSection({
                                     ? 'bg-st-green'
                                     : 'bg-science-blue'
                             }`}
-                            style={{ width: `${(done / 6) * 100}%` }}
+                            style={{ width: `${(done / total) * 100}%` }}
                           />
                         </div>
                         <div className="flex items-center justify-between text-xs text-ink-muted tabular-nums">
@@ -117,7 +118,7 @@ export function KanbanSection({
                             {(job.agent || 'unassigned').toUpperCase()}
                           </span>
                           <span className="font-mono">
-                            {done}/6 ·{' '}
+                            {done}/{job.stages.length} ·{' '}
                             {elapsed(start, job.finishedAt ? dateMs(job.finishedAt) : nowMs)}
                           </span>
                         </div>

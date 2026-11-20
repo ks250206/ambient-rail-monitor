@@ -1,3 +1,5 @@
+import { pageHref } from '../utils/workflow.ts';
+
 const sections = [
   ['#board', 'ジョブボード'],
   ['#actions', '実行履歴'],
@@ -5,14 +7,20 @@ const sections = [
   ['#events', 'イベント'],
 ];
 
-export function SectionNavigation({ activeHash }: { activeHash: string }) {
+export function SectionNavigation({
+  activeHash,
+  projectId,
+}: {
+  activeHash: string;
+  projectId: string;
+}) {
   return (
     <nav
       aria-label="ページ内ナビゲーション"
       className="border-y border-line bg-white md:sticky md:top-0 md:z-20"
     >
       <div className="page-width grid grid-cols-2 sm:flex sm:flex-wrap">
-        <a href="/workflow" className="section-link">
+        <a href={pageHref('/workflow', projectId)} className="section-link">
           ワークフロー定義 ↗
         </a>
         {sections.map(([hash, label]) => (

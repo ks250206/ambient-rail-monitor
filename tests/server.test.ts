@@ -6,12 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vite-plus/test';
 
-import type {
-  AppStateResponse,
-  ClaimResponse,
-  WorkflowJob,
-  WorkflowSpec,
-} from '../shared/types.ts';
+import type { AppStateResponse, ClaimResponse, ProjectSpec, WorkflowJob } from '../shared/types.ts';
 import { actionSeconds, axisTime, bytes, getSpans } from '../src/utils/workflow.ts';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -44,6 +39,7 @@ describe('workflow helpers', () => {
   it('reconstructs attempt spans from stage events', () => {
     const job: WorkflowJob = {
       id: 'run_12345678',
+      projectId: 'default',
       file: 'sample.csv',
       bytes: 128,
       hash: 'abc',
@@ -99,7 +95,7 @@ describe('workflow helpers', () => {
 });
 
 describe('API integration', () => {
-  it('handles workflow spec, stage summaries, file enqueue -> pull claim -> spans -> review -> artifact -> replay', async () => {
+  it('supports multiple projects, custom stage counts, project-scoped inbox/artifacts, summaries, review & replay', async () => {
     const temp = mkdtempSync(path.join(os.tmpdir(), 'railflow-test-'));
     const port = 30_000 + Math.floor(Math.random() * 25_000);
     const api = `http://127.0.0.1:${port}`;
@@ -124,59 +120,79 @@ describe('API integration', () => {
         return res.ok;
       });
 
-      // Update workflow spec (purpose, acceptance criteria, LLM model/effort, custom stage instructions)
-      const putRes = await fetch(`${api}/api/workflow`, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          title: 'XPS 実験解析',
-          purpose: 'スペクトル CSV を検品・解析してレポートを作成する',
-          acceptanceCriteria: '- 単位の欠損を明示すること\n- HTML レポートを出力すること',
+      // Create a second project with a custom 3-stage workflow and separate inbox/artifacts.
+      const createProj = await post<{ project: ProjectSpec; projects: ProjectSpec[] }>(
+        '/api/projects',
+        {
+          id: 'xrd-lab',
+          name: 'XRD 回折解析',
+          purpose: 'XRD パターンを3工程で迅速解析する',
+          acceptanceCriteria: '- 波長条件を明記すること',
           llm: { model: 'gpt-5.4', effort: 'high' },
-          stageLlm: {
-            ingest: { model: 'gpt-5.3-codex', effort: 'low' },
-            preprocess: { model: '', effort: '' },
-            analysis: { model: '', effort: 'xhigh' },
-            validate: { model: '', effort: '' },
-            visualize: { model: '', effort: '' },
-            publish: { model: '', effort: '' },
-          },
-          stageInstructions: {
-            ingest: '列名と欠損行数を必ず確認する',
-            preprocess: '',
-            analysis: '54 eV 付近の最大強度を報告する',
-            validate: '',
-            visualize: '',
-            publish: '',
-          },
-        }),
-      });
-      expect(putRes.status).toBe(200);
-      const putBody = (await putRes.json()) as { workflow: WorkflowSpec };
-      expect(putBody.workflow.title).toBe('XPS 実験解析');
-      expect(putBody.workflow.llm).toEqual({ model: 'gpt-5.4', effort: 'high' });
-      expect(putBody.workflow.stageLlm.ingest).toEqual({ model: 'gpt-5.3-codex', effort: 'low' });
-      expect(putBody.workflow.stageLlm.analysis).toEqual({ model: '', effort: 'xhigh' });
-      expect(putBody.workflow.stageInstructions.ingest).toBe('列名と欠損行数を必ず確認する');
-      expect(existsSync(path.join(temp, 'data', 'workflow-spec.json'))).toBe(true);
+          stages: [
+            {
+              key: 'load',
+              label: 'データ読込',
+              short: 'Load',
+              instruction: '2theta 列を確認',
+              llm: { model: 'gpt-5.3-codex', effort: 'low' },
+            },
+            {
+              key: 'fit',
+              label: 'ピーク解析',
+              short: 'PeakFit',
+              instruction: '主要ピークを抽出',
+              llm: { model: '', effort: 'xhigh' },
+            },
+            {
+              key: 'report',
+              label: 'レポート公開',
+              short: 'Report',
+              instruction: 'HTML レポートを生成',
+              llm: { model: '', effort: '' },
+            },
+          ],
+        },
+      );
+      expect(createProj.status).toBe(201);
+      expect(createProj.body.project.id).toBe('xrd-lab');
+      expect(createProj.body.project.stages).toHaveLength(3);
+      expect(createProj.body.project.inboxDir).toBe('projects/xrd-lab/inbox');
+      expect(createProj.body.project.artifactsDir).toBe('projects/xrd-lab/artifacts');
+      expect(existsSync(path.join(temp, 'projects', 'xrd-lab', 'inbox'))).toBe(true);
+      expect(existsSync(path.join(temp, 'projects', 'xrd-lab', 'artifacts'))).toBe(true);
+      expect(existsSync(path.join(temp, 'data', 'projects.json'))).toBe(true);
 
-      const init = await post<{ job: WorkflowJob }>('/api/demo', { review: true });
+      // Enqueue demo job in xrd-lab project.
+      const init = await post<{ job: WorkflowJob }>('/api/demo', {
+        projectId: 'xrd-lab',
+        review: true,
+      });
       expect(init.status).toBe(201);
       const id = init.body.job.id;
+      expect(init.body.job.projectId).toBe('xrd-lab');
+      expect(init.body.job.stages.map((stage) => stage.key)).toEqual(['load', 'fit', 'report']);
+
+      // Default project state should not include xrd-lab jobs.
+      const defaultState = (await (
+        await fetch(`${api}/api/state?project=default`)
+      ).json()) as AppStateResponse;
+      expect(defaultState.jobs).toHaveLength(0);
 
       const claim = await post<ClaimResponse>('/api/jobs/claim', {
         agent: 'demo',
         worker: 'test-worker',
+        projectId: 'xrd-lab',
       });
       expect(claim.body.job?.id).toBe(id);
-      expect(claim.body.workflow?.title).toBe('XPS 実験解析');
-      expect(claim.body.workflow?.llm).toEqual({ model: 'gpt-5.4', effort: 'high' });
-      expect(claim.body.workflow?.stageLlm.ingest.model).toBe('gpt-5.3-codex');
-      expect(claim.body.workflow?.stageInstructions.analysis).toBe(
-        '54 eV 付近の最大強度を報告する',
-      );
+      expect(claim.body.project?.id).toBe('xrd-lab');
+      expect(claim.body.paths?.input).toContain(path.join('projects', 'xrd-lab', 'inbox'));
+      expect(claim.body.paths?.artifacts).toContain(path.join('projects', 'xrd-lab', 'artifacts'));
 
-      const second = await post<ClaimResponse>('/api/jobs/claim', { agent: 'demo' });
+      const second = await post<ClaimResponse>('/api/jobs/claim', {
+        agent: 'demo',
+        projectId: 'xrd-lab',
+      });
       expect(second.body.job).toBeNull();
 
       const send = async (
@@ -186,26 +202,28 @@ describe('API integration', () => {
         extra: Record<string, unknown> = {},
       ) => post(`/api/jobs/${id}/events`, { type, stage, message, ...extra });
 
-      await send('stage.started', 'ingest');
-      await send('stage.succeeded', 'ingest', 'ingest: 完了', {
-        summary: '141行・2列のCSVを確認し欠損なし',
+      await send('stage.started', 'load');
+      await send('stage.succeeded', 'load', 'load: 完了', {
+        summary: '141行・2列のXRDデータを確認',
       });
-      await send('stage.started', 'analysis');
-      await send('stage.failed', 'analysis', 'failed once');
-      await send('stage.retry', 'analysis');
-      await send('stage.started', 'analysis');
-      await send('stage.succeeded', 'analysis', 'analysis: 完了', {
+      await send('stage.started', 'fit');
+      await send('stage.failed', 'fit', 'failed once');
+      await send('stage.retry', 'fit');
+      await send('stage.started', 'fit');
+      await send('stage.succeeded', 'fit', 'fit: 完了', {
         summary: '2回目の試行でピーク強度 790 を算出',
       });
-      await send('review.required', 'validate', 'please inspect');
+      await send('review.required', 'fit', 'please inspect');
 
-      let state = (await (await fetch(`${api}/api/state`)).json()) as AppStateResponse;
-      expect(state.workflow.title).toBe('XPS 実験解析');
+      let state = (await (
+        await fetch(`${api}/api/state?project=xrd-lab`)
+      ).json()) as AppStateResponse;
+      expect(state.project.name).toBe('XRD 回折解析');
+      expect(state.jobs).toHaveLength(1);
       expect(state.jobs[0].status).toBe('review');
-      expect(state.jobs[0].stages[0].summary).toBe('141行・2列のCSVを確認し欠損なし');
-      expect(state.jobs[0].stages[2].attempts).toBe(2);
-      expect(state.jobs[0].stages[2].summary).toBe('2回目の試行でピーク強度 790 を算出');
-      expect(state.events.filter((event) => event.type === 'stage.failed')).toHaveLength(1);
+      expect(state.jobs[0].stages[0].summary).toBe('141行・2列のXRDデータを確認');
+      expect(state.jobs[0].stages[1].attempts).toBe(2);
+      expect(state.jobs[0].stages[1].summary).toBe('2回目の試行でピーク強度 790 を算出');
 
       const approval = await post(`/api/jobs/${id}/approve`);
       expect(approval.status).toBe(200);
@@ -213,40 +231,46 @@ describe('API integration', () => {
       const resumed = await post<ClaimResponse>('/api/jobs/claim', { agent: 'demo' });
       expect(resumed.body.job?.id).toBe(id);
 
-      const out = path.join(temp, 'artifacts', id, 'report 100%.html');
+      const out = path.join(temp, 'projects', 'xrd-lab', 'artifacts', id, 'report 100%.html');
       mkdirSync(path.dirname(out), { recursive: true });
       writeFileSync(out, '<h1>Hello</h1>');
 
       const artifact = await post(`/api/jobs/${id}/events`, {
         type: 'artifact.created',
-        stage: 'publish',
+        stage: 'report',
         artifact: { name: 'report 100%.html' },
       });
       expect(artifact.status).toBe(200);
       await send('job.completed', null, 'done');
 
-      const file = await fetch(`${api}/artifacts/${id}/report%20100%25.html`);
+      const file = await fetch(`${api}/artifacts/xrd-lab/${id}/report%20100%25.html`);
       expect(file.status).toBe(200);
       expect(file.headers.get('content-security-policy')).toMatch(/sandbox/);
 
       writeFileSync(
-        path.join(temp, 'artifacts', id, 'chart.svg'),
+        path.join(temp, 'projects', 'xrd-lab', 'artifacts', id, 'chart.svg'),
         '<svg xmlns="http://www.w3.org/2000/svg"/>',
       );
-      const chart = await fetch(`${api}/artifacts/${id}/chart.svg`);
+      const chart = await fetch(`${api}/artifacts/xrd-lab/${id}/chart.svg`);
       expect(chart.status).toBe(200);
       expect(chart.headers.get('content-security-policy')).toMatch(/sandbox/);
 
-      state = (await (await fetch(`${api}/api/state`)).json()) as AppStateResponse;
+      // Wrong project prefix must return 404.
+      const wrongProjectArtifact = await fetch(`${api}/artifacts/default/${id}/chart.svg`);
+      expect(wrongProjectArtifact.status).toBe(404);
+
+      state = (await (await fetch(`${api}/api/state?project=xrd-lab`)).json()) as AppStateResponse;
       expect(state.jobs[0].status).toBe('done');
       expect(state.jobs[0].artifacts).toHaveLength(1);
+      expect(state.jobs[0].artifacts[0].uri).toBe(`/artifacts/xrd-lab/${id}/report%20100%25.html`);
 
       const logs = await fetch(`${api}/api/jobs/${id}/logs`);
       expect(logs.status).toBe(200);
       expect(logs.headers.get('content-disposition')).toMatch(/attachment/);
       const logText = await logs.text();
-      expect(logText).toMatch(/stage\.failed \[analysis\] failed once/);
-      expect(logText).toMatch(/Summary: 141行・2列のCSVを確認し欠損なし/);
+      expect(logText).toMatch(/Project: xrd-lab/);
+      expect(logText).toMatch(/stage\.failed \[fit\] failed once/);
+      expect(logText).toMatch(/Summary: 141行・2列のXRDデータを確認/);
       expect(logText).toMatch(/review\.approved/);
 
       const noLogs = await fetch(`${api}/api/jobs/run_deadbeef/logs`);
@@ -266,12 +290,20 @@ describe('API integration', () => {
         expect(await wfHtml.text()).toMatch(/ワークフロー定義/);
       }
 
-      writeFileSync(path.join(temp, 'inbox', 'watch_test.csv'), 'x,y\n1,2\n2,3\n');
+      // Drop a file directly into xrd-lab's dedicated inbox directory.
+      writeFileSync(
+        path.join(temp, 'projects', 'xrd-lab', 'inbox', 'watch_xrd.csv'),
+        'x,y\n1,2\n2,3\n',
+      );
       const watched = await until(async () => {
-        const result = (await (await fetch(`${api}/api/state`)).json()) as AppStateResponse;
-        return result.jobs.find((job) => job.file === 'watch_test.csv');
+        const result = (await (
+          await fetch(`${api}/api/state?project=xrd-lab`)
+        ).json()) as AppStateResponse;
+        return result.jobs.find((job) => job.file === 'watch_xrd.csv');
       }, 6500);
       expect(watched.status).toBe('queued');
+      expect(watched.projectId).toBe('xrd-lab');
+      expect(watched.stages).toHaveLength(3);
     } finally {
       proc.kill('SIGTERM');
       await sleep(200);

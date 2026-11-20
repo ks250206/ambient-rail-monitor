@@ -1,31 +1,62 @@
-import { clock } from '../utils/workflow.ts';
+import type { ProjectSpec } from '../../shared/types.ts';
+import { clock, pageHref } from '../utils/workflow.ts';
 
 interface AppHeaderProps {
   currentPage: 'monitor' | 'workflow';
+  projects: ProjectSpec[];
+  selectedProjectId: string;
+  onSelectProject: (projectId: string) => void;
   connection: 'connecting' | 'online' | 'reconnecting';
   nowMs: number;
 }
 
-export function AppHeader({ currentPage, connection, nowMs }: AppHeaderProps) {
+export function AppHeader({
+  currentPage,
+  projects,
+  selectedProjectId,
+  onSelectProject,
+  connection,
+  nowMs,
+}: AppHeaderProps) {
   return (
     <header className="border-t-4 border-science-blue border-b border-b-line bg-white">
       <div className="page-width flex min-h-16 flex-wrap items-center justify-between gap-x-4 gap-y-2 py-2">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 sm:gap-x-6">
-          <div className="flex items-baseline gap-3 text-science-blue sm:gap-5">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:gap-x-5">
+          <div className="flex items-baseline gap-3 text-science-blue sm:gap-4">
             <span lang="en" className="font-en text-xl font-semibold sm:text-2xl">
               Science Tokyo
             </span>
             <a
-              href="/"
-              className="border-l border-science-sub pl-3 font-en text-sm font-bold tracking-wide sm:pl-5"
+              href={pageHref('/', selectedProjectId)}
+              className="border-l border-science-sub pl-3 font-en text-sm font-bold tracking-wide sm:pl-4"
             >
               RAILFLOW
             </a>
           </div>
 
+          <label className="inline-flex items-center gap-2 text-xs">
+            <span className="font-semibold text-ink-muted">プロジェクト</span>
+            <select
+              aria-label="プロジェクト切替"
+              value={selectedProjectId}
+              onChange={(event) => onSelectProject(event.target.value)}
+              className="max-w-[220px] rounded-md border border-line bg-bg-2 px-2.5 py-1.5 text-xs font-bold text-science-blue focus:border-science-blue focus:bg-white focus:outline-none"
+            >
+              {projects.length === 0 ? (
+                <option value={selectedProjectId}>{selectedProjectId}</option>
+              ) : (
+                projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name} ({project.id})
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+
           <nav aria-label="ページ切替" className="flex items-center gap-1">
             <a
-              href="/workflow"
+              href={pageHref('/workflow', selectedProjectId)}
               aria-current={currentPage === 'workflow' ? 'page' : undefined}
               className={`rounded-md px-3 py-1.5 text-xs font-bold transition-colors ${
                 currentPage === 'workflow'
@@ -36,7 +67,7 @@ export function AppHeader({ currentPage, connection, nowMs }: AppHeaderProps) {
               ワークフロー定義
             </a>
             <a
-              href="/"
+              href={pageHref('/', selectedProjectId)}
               aria-current={currentPage === 'monitor' ? 'page' : undefined}
               className={`rounded-md px-3 py-1.5 text-xs font-bold transition-colors ${
                 currentPage === 'monitor'

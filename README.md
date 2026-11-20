@@ -8,9 +8,9 @@ A local-first proof of concept for **pull-based Codex / Claude Code scientific-a
 
 Four synchronized operational views plus workflow specification editing:
 
-- **Workflow specification, LLM model/effort & custom instructions (`/workflow`)** — dedicated page for editing workflow title, purpose, acceptance criteria, default and per-stage LLM model and reasoning effort (`--model`, `-c model_reasoning_effort` for Codex / `--effort` for Claude), and per-stage custom instructions saved to `data/workflow-spec.json` (`GET/PUT /api/workflow`) and passed to workers on claim.
-- **Job board (Kanban)** — first section on the main monitor (`/`) showing queue, running, review/blocked, and completed jobs. [Job board](docs/board.png)
-- **Actions / Runs & stage details** — unified run history with Actions-style vertical step tabs and a single-grid right pane switching between per-step LLM-generated result summaries (`summary_<stage>.txt` with fallback to final agent output) and step logs, plus active/review/failed status filtering, collapsible attempts, timestamps, live durations, search, human review approval, and raw log download. [Step logs](docs/actions.png) · [Review gate](docs/review.png)
+- **Projects & workflow specification (`/workflow`)** — manage multiple projects in one app, each with isolated `projects/<projectId>/inbox` and `projects/<projectId>/artifacts` directories. Edit project name, purpose, acceptance criteria, variable stage count (add/remove/reorder 1–20 stages), default and per-stage LLM model and reasoning effort (`--model`, `-c model_reasoning_effort` for Codex / `--effort` for Claude), and per-stage custom instructions saved to `data/projects.json` (`GET/POST /api/projects`, `PUT/DELETE /api/projects/:id`).
+- **Job board (Kanban)** — first section on the main monitor (`/`) showing queue, running, review/blocked, and completed jobs for the selected project. [Job board](docs/board.png)
+- **Actions / Runs & stage details** — unified run history with Actions-style vertical step tabs and a single-grid right pane switching between **Summary** (LLM-generated `summary_<stage>.txt` with fallback to final agent output) and **Logs**, plus active/review/failed status filtering, collapsible attempts, timestamps, live durations, search, human review approval, and raw log download. [Step logs](docs/actions.png) · [Review gate](docs/review.png)
 - **Trace explorer & events** — individual execution attempts rendered against elapsed time with Science Tokyo colors and visible status labels, raw agent events, and artifacts.
 
 ## Tech stack

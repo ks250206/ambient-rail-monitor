@@ -208,7 +208,7 @@ export function groupStageAttempts(events: WorkflowEvent[]): AttemptGroup[] {
 }
 
 export function pickDefaultStage(job: WorkflowJob | null): StageKey {
-  if (!job) return 'ingest';
+  if (!job || job.stages.length === 0) return 'ingest';
   return (
     job.stages.find(
       (stage) =>
@@ -218,6 +218,36 @@ export function pickDefaultStage(job: WorkflowJob | null): StageKey {
         stage.status === 'failed',
     )?.key ||
     job.stages.find((stage) => stage.status === 'success')?.key ||
-    'ingest'
+    job.stages[0].key
   );
+}
+
+const PROJECT_STORAGE_KEY = 'railflow:selected-project';
+
+export function readInitialProjectId(): string {
+  const params = new URLSearchParams(window.location.search);
+  const fromUrl = params.get('project')?.trim();
+  if (fromUrl) return fromUrl;
+  try {
+    return window.localStorage.getItem(PROJECT_STORAGE_KEY) || 'default';
+  } catch {
+    return 'default';
+  }
+}
+
+export function persistProjectId(projectId: string): void {
+  try {
+    window.localStorage.setItem(PROJECT_STORAGE_KEY, projectId);
+  } catch {
+    // Ignore storage quota / privacy errors.
+  }
+  const url = new URL(window.location.href);
+  if (url.searchParams.get('project') !== projectId) {
+    url.searchParams.set('project', projectId);
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+  }
+}
+
+export function pageHref(basePath: '/' | '/workflow', projectId: string): string {
+  return `${basePath}?project=${encodeURIComponent(projectId)}`;
 }
