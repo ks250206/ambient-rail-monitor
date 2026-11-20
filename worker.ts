@@ -73,6 +73,7 @@ interface RawCliEvent {
   item?: {
     type?: string;
     command?: string;
+    message?: string;
     aggregated_output?: string;
     output?: string;
     exit_code?: number;
@@ -87,6 +88,15 @@ interface RawCliEvent {
 function parseAgentEvent(evt: RawCliEvent): string | ParsedAgentEvent | null {
   const item = evt.item || {};
   const typ = evt.type || evt.event?.type || 'event';
+
+  if (typ === 'item.completed' && item.type === 'error') {
+    const diagnostic =
+      item.message?.trim() || item.text?.trim() || 'No diagnostic supplied by Codex';
+    return {
+      message: `item.completed · error: ${diagnostic.slice(0, 170)}`,
+      details: diagnostic.length > 170 ? diagnostic.slice(0, 1300) : undefined,
+    };
+  }
 
   if (typ === 'item.completed' && item.type === 'command_execution') {
     const command = String(item.command || '').slice(0, 170);
@@ -132,9 +142,9 @@ const STAGE_PROMPTS: Record<StageKey, string> = {
   validate:
     'Critically validate any scientific claims, fit quality and units. Do not conclude a peak assignment without evidence. Write limitations and unresolved concerns in 04_validation.md.',
   visualize:
-    'Make clear publication-ready plots, with units and captions. Save plots under the current workspace and write 05_visualization.md.',
+    'Make clear publication-ready plots, with units and captions. Save plots under the current workspace and write 05_visualization.md. If Matplotlib is unavailable, a standalone SVG is sufficient. When a PNG is useful and resvg is installed, use resvg input.svg output.png directly. If optional rasterization is unavailable, keep the verified SVG and document the limitation.',
   publish:
-    'Create a self-contained report.html and optionally report.pptx in the root of the current workspace. The worker publishes these files after this stage. Include methodology, plots, result summary and limitations. Provide source code where possible.',
+    'Create a self-contained report.html and optionally report.pptx in the root of the current workspace. The worker publishes these files after this stage. Include methodology, plots, result summary and limitations. Provide source code where possible. Check embedded figures and local references. If a browser preview is unavailable in the sandbox, record that limitation and use structural checks.',
 };
 
 async function runAgent(job: WorkflowJob, stage: StageKey, paths: ClaimPaths): Promise<void> {
