@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   appendFileSync,
+  copyFileSync,
   createReadStream,
   existsSync,
   type FSWatcher,
@@ -38,6 +39,8 @@ import {
   resolveExecution,
 } from './shared/execution-policy.ts';
 import type { FailureKind } from './shared/execution-policy.ts';
+import { findRegisteredOnce, observeInput } from './shared/inbox-observation.ts';
+import type { InboxObservation } from './shared/inbox-observation.ts';
 import { validateTemplate } from './shared/prompts.ts';
 
 import type {
@@ -153,18 +156,12 @@ const WORKER_EVENT_TYPES = new Set<WorkerEventType>([
   'agent.event',
 ]);
 
-interface ObservedFile {
-  signature: string;
-  seenAt: number;
-  ingested: boolean;
-}
-
 const projects = new Map<string, ProjectSpec>();
 const inboxWatchers = new Map<string, FSWatcher>();
 const jobs = new Map<string, WorkflowJob>();
 const allEvents: WorkflowEvent[] = [];
 const subscribers = new Set<ServerResponse>();
-const observed = new Map<string, ObservedFile>();
+const observed = new Map<string, InboxObservation>();
 const inputCandidates = new Map<string, InputCandidate[]>();
 interface UploadSession {
   id: string;
@@ -356,12 +353,26 @@ function buildProjectSpec(
   };
 }
 
+/**
+ * Entries that could not be loaded are written back verbatim so that a later save
+ * never silently drops them; their ids stay reserved until the entry is repaired.
+ */
+let unreadableProjectEntries: unknown[] = [];
+const reservedProjectIds = new Set<string>();
+
 function saveProjects(): void {
-  writeFileSync(PROJECTS_FILE, `${JSON.stringify([...projects.values()], null, 2)}\n`, 'utf8');
+  writeFileSync(
+    PROJECTS_FILE,
+    `${JSON.stringify([...projects.values(), ...unreadableProjectEntries], null, 2)}\n`,
+    'utf8',
+  );
 }
 
 function loadProjects(): void {
   projects.clear();
+  unreadableProjectEntries = [];
+  reservedProjectIds.clear();
+  const unreadable: unknown[] = [];
   const hadProjectsFile = existsSync(PROJECTS_FILE);
 
   if (hadProjectsFile) {
@@ -374,13 +385,14 @@ function loadProjects(): void {
               throw new Error('工程の形式が不正です。');
             const item = entry as Record<string, unknown>;
             const id = slugifyId(asString(item.id), DEFAULT_PROJECT_ID);
-            if (projects.has(id)) continue;
+            if (projects.has(id)) throw new Error(`プロジェクトIDが重複しています: ${id}`);
             const spec = buildProjectSpec(id, item, undefined, { strictTemplates: false });
             if (typeof item.updatedAt === 'string') spec.updatedAt = item.updatedAt;
             projects.set(id, spec);
           } catch (entryErr) {
             const message = entryErr instanceof Error ? entryErr.message : String(entryErr);
             console.error('Failed to load project entry from projects.json:', message);
+            unreadable.push(entry);
           }
         }
       }
@@ -426,6 +438,22 @@ function loadProjects(): void {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('Failed to migrate workflow-spec.json:', message);
+    }
+  }
+
+  if (projects.size > 0 && unreadable.length > 0) {
+    // Keep an untouched copy for manual repair before any later save rewrites the file.
+    try {
+      copyFileSync(PROJECTS_FILE, `${PROJECTS_FILE}.corrupt-${Date.now()}`);
+    } catch (backupErr) {
+      console.error('Failed to back up partially unreadable projects.json:', backupErr);
+    }
+    unreadableProjectEntries = unreadable;
+    for (const entry of unreadable) {
+      if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+        const rawId = asString((entry as Record<string, unknown>).id);
+        if (rawId.trim()) reservedProjectIds.add(slugifyId(rawId, DEFAULT_PROJECT_ID));
+      }
     }
   }
 
@@ -896,12 +924,7 @@ function scanInboxDir(dir: string, project: ProjectSpec): InputCandidate[] {
       if (kind === 'file' && !/\.(csv|tsv|json|txt|dat)$/i.test(name)) continue;
       if (st.isSymbolicLink()) throw new Error('シンボリックリンクは取り込めません。');
       const list = kind === 'file' ? inventory(dir, name) : inventory(path.join(dir, name));
-      const signature = list.signature;
-      const previous = observed.get(obsKey);
-      if (previous?.signature !== signature) {
-        observed.set(obsKey, { signature, seenAt: Date.now(), ingested: false });
-      }
-      const observation = observed.get(obsKey)!;
+      const observation = observeInput(observed, obsKey, list.signature);
       const candidate: InputCandidate = {
         name,
         kind,
@@ -933,15 +956,19 @@ function scanInboxDir(dir: string, project: ProjectSpec): InputCandidate[] {
         continue;
       }
       const source = `${dir === LEGACY_INBOX ? 'legacy' : 'project'}:${kind}:${name}`;
+      // verifyDataset re-hashes up to 200 MB synchronously; do it once per signature,
+      // not on every 1 s scan of an unchanged directory that keeps failing its trigger.
       const existingMatch =
         kind === 'directory'
-          ? [...jobs.values()].find(
-              (job) =>
-                job.projectId === project.id &&
-                job.dataset?.source === source &&
-                job.dataset.bytes === list.bytes &&
-                job.dataset.files.length === list.files.length &&
-                verifyDataset(list.root, job.dataset),
+          ? findRegisteredOnce(observation, () =>
+              [...jobs.values()].find(
+                (job) =>
+                  job.projectId === project.id &&
+                  job.dataset?.source === source &&
+                  job.dataset.bytes === list.bytes &&
+                  job.dataset.files.length === list.files.length &&
+                  verifyDataset(list.root, job.dataset),
+              ),
             )
           : undefined;
       if (existingMatch) {
@@ -1184,7 +1211,7 @@ const server = http.createServer(async (req, res) => {
       const baseId = slugifyId(requestedId || rawName, `project-${randomUUID().slice(0, 6)}`);
       let id = baseId;
       let suffix = 2;
-      while (projects.has(id)) {
+      while (projects.has(id) || reservedProjectIds.has(id)) {
         id = `${baseId}-${suffix}`;
         suffix += 1;
       }

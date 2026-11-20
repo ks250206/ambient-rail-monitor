@@ -14,7 +14,7 @@ import {
 } from './shared/execution-policy.ts';
 import type { ExecutionPolicy, FailureKind } from './shared/execution-policy.ts';
 import { buildStagePrompt } from './shared/prompts.ts';
-import { ExecutionFailure, runCommand } from './shared/process-runner.ts';
+import { ExecutionFailure, isDeterministicFailure, runCommand } from './shared/process-runner.ts';
 import { publishAgentReports } from './shared/publish-reports.ts';
 import type {
   ClaimPaths,
@@ -647,11 +647,14 @@ async function processJob(
       );
       const reportStaging = path.join(paths.work, '.reports', `${stage.key}-${stage.attempts}`);
       try {
-        if (promptError) throw new ExecutionFailure('execution_error', promptError.message);
+        if (promptError)
+          throw new ExecutionFailure('execution_error', promptError.message, { retryable: false });
         prepareAttempt(paths.work, relative, previous);
         if (final) archiveDraftReports(work);
         if (job.dataset && !verifyDataset(paths.inputDir!, job.dataset))
-          throw new Error('登録時の入力データが変更されています。');
+          throw new ExecutionFailure('execution_error', '登録時の入力データが変更されています。', {
+            retryable: false,
+          });
         let lastMessage = '';
         if (MODE === 'demo') {
           const duration = stage.key === retryDemoStageKey ? 2100 : 1100;
@@ -671,8 +674,13 @@ async function processJob(
             timeoutKind,
           );
         remaining();
+        // The snapshot stays altered, so every retry would fail the pre-run check.
         if (job.dataset && !verifyDataset(paths.inputDir!, job.dataset))
-          throw new Error('エージェントが入力スナップショットを変更しました。');
+          throw new ExecutionFailure(
+            'execution_error',
+            'エージェントが入力スナップショットを変更しました。',
+            { retryable: false },
+          );
         await emit(
           job,
           'stage.executed',
@@ -747,13 +755,14 @@ async function processJob(
         const kind = error instanceof ExecutionFailure ? error.kind : 'execution_error';
         reason = error instanceof Error ? error.message : String(error);
         const elapsedMs = elapsed();
+        const deterministic = isDeterministicFailure(error);
         await emit(job, 'stage.failed', stage.key, `${stage.key}: ${reason.slice(0, 540)}`, {
           failureKind: kind,
           elapsedMs,
           workspace: relative,
         });
         stage.activeMs = (stage.activeMs ?? 0) + elapsedMs;
-        if (canRetry(policy, kind, stage.attempts) && !stopping) {
+        if (!deterministic && canRetry(policy, kind, stage.attempts) && !stopping) {
           const delay = retryDelay(policy, stage.attempts);
           const left = availableBudget(job, stage, policy, project);
           if (delay >= left.left) {
@@ -779,6 +788,7 @@ async function processJob(
           });
           stage.activeMs += waited;
         } else if (
+          !deterministic &&
           policy.onFailure === 'review' &&
           !['stage_timeout', 'job_timeout', 'interrupted'].includes(kind)
         ) {
@@ -795,7 +805,9 @@ async function processJob(
             job,
             'job.failed',
             stage.key,
-            `${stage.key}: ${kind} のため停止（試行 ${stage.attempts} 回）`,
+            deterministic
+              ? `${stage.key}: 再試行しても同じ結果になるため停止（${kind}）`
+              : `${stage.key}: ${kind} のため停止（試行 ${stage.attempts} 回）`,
             { failureKind: kind },
           );
           return;

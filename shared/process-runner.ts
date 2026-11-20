@@ -4,10 +4,18 @@ import type { FailureKind } from './execution-policy.ts';
 
 export class ExecutionFailure extends Error {
   kind: FailureKind;
-  constructor(kind: FailureKind, message: string) {
+  /** False for deterministic failures that would fail identically on every retry. */
+  retryable: boolean;
+  constructor(kind: FailureKind, message: string, options: { retryable?: boolean } = {}) {
     super(message);
     this.kind = kind;
+    this.retryable = options.retryable ?? true;
   }
+}
+
+/** Retrying cannot help: the same prompt or the same altered input fails again. */
+export function isDeterministicFailure(error: unknown): boolean {
+  return error instanceof ExecutionFailure && !error.retryable;
 }
 
 /** Own the process group so a timed-out attempt cannot keep writing during a retry. */

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 import { runCommand } from '../shared/process-runner.ts';
@@ -235,6 +235,71 @@ process.on('SIGTERM',()=>{});setInterval(()=>{},100);
       );
       expect(await (await fetch(f.url + result.artifacts[0].uri)).text()).toBe('reviewable last');
       expect(result.events.filter((event) => event.type === 'artifact.created')).toHaveLength(1);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('does not retry or offer review for a prompt that can never be built', async () => {
+    let f = await workflowFixture();
+    try {
+      await f.json('/api/projects', {
+        id: 'badprompt',
+        name: 'Bad prompt',
+        execution: { maxRetries: 3, retryDelayMs: 0, onFailure: 'review' },
+        stages,
+      });
+      const home = f.home;
+      await f.close(true);
+      // Legacy projects.json may contain unknown variables; it loads, but cannot run.
+      const file = path.join(home, 'data', 'projects.json');
+      const saved = JSON.parse(readFileSync(file, 'utf8')) as Array<{
+        id: string;
+        stages: Array<{ instruction: string }>;
+      }>;
+      saved.find((item) => item.id === 'badprompt')!.stages[0].instruction = 'Use {{unknown}}';
+      writeFileSync(file, JSON.stringify(saved));
+      f = await workflowFixture(home);
+      const { job } = await f.json<{ job: WorkflowJob }>('/api/demo', { projectId: 'badprompt' });
+      f.worker(cliPrelude);
+      const result = await f.until(job.id, 'failed');
+      expect(result.stages[0].attempts).toBe(1);
+      expect(result.stages[0].failureKind).toBe('execution_error');
+      expect(result.events.some((event) => event.type === 'stage.retry')).toBe(false);
+      expect(result.events.some((event) => event.type === 'review.required')).toBe(false);
+      expect(existsSync(path.join(home, 'calls.jsonl'))).toBe(false);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('does not retry after the agent alters the frozen input snapshot', async () => {
+    const f = await workflowFixture();
+    try {
+      await f.json('/api/projects', {
+        id: 'tamper',
+        name: 'Tamper',
+        execution: { maxRetries: 3, retryDelayMs: 0, onFailure: 'review' },
+        stages,
+      });
+      const { job } = await f.json<{ job: WorkflowJob }>('/api/demo', { projectId: 'tamper' });
+      f.worker(
+        cliPrelude +
+          `
+const dir = prompt.match(/INPUT DIRECTORY \\(read only\\): (.+)/)[1];
+const target = path.join(dir, fs.readdirSync(dir)[0]);
+fs.chmodSync(target, 0o600);
+fs.appendFileSync(target, 'tampered');
+fs.writeFileSync('report.html', 'report');
+`,
+      );
+      const result = await f.until(job.id, 'failed');
+      expect(result.stages[0].attempts).toBe(1);
+      expect(result.events.some((event) => event.type === 'stage.retry')).toBe(false);
+      expect(result.events.some((event) => event.type === 'review.required')).toBe(false);
+      expect(
+        readFileSync(path.join(f.home, 'calls.jsonl'), 'utf8').trim().split('\n'),
+      ).toHaveLength(1);
     } finally {
       await f.close();
     }
