@@ -134,7 +134,7 @@ if (stage === 'deliver') {
         expect(
           result.events.find((event) => event.type === 'stage.started' && event.stage === 'inspect')
             ?.stageConfig,
-        ).toEqual({
+        ).toMatchObject({
           instruction: '列と欠損を確認',
           llm: { model: 'gpt-5.3-codex', effort: 'low' },
         });

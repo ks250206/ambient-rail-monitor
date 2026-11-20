@@ -382,3 +382,174 @@
 .wf-toast {
   @apply fixed right-4 bottom-5 z-50 max-w-[90vw] rounded px-4 py-3 text-sm text-white shadow-lg;
 }
+
+/* Shared no-code rules, execution policies and dataset intake */
+.wf-help {
+  @apply my-3 text-xs leading-relaxed text-ink-muted;
+}
+.wf-check,
+.wf-fields .wf-check {
+  @apply flex items-center gap-2 py-2 text-sm font-normal;
+}
+.wf-check input,
+.wf-fields .wf-check input {
+  @apply size-4 shrink-0 accent-science-blue;
+}
+.condition-editor {
+  @apply my-3 min-w-0;
+}
+.condition-toolbar {
+  @apply my-3 flex flex-wrap items-end gap-2;
+}
+.condition-toolbar > strong {
+  @apply mr-auto text-sm text-science-blue;
+}
+.condition-toolbar label,
+.condition-fields label,
+.policy-field > label {
+  @apply grid min-w-0 gap-1 text-xs font-semibold;
+}
+.condition-toolbar select,
+.condition-fields input,
+.condition-fields select {
+  @apply min-h-9 w-full min-w-0 rounded border border-navy-400 bg-white px-2 py-1.5 text-sm font-normal text-ink;
+}
+.condition-toolbar > select {
+  @apply w-auto max-w-full;
+}
+.condition-block {
+  @apply min-w-0 rounded border border-line bg-bg-2/50 px-3 pb-3;
+}
+.condition-block.is-negated {
+  @apply border-science-sub;
+}
+.condition-not[aria-pressed='true'] {
+  @apply bg-science-blue text-white;
+}
+.condition-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+  gap: 10px;
+}
+.condition-children {
+  @apply grid gap-3 border-l-2 border-navy-200 pl-2 sm:pl-3;
+}
+.condition-child {
+  @apply min-w-0;
+}
+.condition-child > button {
+  @apply mt-1 min-h-7 text-xs;
+}
+.condition-sentence {
+  @apply my-2 rounded border-l-2 border-science-blue bg-bg-1 p-3 text-sm leading-relaxed;
+  overflow-wrap: anywhere;
+}
+.condition-error {
+  @apply my-2 whitespace-pre-wrap text-sm text-st-red-dark;
+}
+.condition-evidence {
+  @apply my-2 rounded border border-line bg-white px-3 py-2 text-xs;
+  overflow-wrap: anywhere;
+}
+.condition-evidence > div:first-child {
+  @apply flex flex-wrap gap-2;
+}
+.condition-evidence > p {
+  @apply mt-1 text-ink-muted;
+}
+.evidence-pass > div > strong {
+  @apply text-st-green-dark;
+}
+.evidence-fail > div > strong,
+.evidence-error > div > strong {
+  @apply text-st-red-dark;
+}
+.evidence-children {
+  @apply mt-2 border-l-2 border-line pl-2;
+}
+.policy-field {
+  @apply min-w-0;
+}
+.policy-override {
+  @apply mb-1 text-xs;
+}
+.policy-field input:disabled,
+.policy-field select:disabled {
+  @apply bg-bg-1 text-ink-muted;
+}
+.prompt-variables {
+  @apply my-3 flex flex-wrap gap-2 text-xs text-science-blue;
+}
+.prompt-variables code {
+  @apply rounded bg-bg-1 px-2 py-1;
+}
+.prompt-preview {
+  @apply my-3 max-h-96 overflow-auto rounded border border-line bg-bg-2 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dataset-upload {
+  @apply mb-5 rounded border-2 border-dashed border-navy-300 bg-bg-2/50 p-4 sm:p-5;
+}
+.dataset-upload.is-dragging {
+  @apply border-science-blue bg-bg-1;
+}
+.dataset-upload h2 {
+  @apply mr-auto text-base font-bold text-science-blue;
+}
+.dataset-upload button:disabled {
+  @apply cursor-not-allowed opacity-45;
+}
+.upload-selection {
+  @apply mt-4 border-t border-line pt-4;
+}
+.upload-selection .wf-fields {
+  @apply items-center;
+}
+.upload-file-list {
+  @apply my-3 max-h-64 overflow-y-auto rounded border border-line bg-white text-xs;
+}
+.upload-file-list li {
+  @apply flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b border-line px-3 py-2;
+  overflow-wrap: anywhere;
+}
+.upload-file-list small {
+  @apply text-ink-muted;
+}
+.upload-file-list a {
+  @apply text-science-blue underline;
+}
+.upload-selection summary,
+.dataset-details summary,
+.input-candidates summary,
+.stage-execution-details summary {
+  @apply cursor-pointer py-2 text-sm font-semibold text-science-blue;
+}
+.input-candidates {
+  @apply my-4 rounded border border-line p-3 text-sm;
+}
+.input-candidate {
+  @apply grid gap-1 border-t border-line py-3;
+}
+.input-candidate > span,
+.input-candidate > p {
+  @apply text-xs text-ink-muted;
+}
+.dataset-details {
+  @apply mt-3;
+  overflow-wrap: anywhere;
+}
+.stage-execution-details {
+  @apply mt-4 min-w-0 space-y-3 text-xs;
+}
+.stage-execution-details h4 {
+  @apply mt-3 text-sm font-semibold text-science-blue;
+}
+.execution-facts {
+  @apply flex flex-wrap gap-2;
+}
+.execution-facts > span {
+  @apply rounded border border-line bg-bg-2 px-2 py-1;
+}
+.review-outputs {
+  @apply rounded border border-science-sub bg-bg-2 p-3;
+}

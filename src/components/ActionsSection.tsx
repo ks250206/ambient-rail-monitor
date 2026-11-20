@@ -30,6 +30,8 @@ import {
   pageHref,
   STAGE_STATUS_LABELS,
 } from '../utils/workflow.ts';
+import { DatasetDetails, StageExecutionDetails } from './ExecutionDetails.tsx';
+import { ConditionEvidence } from './ConditionBuilder.tsx';
 import { StatusIcon, StatusPill } from './StatusBadge.tsx';
 
 type StepDetailTab = 'summary' | 'logs';
@@ -135,6 +137,7 @@ export function ActionsSection({
   const customStageInstruction = executedConfig?.instruction ?? '';
   const effectiveStageLlm = executedConfig?.llm;
 
+  const reviewStage = selectedJob?.stages.find((stage) => stage.status === 'review');
   const activeTab: StepDetailTab = showAllLogs ? 'logs' : detailTab;
 
   return (
@@ -194,7 +197,9 @@ export function ActionsSection({
                         className="inline-flex items-center gap-1.5 rounded-lg bg-science-blue px-3 py-1.5 text-xs font-bold text-white shadow-2xs transition-colors hover:bg-navy-800"
                       >
                         <Check className="h-3.5 w-3.5" />
-                        レビューを承認して再開
+                        {reviewStage?.failureKind
+                          ? '失敗を確認して例外承認'
+                          : `${reviewStage?.label ?? 'レビュー'}を承認して再開`}
                       </button>
                     )}
                     {selectedJob.artifacts.length > 0 && (
@@ -215,6 +220,7 @@ export function ActionsSection({
                   </div>
                 </div>
 
+                <DatasetDetails job={selectedJob} />
                 {/* Compact Run Facts */}
                 <div className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-3.5 sm:grid-cols-4">
                   <div>
@@ -544,6 +550,7 @@ export function ActionsSection({
                       </div>
                     </dl>
 
+                    <StageExecutionDetails job={selectedJob} stage={activeStage} nowMs={nowMs} />
                     {/* Custom instruction preview */}
                     {customStageInstruction && (
                       <div className="mt-3 flex items-start justify-between gap-3 rounded-md border border-dashed border-science-sub bg-bg-2/40 px-3 py-2.5">
@@ -572,7 +579,9 @@ export function ActionsSection({
                         className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-science-blue px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-navy-800"
                       >
                         <Check className="h-4 w-4" />
-                        レビューを承認して後続工程を再開
+                        {activeStage.failureKind
+                          ? 'この試行の出力を例外承認して続行'
+                          : 'この工程を承認して続行'}
                       </button>
                     )}
                   </div>
@@ -779,6 +788,7 @@ function LogLineRow({ event, showTimestamps }: LogLineRowProps) {
             概要: {event.summary}
           </div>
         )}
+        {event.gate && <ConditionEvidence result={event.gate.result} />}
         {event.details && (
           <pre className="mt-1.5 border-l-2 border-line pl-2.5 text-xs whitespace-pre-wrap text-ink-muted">
             {event.details}

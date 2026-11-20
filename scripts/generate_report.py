@@ -11,6 +11,46 @@ from pathlib import Path
 source, output, run_id = sys.argv[1:4]
 out = Path(output)
 out.mkdir(parents=True, exist_ok=True)
+# A directory is one dataset. Keep independent measurements separate; do not
+# concatenate unrelated traces or invent numeric data for non-tabular inputs.
+if len(sys.argv) > 4:
+    manifest = json.loads(Path(source).read_text(encoding="utf-8"))
+    input_root = Path(sys.argv[4])
+    if len(manifest["files"]) == 1:
+        source = str(input_root / manifest["files"][0]["path"])
+    else:
+        sections = []
+        for entry in manifest["files"]:
+            filename = entry["path"]
+            points = []
+            headers = []
+            if Path(filename).suffix.lower() in (".csv", ".tsv"):
+                with (input_root / filename).open(encoding="utf-8-sig", errors="replace", newline="") as data:
+                    reader = csv.reader(data, delimiter="\t" if filename.lower().endswith(".tsv") else ",")
+                    headers = next(reader, [])
+                    for cells in reader:
+                        if len(cells) < 2:
+                            continue
+                        try:
+                            x, y = float(cells[0]), float(cells[1])
+                            if math.isfinite(x) and math.isfinite(y):
+                                points.append((x, y))
+                        except ValueError:
+                            continue
+            details = "No numeric quicklook for this file; included in the input manifest."
+            chart = ""
+            if points:
+                lo_x, hi_x = min(x for x, _ in points), max(x for x, _ in points)
+                lo_y, hi_y = min(y for _, y in points), max(y for _, y in points)
+                coords = " ".join(f"{30 + (x-lo_x)/(hi_x-lo_x or 1)*740:.2f},{210-(y-lo_y)/(hi_y-lo_y or 1)*180:.2f}" for x,y in points[:2000])
+                chart = f'<svg viewBox="0 0 800 240" role="img" aria-label="Numeric quicklook"><polyline points="{coords}" fill="none" stroke="#435ea5" stroke-width="2"/></svg>'
+                details = f"{len(points)} numeric rows. X: {lo_x:.4g}–{hi_x:.4g}; Y: {lo_y:.4g}–{hi_y:.4g}. Columns: {html.escape(', '.join(headers[:2]))}."
+            sections.append(f'<section><h2>{html.escape(filename)}</h2><p>{entry["bytes"]} bytes · SHA-256 {entry["hash"]}</p><p>{details}</p>{chart}</section>')
+        title = html.escape(manifest["name"])
+        (out / "report.html").write_text(f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><style>body{{font-family:sans-serif;max-width:1000px;margin:40px auto;padding:0 24px;color:#333}}h1,h2{{color:#1c3177}}section{{border-top:1px solid #cfdbed;margin:24px 0;padding:16px 0;overflow-wrap:anywhere}}svg{{max-width:100%}}.note{{background:#fff4e8;padding:20px}}</style></head><body><h1>{title}</h1><p>{len(manifest["files"])} input files · {html.escape(run_id)}</p><p class="note">DEMO: descriptive quicklooks for each CSV/TSV independently. No background subtraction, calibration, peak assignment or physical validation. Other files are inventoried only; no synthetic replacement data.</p>{"".join(sections)}</body></html>', encoding="utf-8")
+        print(json.dumps({"artifacts": ["report.html"]}))
+        sys.exit(0)
+
 rows = []
 with open(source, encoding="utf-8-sig", errors="replace", newline="") as file:
     dialect = csv.excel_tab if source.lower().endswith(".tsv") else csv.excel

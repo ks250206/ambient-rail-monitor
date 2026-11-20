@@ -3,7 +3,7 @@ import { ArrowRight, Plus } from 'lucide-react';
 import { useState } from 'react';
 
 import type { ProjectSpec } from '../shared/types.ts';
-import { jsonRequest, queryClient, request, useProjects, useToast } from './api.ts';
+import { jsonRequest, queryClient, request, useConnection, useProjects, useToast } from './api.ts';
 import { ProjectCreate, ProjectManagement } from './components/ProjectManagement.tsx';
 import { ProjectList } from './components/ProjectList.tsx';
 import { AppHeader } from './components/AppHeader.tsx';
@@ -28,6 +28,7 @@ export const settingsTitles = {
 };
 
 export function SettingsPage({ view }: { view: keyof typeof settingsTitles }) {
+  const connection = useConnection();
   const [requestedId, setRequestedId] = useState(readInitialProjectId);
   const projectsQuery = useProjects();
   const projects = projectsQuery.data?.projects ?? [];
@@ -53,9 +54,7 @@ export function SettingsPage({ view }: { view: keyof typeof settingsTitles }) {
         projects={projects}
         selectedProjectId={project?.id ?? requestedId}
         onSelectProject={select}
-        connection={
-          projectsQuery.isError ? 'reconnecting' : projectsQuery.isPending ? 'connecting' : 'online'
-        }
+        connection={connection}
       />
       <main className="workflow-page page-width">
         <div className="workflow-title">

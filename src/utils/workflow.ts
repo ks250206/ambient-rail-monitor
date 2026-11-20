@@ -127,7 +127,12 @@ export function normalizeActionStatus(status: JobStatus | StageStatus): Normaliz
 }
 
 export function actionEventLevel(event: WorkflowEvent): LogEventLevel {
-  if (event.type === 'stage.failed' || event.type === 'job.failed') return 'error';
+  if (
+    event.type === 'stage.failed' ||
+    event.type === 'job.failed' ||
+    (event.gate && event.gate.result.status !== 'pass')
+  )
+    return 'error';
   if (event.type === 'stage.retry' || event.type === 'review.required') return 'warning';
   if (
     event.type === 'stage.succeeded' ||
@@ -142,7 +147,7 @@ export function actionEventLevel(event: WorkflowEvent): LogEventLevel {
 
 export function actionMatchesSearch(event: WorkflowEvent, query: string): boolean {
   if (!query) return true;
-  return `${event.message || ''} ${event.details || ''} ${event.type} ${event.stage || ''}`
+  return `${event.message || ''} ${event.details || ''} ${event.type} ${event.stage || ''} ${event.gate ? JSON.stringify(event.gate.result) : ''}`
     .toLowerCase()
     .includes(query);
 }
@@ -160,7 +165,12 @@ export function getSpans(job: WorkflowJob): StageSpan[] {
         events: [],
       });
     }
-    if ((event.type === 'stage.succeeded' || event.type === 'stage.failed') && event.stage) {
+    if (
+      (event.type === 'stage.succeeded' ||
+        event.type === 'stage.failed' ||
+        event.type === 'review.required') &&
+      event.stage
+    ) {
       const span = [...spans]
         .reverse()
         .find((item) => item.stage === event.stage && item.end === null);
@@ -174,6 +184,13 @@ export function getSpans(job: WorkflowJob): StageSpan[] {
         .reverse()
         .find((item) => item.stage === event.stage && item.end === null);
       if (span) span.events.push(event);
+    }
+    if (event.type === 'job.failed') {
+      for (const span of spans)
+        if (span.end === null) {
+          span.end = dateMs(event.at);
+          span.status = 'failed';
+        }
     }
   }
   return spans;
@@ -200,8 +217,12 @@ export function groupStageAttempts(events: WorkflowEvent[]): AttemptGroup[] {
       groups.push(current);
     }
     current.events.push(event);
-    if (event.type === 'stage.succeeded' || event.type === 'stage.failed') {
-      current.end = event.at;
+    if (
+      event.type === 'stage.succeeded' ||
+      event.type === 'stage.failed' ||
+      event.type === 'review.required'
+    ) {
+      current.end ??= event.at;
     }
   }
   return groups;
@@ -266,7 +287,11 @@ export function monitorJobHref(projectId: string, jobId: string): string {
 }
 
 export function jobMatchesSearch(job: WorkflowJob, normalizedQuery: string): boolean {
-  return [job.id, job.file, job.agent, job.worker].some((field) =>
-    field?.toLowerCase().includes(normalizedQuery),
-  );
+  return [
+    job.id,
+    job.file,
+    job.agent,
+    job.worker,
+    ...(job.dataset?.files.map((file) => file.path) ?? []),
+  ].some((field) => field?.toLowerCase().includes(normalizedQuery));
 }

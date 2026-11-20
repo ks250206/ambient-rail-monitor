@@ -7,13 +7,31 @@ import type {
   ReasoningEffort,
   WorkflowStageSpec,
 } from '../../shared/types.ts';
+import { projectAutomation, stageAutomation, EMPTY_GATE } from '../../shared/automation.ts';
+import { resolveExecution } from '../../shared/execution-policy.ts';
+import {
+  buildStagePrompt,
+  previewVariables,
+  PROMPT_VARIABLES,
+  validateTemplate,
+} from '../../shared/prompts.ts';
+import type { ConditionResult } from '../../shared/conditions.ts';
+import { jsonRequest, request, useProjectJobs } from '../api.ts';
+import { ConditionBuilder, ConditionEvidence } from './ConditionBuilder.tsx';
+import { ExecutionPolicyFields } from './ExecutionPolicyFields.tsx';
 import { clockDate } from '../utils/workflow.ts';
 
-export interface WorkflowUpdatePayload {
-  acceptanceCriteria: string;
-  llm: LlmConfig;
-  stages: WorkflowStageSpec[];
-}
+export type WorkflowUpdatePayload = Pick<
+  ProjectSpec,
+  | 'acceptanceCriteria'
+  | 'llm'
+  | 'stages'
+  | 'input'
+  | 'execution'
+  | 'jobTimeoutMs'
+  | 'finalGate'
+  | 'prompt'
+>;
 
 interface WorkflowSpecSectionProps {
   project: ProjectSpec;
@@ -45,6 +63,12 @@ function editableStages(stages: WorkflowStageSpec[]) {
 }
 
 export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSectionProps) {
+  const [automation, setAutomation] = useState(() => projectAutomation({}, project));
+  const monitor = useProjectJobs(project.id);
+  const [candidate, setCandidate] = useState('');
+  const [testResult, setTestResult] = useState<ConditionResult | null>(null);
+  const [testError, setTestError] = useState('');
+  const [testing, setTesting] = useState(false);
   const [acceptanceCriteria, setAcceptance] = useState(project.acceptanceCriteria);
   const [llm, setLlm] = useState(project.llm);
   const [stages, setStages] = useState(() => editableStages(project.stages));
@@ -55,7 +79,8 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
     stages.findIndex((s) => s.rowId === active),
   );
   const stage = stages[index];
-  const payload = {
+  const payload: WorkflowUpdatePayload = {
+    ...automation,
     acceptanceCriteria,
     llm,
     stages: stages.map(({ rowId: _id, ...spec }) => spec),
@@ -63,8 +88,47 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
   const dirty =
     acceptanceCriteria !== project.acceptanceCriteria ||
     JSON.stringify(llm) !== JSON.stringify(project.llm) ||
-    JSON.stringify(payload.stages) !== JSON.stringify(project.stages);
+    JSON.stringify(payload.stages) !== JSON.stringify(project.stages) ||
+    JSON.stringify(automation) !== JSON.stringify(projectAutomation({}, project));
+  let validation = '';
+  let promptPreview = '';
+  try {
+    projectAutomation(payload);
+    validateTemplate(automation.prompt ?? '');
+    for (const item of payload.stages) {
+      stageAutomation({ ...item });
+      validateTemplate(item.instruction);
+      validateTemplate(item.acceptanceCriteria ?? '');
+    }
+    const draftProject = { ...project, ...payload };
+    promptPreview = buildStagePrompt(
+      draftProject,
+      stage,
+      previewVariables(draftProject, stage),
+      index === stages.length - 1,
+    );
+  } catch (error) {
+    validation = (error as Error).message;
+  }
+  async function testInput() {
+    setTesting(true);
+    setTestError('');
+    setTestResult(null);
+    try {
+      const result = await request<{ result: ConditionResult }>(
+        `/api/projects/${project.id}/check-input`,
+        jsonRequest('POST', { ...JSON.parse(candidate), condition: automation.input?.condition }),
+      );
+      setTestResult(result.result);
+    } catch (error) {
+      setTestError((error as Error).message);
+    } finally {
+      setTesting(false);
+    }
+  }
   function reset() {
+    setAutomation(projectAutomation({}, project));
+    setTestResult(null);
     setAcceptance(project.acceptanceCriteria);
     setLlm(project.llm);
     setStages(editableStages(project.stages));
@@ -115,14 +179,14 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
             {dirty ? '未保存の変更' : `最終更新 ${clockDate(project.updatedAt)}`}
           </span>
           {dirty && (
-            <button className="wf-secondary" disabled={saving} onClick={reset}>
+            <button className="wf-secondary" disabled={saving || testing} onClick={reset}>
               <RotateCcw size={14} />
               戻す
             </button>
           )}
           <button
             className="wf-primary"
-            disabled={!dirty || saving}
+            disabled={!dirty || saving || testing || Boolean(validation)}
             onClick={() => onSave(payload)}
           >
             <Save size={15} />
@@ -130,14 +194,22 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
           </button>
         </div>
       </div>
-      <fieldset disabled={saving} className="min-w-0">
+      {validation && (
+        <p className="condition-error" role="alert">
+          {validation}
+        </p>
+      )}
+      <p className="wf-help">
+        保存した定義は、新しく登録されるジョブに適用されます。登録済みジョブは登録時の入力・設定を固定して実行します。
+      </p>
+      <fieldset disabled={saving || testing} className="min-w-0">
         <details open className="wf-disclosure">
           <summary>
             基本設定 <ChevronDown size={17} />
           </summary>
           <div className="wf-fields">
             <label className="wf-wide">
-              受け入れ要件
+              プロジェクト全体の受け入れ要件（エージェントへの指示）
               <textarea
                 rows={4}
                 value={acceptanceCriteria}
@@ -145,8 +217,173 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
                 maxLength={4000}
               />
             </label>
+            <label className="wf-wide">
+              共通プロンプト
+              <textarea
+                rows={4}
+                maxLength={8000}
+                value={automation.prompt ?? ''}
+                onChange={(e) => setAutomation({ ...automation, prompt: e.target.value })}
+                placeholder="各測定ファイルの関係を確認し、比較結果をまとめてください。"
+              />
+            </label>
             <ModelFields value={llm} onChange={setLlm} />
           </div>
+        </details>
+        <details open className="wf-disclosure">
+          <summary>
+            入力と起動条件 <ChevronDown size={17} />
+          </summary>
+          <div className="wf-fields">
+            <label>
+              監視フォルダでの入力単位
+              <select
+                value={automation.input!.mode}
+                onChange={(e) =>
+                  setAutomation({
+                    ...automation,
+                    input: {
+                      ...automation.input!,
+                      mode: e.target.value as 'auto' | 'file' | 'directory',
+                    },
+                  })
+                }
+              >
+                <option value="auto">ファイル / 直下のフォルダごと</option>
+                <option value="file">単一ファイルのみ</option>
+                <option value="directory">直下のフォルダごと</option>
+              </select>
+            </label>
+            <label>
+              監視入力の安定待ち（秒）
+              <input
+                type="number"
+                min={0}
+                max={86400}
+                step={0.001}
+                value={automation.input!.settleMs / 1000}
+                onChange={(e) =>
+                  setAutomation({
+                    ...automation,
+                    input: {
+                      ...automation.input!,
+                      settleMs: Math.round(Number(e.target.value) * 1000),
+                    },
+                  })
+                }
+              />
+            </label>
+          </div>
+          <p className="wf-help">
+            フォルダの中身をサブフォルダごと1つのジョブにまとめます。手動投入は全ファイルの転送完了を安定状態として扱います。
+          </p>
+          <ConditionBuilder
+            label="起動条件"
+            scope="trigger"
+            value={automation.input!.condition}
+            onChange={(condition) => {
+              setAutomation({ ...automation, input: { ...automation.input!, condition } });
+              setTestResult(null);
+            }}
+          />
+          <div className="condition-toolbar">
+            <label>
+              テストする監視入力
+              <select
+                value={candidate}
+                onChange={(e) => {
+                  setCandidate(e.target.value);
+                  setTestResult(null);
+                }}
+              >
+                <option value="">入力を選択…</option>
+                {monitor.data?.candidates?.map((item, i) => (
+                  <option
+                    key={`${item.name}-${i}`}
+                    value={JSON.stringify({ name: item.name, origin: item.origin })}
+                  >
+                    {item.origin === 'legacy' ? '旧 inbox / ' : ''}
+                    {item.name}（{item.fileCount}ファイル）
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="wf-secondary"
+              type="button"
+              disabled={!candidate || testing || Boolean(validation)}
+              onClick={() => void testInput()}
+            >
+              {testing ? '判定中…' : '未保存の条件をテスト'}
+            </button>
+          </div>
+          <p className="wf-help">
+            テストは監視中の現在の内容で条件だけを判定します。ジョブは作成しません。
+          </p>
+          {testResult && <ConditionEvidence result={testResult} />}
+          {testError && (
+            <p className="condition-error" role="alert">
+              {testError}
+            </p>
+          )}
+        </details>
+        <details className="wf-disclosure">
+          <summary>
+            実行の既定値・ジョブ全体の上限 <ChevronDown size={17} />
+          </summary>
+          <ExecutionPolicyFields
+            value={automation.execution!}
+            onChange={(execution) =>
+              setAutomation({ ...automation, execution: resolveExecution(execution) })
+            }
+          />
+          <div className="wf-fields">
+            <label>
+              ジョブ全体の実行上限（秒・0は無制限）
+              <input
+                type="number"
+                min={0}
+                max={604800}
+                step={0.001}
+                value={(automation.jobTimeoutMs ?? 0) / 1000}
+                onChange={(e) =>
+                  setAutomation({
+                    ...automation,
+                    jobTimeoutMs: Math.round(Number(e.target.value) * 1000),
+                  })
+                }
+              />
+            </label>
+          </div>
+        </details>
+        <details className="wf-disclosure">
+          <summary>
+            最終成果物の受け入れ条件 <ChevronDown size={17} />
+          </summary>
+          <p className="wf-help">
+            最後の工程の実行後に判定します。工程の条件と両方を満たしてから公開します。
+          </p>
+          <ConditionBuilder
+            label="最終成果物の自動判定"
+            scope="gate"
+            value={automation.finalGate!.condition}
+            onChange={(condition) =>
+              setAutomation({ ...automation, finalGate: { ...automation.finalGate!, condition } })
+            }
+          />
+          <label className="wf-check">
+            <input
+              type="checkbox"
+              checked={automation.finalGate!.requireReview}
+              onChange={(e) =>
+                setAutomation({
+                  ...automation,
+                  finalGate: { ...automation.finalGate!, requireReview: e.target.checked },
+                })
+              }
+            />
+            公開前に人間のレビューを必須にする
+          </label>
         </details>
         <div className="wf-section-title">
           <h2>
@@ -236,12 +473,72 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
                 カスタム指示
                 <textarea
                   rows={4}
-                  maxLength={2000}
+                  maxLength={8000}
                   value={stage.instruction}
                   onChange={(e) => update({ instruction: e.target.value })}
                 />
               </label>
             </div>
+            <details open className="wf-disclosure">
+              <summary>
+                この工程の受け入れ条件 <ChevronDown size={16} />
+              </summary>
+              <div className="wf-fields">
+                <label className="wf-wide">
+                  受け入れ要件（エージェントへの指示）
+                  <textarea
+                    rows={3}
+                    maxLength={4000}
+                    value={stage.acceptanceCriteria ?? ''}
+                    onChange={(e) => update({ acceptanceCriteria: e.target.value })}
+                  />
+                </label>
+              </div>
+              <ConditionBuilder
+                label="工程の自動判定"
+                scope="gate"
+                value={stage.gate?.condition ?? null}
+                onChange={(condition) =>
+                  update({ gate: { ...(stage.gate ?? EMPTY_GATE), condition } })
+                }
+              />
+              <label className="wf-check">
+                <input
+                  type="checkbox"
+                  checked={stage.gate?.requireReview ?? false}
+                  onChange={(e) =>
+                    update({
+                      gate: { ...(stage.gate ?? EMPTY_GATE), requireReview: e.target.checked },
+                    })
+                  }
+                />
+                この工程が合格しても、人間の承認を待つ
+              </label>
+            </details>
+            <details className="wf-disclosure">
+              <summary>
+                この工程のリトライ・タイムアウト <ChevronDown size={16} />
+              </summary>
+              <ExecutionPolicyFields
+                value={stage.execution ?? {}}
+                inherited={automation.execution}
+                onChange={(execution) => update({ execution })}
+              />
+            </details>
+            <details className="wf-disclosure">
+              <summary>
+                プロンプト変数・送信内容のプレビュー <ChevronDown size={16} />
+              </summary>
+              <p className="wf-help">
+                共通プロンプト・カスタム指示・工程の受け入れ要件に使用できます。以下は例のデータセットと初回実行で展開した内容です。
+              </p>
+              <div className="prompt-variables">
+                {PROMPT_VARIABLES.map((name) => (
+                  <code key={name}>{'{{' + name + '}}'}</code>
+                ))}
+              </div>
+              <pre className="prompt-preview">{promptPreview || validation}</pre>
+            </details>
             <details open className="wf-disclosure">
               <summary>
                 工程キー・モデル設定 <ChevronDown size={16} />

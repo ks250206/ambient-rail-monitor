@@ -1,10 +1,12 @@
 import { useMutation } from '@tanstack/react-query';
-import { RefreshCw, Search, Upload } from 'lucide-react';
+import { RefreshCw, Search } from 'lucide-react';
 import { useRef, useState } from 'react';
 
 import type { ProjectSpec, WorkflowJob } from '../shared/types.ts';
 import { jsonRequest, request, useProjectJobs } from './api.ts';
 import { KanbanSection } from './components/KanbanSection.tsx';
+import { DatasetUpload } from './components/DatasetUpload.tsx';
+import { ConditionEvidence } from './components/ConditionBuilder.tsx';
 import { MetricsGrid } from './components/MetricsGrid.tsx';
 import { jobMatchesSearch, monitorJobHref } from './utils/workflow.ts';
 
@@ -29,23 +31,15 @@ export function JobsPage({ project }: { project: ProjectSpec }) {
   }
 
   const [reviewDemo, setReviewDemo] = useState(false);
-  const [dragVisible, setDragVisible] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const dragDepth = useRef(0);
   const enqueue = useMutation({
-    mutationFn: (input: File | boolean) =>
-      input instanceof File
-        ? request<{ job: WorkflowJob }>(
-            `/api/upload?${new URLSearchParams({ filename: input.name, project: project.id })}`,
-            { method: 'POST', body: input },
-          )
-        : request<{ job: WorkflowJob }>(
-            '/api/demo',
-            jsonRequest('POST', { projectId: project.id, review: input }),
-          ),
+    mutationFn: (review: boolean) =>
+      request<{ job: WorkflowJob }>(
+        '/api/demo',
+        jsonRequest('POST', { projectId: project.id, review }),
+      ),
   });
 
-  function submit(input: File | boolean) {
+  function submit(input: boolean) {
     if (enqueue.isPending) return;
     enqueue.mutate(input, {
       onSuccess: ({ job }) => window.location.assign(monitorJobHref(project.id, job.id)),
@@ -53,31 +47,7 @@ export function JobsPage({ project }: { project: ProjectSpec }) {
   }
 
   return (
-    <main
-      className="min-h-screen bg-white text-ink"
-      onDragEnter={(event) => {
-        if (event.dataTransfer.types.includes('Files')) {
-          event.preventDefault();
-          dragDepth.current++;
-          setDragVisible(true);
-        }
-      }}
-      onDragLeave={() => {
-        dragDepth.current = Math.max(0, dragDepth.current - 1);
-        if (!dragDepth.current) setDragVisible(false);
-      }}
-      onDragOver={(event) => {
-        if (event.dataTransfer.types.includes('Files')) event.preventDefault();
-      }}
-      onDrop={(event) => {
-        if (!event.dataTransfer.types.includes('Files')) return;
-        event.preventDefault();
-        dragDepth.current = 0;
-        setDragVisible(false);
-        const file = event.dataTransfer.files[0];
-        if (file) submit(file);
-      }}
-    >
+    <main className="min-h-screen bg-white text-ink">
       <div className="page-width @container py-8 sm:py-12">
         <div className="mb-5 flex flex-wrap items-center justify-between gap-4 border-b-2 border-science-blue pb-5">
           <h1 className="text-3xl font-bold tracking-tight text-science-blue sm:text-4xl">
@@ -88,15 +58,11 @@ export function JobsPage({ project }: { project: ProjectSpec }) {
             更新
           </button>
         </div>
+        <DatasetUpload
+          projectId={project.id}
+          onCreated={(job) => window.location.assign(monitorJobHref(project.id, job.id))}
+        />
         <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={enqueue.isPending}
-            className="wf-primary disabled:opacity-50"
-          >
-            ファイル投入
-          </button>
           <button
             type="button"
             onClick={(event) => submit(reviewDemo || event.shiftKey)}
@@ -115,22 +81,40 @@ export function JobsPage({ project }: { project: ProjectSpec }) {
             />
             デモをレビューで一時停止
           </label>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".csv,.tsv,.txt,.json,.dat"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) submit(file);
-              event.target.value = '';
-            }}
-            hidden
-          />
         </div>
         {enqueue.isError && (
           <p role="alert" className="py-2 text-st-red-dark">
             {enqueue.error.message}
           </p>
+        )}
+        {!!query.data?.candidates?.length && (
+          <details className="input-candidates">
+            <summary>監視フォルダの入力状況（{query.data.candidates.length}件）</summary>
+            <p className="wf-help">
+              {project.inboxDir}{' '}
+              を監視しています。準備が整わない入力は理由とともにここに表示します。
+            </p>
+            {query.data.candidates.map((item, i) => (
+              <div className="input-candidate" key={`${item.name}-${i}`}>
+                <strong>{item.name}</strong>
+                <span>
+                  {item.fileCount} ファイル ·{' '}
+                  {item.status === 'registered'
+                    ? '登録済み'
+                    : item.status === 'error'
+                      ? '確認が必要'
+                      : '条件待ち'}
+                </span>
+                <p>{item.message}</p>
+                {item.result && (
+                  <details>
+                    <summary>判定の内訳</summary>
+                    <ConditionEvidence result={item.result} />
+                  </details>
+                )}
+              </div>
+            ))}
+          </details>
         )}
         <details className="mb-4 mt-2 text-sm text-ink-muted">
           <summary className="w-fit cursor-pointer py-2">ジョブの集計</summary>
@@ -189,16 +173,6 @@ export function JobsPage({ project }: { project: ProjectSpec }) {
           <KanbanSection jobs={matchingJobs} />
         )}
       </div>
-
-      {dragVisible && (
-        <div className="pointer-events-none fixed inset-0 z-50 grid place-items-center bg-science-blue/85 text-center text-white">
-          <div className="flex max-w-[90vw] flex-col items-center gap-3 rounded-md border-2 border-dashed border-navy-200 p-8">
-            <Upload size={40} aria-hidden="true" />
-            <strong className="break-all text-2xl">{project.name} へ解析データをドロップ</strong>
-            <small>CSV · TSV · JSON · TXT · DAT</small>
-          </div>
-        </div>
-      )}
     </main>
   );
 }
