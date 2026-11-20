@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "skills": {
+    "science-tokyo-design": {
+      "source": "assb-lab/science-tokyo-design-skills",
+      "commit": "f4f3dc4019504fc92b6dd6c2169f9c90d22d75ee",
+      "sourceType": "github",
+      "skillPath": "skills/science-tokyo-design/SKILL.md",
+      "computedHash": "64d8301e0b2775558d452d7c94b11b8137138db5c802cdf209fceb7a3bf73279"
+    }
+  }
+}

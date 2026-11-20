@@ -1,0 +1,16 @@
+{
+  "name": "ambient-rail-monitor",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Pull-based ambient AI agent workflow monitor with Kanban, railway and traces",
+  "scripts": {
+    "start": "node server.mjs",
+    "worker:demo": "node worker.mjs --mode=demo",
+    "worker:codex": "node worker.mjs --mode=codex",
+    "worker:claude": "node worker.mjs --mode=claude",
+    "demo": "node start-demo.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": { "node": ">=20" }
+}
