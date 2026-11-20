@@ -289,6 +289,10 @@ describe('API integration', () => {
         expect(wfHtml.status).toBe(200);
         expect(wfHtml.headers.get('content-security-policy')).toMatch(/script-src 'self'/);
         expect(await wfHtml.text()).toMatch(/ワークフロー定義/);
+
+        const management = await fetch(`${api}/projects/?project=xrd-lab`);
+        expect(management.status).toBe(200);
+        expect(await management.text()).toContain('data-page="projects"');
       }
 
       // Drop a file directly into xrd-lab's dedicated inbox directory.

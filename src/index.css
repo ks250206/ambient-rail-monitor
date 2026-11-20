@@ -298,18 +298,6 @@
 .wf-stage-detail .wf-disclosure:not([open]) summary {
   @apply pb-0;
 }
-.wf-paths {
-  @apply mb-4 grid gap-2 text-xs text-ink-muted sm:grid-cols-2;
-}
-.wf-paths dd {
-  @apply mt-1 font-mono text-ink;
-}
-.wf-management {
-  @apply mt-8;
-}
-.wf-management form button {
-  @apply justify-self-start;
-}
 .wf-delete {
   @apply mb-3 px-0 text-st-red-dark;
 }

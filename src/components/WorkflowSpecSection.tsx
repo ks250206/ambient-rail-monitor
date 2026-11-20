@@ -9,9 +9,7 @@ import type {
 } from '../../shared/types.ts';
 import { clockDate } from '../utils/workflow.ts';
 
-export interface ProjectUpdatePayload {
-  name: string;
-  purpose: string;
+export interface WorkflowUpdatePayload {
   acceptanceCriteria: string;
   llm: LlmConfig;
   stages: WorkflowStageSpec[];
@@ -20,7 +18,7 @@ export interface ProjectUpdatePayload {
 interface WorkflowSpecSectionProps {
   project: ProjectSpec;
   saving: boolean;
-  onSave: (next: ProjectUpdatePayload) => void;
+  onSave: (next: WorkflowUpdatePayload) => void;
 }
 
 const EFFORT_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
@@ -47,8 +45,6 @@ function editableStages(stages: WorkflowStageSpec[]) {
 }
 
 export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSectionProps) {
-  const [name, setName] = useState(project.name);
-  const [purpose, setPurpose] = useState(project.purpose);
   const [acceptanceCriteria, setAcceptance] = useState(project.acceptanceCriteria);
   const [llm, setLlm] = useState(project.llm);
   const [stages, setStages] = useState(() => editableStages(project.stages));
@@ -60,21 +56,15 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
   );
   const stage = stages[index];
   const payload = {
-    name,
-    purpose,
     acceptanceCriteria,
     llm,
     stages: stages.map(({ rowId: _id, ...spec }) => spec),
   };
   const dirty =
-    name !== project.name ||
-    purpose !== project.purpose ||
     acceptanceCriteria !== project.acceptanceCriteria ||
     JSON.stringify(llm) !== JSON.stringify(project.llm) ||
     JSON.stringify(payload.stages) !== JSON.stringify(project.stages);
   function reset() {
-    setName(project.name);
-    setPurpose(project.purpose);
     setAcceptance(project.acceptanceCriteria);
     setLlm(project.llm);
     setStages(editableStages(project.stages));
@@ -141,24 +131,11 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
         </div>
       </div>
       <fieldset disabled={saving} className="min-w-0">
-        <details className="wf-disclosure">
+        <details open className="wf-disclosure">
           <summary>
             基本設定 <ChevronDown size={17} />
           </summary>
           <div className="wf-fields">
-            <label>
-              プロジェクト名
-              <input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} />
-            </label>
-            <label className="wf-wide">
-              目的
-              <textarea
-                rows={2}
-                value={purpose}
-                onChange={(e) => setPurpose(e.target.value)}
-                maxLength={2000}
-              />
-            </label>
             <label className="wf-wide">
               受け入れ要件
               <textarea
@@ -170,16 +147,6 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
             </label>
             <ModelFields value={llm} onChange={setLlm} />
           </div>
-          <dl className="wf-paths">
-            <div>
-              <dt>入力フォルダ</dt>
-              <dd>{project.inboxDir}</dd>
-            </div>
-            <div>
-              <dt>成果物フォルダ</dt>
-              <dd>{project.artifactsDir}</dd>
-            </div>
-          </dl>
         </details>
         <div className="wf-section-title">
           <h2>
@@ -275,7 +242,7 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
                 />
               </label>
             </div>
-            <details className="wf-disclosure">
+            <details open className="wf-disclosure">
               <summary>
                 工程キー・モデル設定 <ChevronDown size={16} />
               </summary>

@@ -2,8 +2,14 @@ import type { ProjectSpec } from '../../shared/types.ts';
 import { useClock } from '../api.ts';
 import { clock, pageHref } from '../utils/workflow.ts';
 
+const pages = [
+  { id: 'projects', path: '/projects', label: 'プロジェクト管理' },
+  { id: 'workflow', path: '/workflow', label: 'ワークフロー定義' },
+  { id: 'monitor', path: '/', label: '実行モニター' },
+] as const;
+
 interface AppHeaderProps {
-  currentPage: 'monitor' | 'workflow';
+  currentPage: 'projects' | 'monitor' | 'workflow';
   projects: ProjectSpec[];
   selectedProjectId: string;
   onSelectProject: (projectId: string) => void;
@@ -53,29 +59,17 @@ export function AppHeader({
             </select>
           </label>
 
-          <nav aria-label="ページ切替" className="flex items-center gap-1">
-            <a
-              href={pageHref('/workflow', selectedProjectId)}
-              aria-current={currentPage === 'workflow' ? 'page' : undefined}
-              className={`rounded-md px-3 py-1.5 text-xs font-bold transition-colors ${
-                currentPage === 'workflow'
-                  ? 'bg-science-blue text-white'
-                  : 'text-science-blue hover:bg-bg-2'
-              }`}
-            >
-              ワークフロー定義
-            </a>
-            <a
-              href={pageHref('/', selectedProjectId)}
-              aria-current={currentPage === 'monitor' ? 'page' : undefined}
-              className={`rounded-md px-3 py-1.5 text-xs font-bold transition-colors ${
-                currentPage === 'monitor'
-                  ? 'bg-science-blue text-white'
-                  : 'text-science-blue hover:bg-bg-2'
-              }`}
-            >
-              実行モニター
-            </a>
+          <nav aria-label="ページ切替" className="flex flex-wrap items-center gap-1">
+            {pages.map(({ id, path, label }) => (
+              <a
+                key={id}
+                href={pageHref(path, selectedProjectId)}
+                aria-current={currentPage === id ? 'page' : undefined}
+                className={`rounded-md px-3 py-1.5 text-xs font-bold transition-colors ${currentPage === id ? 'bg-science-blue text-white' : 'text-science-blue hover:bg-bg-2'}`}
+              >
+                {label}
+              </a>
+            ))}
           </nav>
         </div>
 

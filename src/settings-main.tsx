@@ -12,7 +12,7 @@ import { queryClient } from './api.ts';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import { WorkflowPage } from './WorkflowPage.tsx';
+import { SettingsPage } from './SettingsPage.tsx';
 
 const container = document.getElementById('root');
 if (!container) {
@@ -22,7 +22,7 @@ if (!container) {
 createRoot(container).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <WorkflowPage />
+      <SettingsPage page={container.dataset.page === 'projects' ? 'projects' : 'workflow'} />
     </QueryClientProvider>
   </StrictMode>,
 );

@@ -1189,11 +1189,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' || req.method === 'HEAD') {
+      const route = pathname.replace(/\/$/, '');
       const segment =
-        pathname === '/'
+        route === ''
           ? 'index.html'
-          : pathname === '/workflow' || pathname === '/workflow/'
-            ? 'workflow.html'
+          : route === '/projects' || route === '/workflow'
+            ? route.slice(1) + '.html'
             : pathname.slice(1);
       if (segment.includes('..') || segment.startsWith('.')) {
         return deliverJSON(res, { error: 'Invalid path' }, 400);
@@ -1202,7 +1203,7 @@ const server = http.createServer(async (req, res) => {
       if (!file.startsWith(DIST + path.sep)) {
         return deliverJSON(res, { error: 'Invalid path' }, 400);
       }
-      if (!existsSync(file) && (segment === 'index.html' || segment === 'workflow.html')) {
+      if (!existsSync(file) && ['index.html', 'workflow.html', 'projects.html'].includes(segment)) {
         res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' });
         res.end('Frontend build not found in dist/. Run "pnpm run build" or use "pnpm run dev".');
         return;

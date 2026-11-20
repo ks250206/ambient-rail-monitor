@@ -248,6 +248,6 @@ export function persistProjectId(projectId: string): void {
   }
 }
 
-export function pageHref(basePath: '/' | '/workflow', projectId: string): string {
+export function pageHref(basePath: '/' | '/workflow' | '/projects', projectId: string): string {
   return `${basePath}?project=${encodeURIComponent(projectId)}`;
 }
