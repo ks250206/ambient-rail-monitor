@@ -1,3 +1,4 @@
+import { parseRuntime, parsePricing, parseCache } from './reuse.ts';
 import { parseCondition } from './conditions.ts';
 import { parsePriority, parseQueueValue } from './queue.ts';
 import {
@@ -43,7 +44,10 @@ export function parseInput(value: unknown): InputSpec {
 export function projectAutomation(
   raw: Record<string, unknown>,
   existing?: ProjectSpec,
-): Pick<ProjectSpec, 'input' | 'execution' | 'jobTimeoutMs' | 'finalGate' | 'prompt' | 'queue'> {
+): Pick<
+  ProjectSpec,
+  'input' | 'execution' | 'jobTimeoutMs' | 'finalGate' | 'prompt' | 'queue' | 'runtime' | 'pricing'
+> {
   const queue =
     raw.queue === undefined
       ? (existing?.queue ?? { maxConcurrentJobs: 4, priority: 0 })
@@ -57,6 +61,14 @@ export function projectAutomation(
     'プロジェクトの同時実行数',
   );
   return {
+    runtime:
+      raw.runtime === undefined
+        ? structuredClone(existing?.runtime ?? parseRuntime(undefined))
+        : parseRuntime(raw.runtime),
+    pricing:
+      raw.pricing === undefined
+        ? structuredClone(existing?.pricing ?? [])
+        : parsePricing(raw.pricing),
     queue: { maxConcurrentJobs, priority: parsePriority(values.priority) },
     input:
       raw.input === undefined
@@ -83,8 +95,9 @@ export function projectAutomation(
 
 export function stageAutomation(
   raw: Record<string, unknown>,
-): Pick<WorkflowStageSpec, 'acceptanceCriteria' | 'gate' | 'execution'> {
+): Pick<WorkflowStageSpec, 'acceptanceCriteria' | 'gate' | 'execution' | 'cache'> {
   return {
+    cache: parseCache(raw.cache),
     acceptanceCriteria:
       raw.acceptanceCriteria === undefined
         ? ''

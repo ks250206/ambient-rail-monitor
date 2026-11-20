@@ -2,6 +2,8 @@ import { useMutation } from '@tanstack/react-query';
 import { Save, Trash2 } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 
+import { TemplatePicker, TemplateExport } from './Templates.tsx';
+import type { WorkflowTemplate } from '../../shared/templates.ts';
 import type { ProjectSpec } from '../../shared/types.ts';
 import { jsonRequest, queryClient, request } from '../api.ts';
 
@@ -77,11 +79,14 @@ export function ProjectCreate({
   showToast,
 }: ProjectNavigationProps & { onCancel: () => void }) {
   const [draft, setDraft] = useState(newProject);
+  const [template, setTemplate] = useState<WorkflowTemplate | null>(null);
+  const [templateBlocked, setTemplateBlocked] = useState(false);
   const create = useMutation({
     mutationFn: () =>
       request<ProjectResponse>(
         '/api/projects',
         jsonRequest('POST', {
+          template: template ?? undefined,
           name: draft.name.trim(),
           purpose: draft.purpose,
           id: draft.id.trim() || undefined,
@@ -91,7 +96,7 @@ export function ProjectCreate({
   });
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (create.isPending || !draft.name.trim()) return;
+    if (create.isPending || templateBlocked || !draft.name.trim()) return;
     create.mutate(undefined, {
       onSuccess: ({ project }) => {
         onSelect(project.id);
@@ -101,6 +106,18 @@ export function ProjectCreate({
   }
   return (
     <form onSubmit={submit} aria-label="新規プロジェクト" className="max-w-3xl">
+      <TemplatePicker
+        onBlocked={setTemplateBlocked}
+        onChange={(next) => {
+          setTemplate(next);
+          if (next)
+            setDraft((draft) => ({
+              ...draft,
+              name: next.template.name,
+              purpose: next.definition.purpose,
+            }));
+        }}
+      />
       <fieldset disabled={create.isPending} className="wf-fields">
         <ProjectFields
           value={draft}
@@ -124,7 +141,7 @@ export function ProjectCreate({
         <button
           type="submit"
           className="wf-primary"
-          disabled={create.isPending || !draft.name.trim()}
+          disabled={create.isPending || templateBlocked || !draft.name.trim()}
         >
           <Save size={15} />
           作成
@@ -252,6 +269,7 @@ export function ProjectManagement({
           )}
         </aside>
       </div>
+      <TemplateExport project={project} />
     </section>
   );
 }

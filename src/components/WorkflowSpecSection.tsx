@@ -13,6 +13,7 @@ import {
 } from '../../shared/graph.ts';
 import { ContractFieldError, contractFieldLabels, parseContracts } from '../../shared/contracts.ts';
 import { flushSync } from 'react-dom';
+import { RuntimeFields } from './RuntimeFields.tsx';
 import { ContractFields } from './ContractFields.tsx';
 import { StageRunnerFields } from './StageRunnerFields.tsx';
 import { WorkflowGraph } from './WorkflowGraph.tsx';
@@ -54,6 +55,8 @@ export type WorkflowUpdatePayload = Pick<
   | 'prompt'
   | 'queue'
   | 'graph'
+  | 'runtime'
+  | 'pricing'
 >;
 
 interface WorkflowSpecSectionProps {
@@ -196,6 +199,19 @@ export function WorkflowSpecSection({
     target = 'graph-settings';
     fieldName = '工程の接続・並列実行';
     parseGraph(graph, payload.stages);
+    if (
+      payload.stages.some((item) => item.cache?.enabled) &&
+      (!graph || !automation.runtime?.revision)
+    )
+      throw new Error('キャッシュにはWorkflow v2と実行環境の版が必要です。');
+    if (
+      !graph &&
+      (automation.runtime?.revision ||
+        automation.runtime?.python ||
+        Object.values(automation.runtime?.expected ?? {}).some(Boolean) ||
+        Object.keys(automation.runtime?.packages ?? {}).length)
+    )
+      throw new Error('実行環境の固定にはWorkflow v2が必要です。');
     const draftProject = { ...project, ...payload };
     promptPreview = buildStagePrompt(
       draftProject,
@@ -552,6 +568,12 @@ export function WorkflowSpecSection({
             </p>
           )}
         </details>
+        <RuntimeFields
+          value={automation.runtime}
+          pricing={automation.pricing}
+          onRuntime={(runtime) => setAutomation({ ...automation, runtime })}
+          onPricing={(pricing) => setAutomation({ ...automation, pricing })}
+        />
         <details className="wf-disclosure">
           <summary>
             実行の既定値・ジョブ全体の上限 <ChevronDown size={17} />
@@ -758,7 +780,14 @@ export function WorkflowSpecSection({
                     if (kind === 'command' || kind === 'python')
                       update({ argumentText: { ...stage.argumentText, [kind]: text } });
                   }}
-                  onChange={(runner) => update(runnerChange(stage, runner))}
+                  onChange={(runner) =>
+                    update({
+                      ...runnerChange(stage, runner),
+                      cache: ['human', 'http'].includes(runner.kind)
+                        ? { enabled: false, revision: '' }
+                        : stage.cache,
+                    })
+                  }
                 />
                 {graph.mode === 'dag' && (
                   <fieldset id="stage-dependencies" className="wf-disclosure">
@@ -805,6 +834,18 @@ export function WorkflowSpecSection({
                 </label>
                 {stage.map && (
                   <div className="wf-fields">
+                    <label className="wf-wide">
+                      <span>
+                        <input
+                          type="checkbox"
+                          checked={stage.map.isolateInput ?? false}
+                          onChange={(event) =>
+                            update({ map: { ...stage.map!, isolateInput: event.target.checked } })
+                          }
+                        />{' '}
+                        このファイルだけを入力に渡す（ファイル単位の差分解析）
+                      </span>
+                    </label>
                     <label>
                       対象パターン
                       <input
@@ -849,6 +890,41 @@ export function WorkflowSpecSection({
                 </details>
               </>
             )}
+            <fieldset className="wf-cache">
+              <legend>結果の再利用</legend>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={stage.cache?.enabled ?? false}
+                  disabled={
+                    !stage.cache?.enabled &&
+                    (!graph || ['human', 'http'].includes(stage.runner?.kind ?? 'ai'))
+                  }
+                  onChange={(e) =>
+                    update({
+                      cache: { enabled: e.target.checked, revision: stage.cache?.revision ?? '' },
+                    })
+                  }
+                />{' '}
+                入力・定義・環境が一致する合格済み出力をキャッシュする
+              </label>
+              <p className="wf-help">
+                時刻・外部サービス・ジョブIDに依存しない処理に使います。環境の版を指定してください。入力契約・出力判定・必要な人間の承認は毎回確認します。
+              </p>
+              {stage.cache?.enabled && (
+                <label>
+                  キャッシュの版
+                  <input
+                    maxLength={120}
+                    value={stage.cache.revision}
+                    onChange={(e) =>
+                      update({ cache: { ...stage.cache!, revision: e.target.value } })
+                    }
+                    placeholder="変更すると既存結果を再利用しません"
+                  />
+                </label>
+              )}
+            </fieldset>
             <div className="wf-fields">
               <label>
                 工程名

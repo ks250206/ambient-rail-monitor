@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
+import { UsageAccumulator } from './shared/usage.ts';
 import { executeGraph } from './shared/graph-runtime.ts';
 import { prepareAttempt } from './shared/attempt-workspace.ts';
 import { failedEvidence } from './shared/conditions.ts';
@@ -428,46 +429,63 @@ async function runAgent(
   let eventCount = 0;
   let pendingLogs = 0;
   let reportedFailure = false;
-  await runCommand(command, args, {
-    cwd: work,
-    timeoutMs,
-    timeoutKind,
-    signal,
-    onLine: (line, signal) => {
-      let event: RawCliEvent;
-      try {
-        event = JSON.parse(line) as RawCliEvent;
-      } catch {
-        return;
-      }
-      if (!event || typeof event !== 'object' || Array.isArray(event)) return;
-      if (
-        event.type === 'turn.failed' ||
-        event.type === 'error' ||
-        (event.type === 'result' && event.is_error)
-      )
-        reportedFailure = true;
-      const message = extractAgentMessageText(event);
-      if (message) lastAgentMessage = message;
-      const parsed = parseAgentEvent(event);
-      if (parsed && eventCount++ < 160 && pendingLogs < 8) {
-        pendingLogs++;
-        return emit(
-          ctx,
-          job,
-          'agent.event',
-          stage.key,
-          typeof parsed === 'string' ? parsed : parsed.message,
-          typeof parsed === 'string' ? {} : { details: parsed.details },
-          signal,
+  const usage = new UsageAccumulator(mode === 'codex' ? 'codex' : 'claude', llm.model);
+  let completed = false;
+  try {
+    await runCommand(command, args, {
+      cwd: work,
+      timeoutMs,
+      timeoutKind,
+      signal,
+      onLine: (line, lineSignal) => {
+        let event: RawCliEvent;
+        try {
+          event = JSON.parse(line) as RawCliEvent;
+        } catch {
+          return;
+        }
+        if (!event || typeof event !== 'object' || Array.isArray(event)) return;
+        usage.accept(event);
+        if (
+          event.type === 'turn.failed' ||
+          event.type === 'error' ||
+          (event.type === 'result' && event.is_error)
         )
-          .then(() => undefined)
-          .finally(() => {
-            pendingLogs--;
-          });
-      }
-    },
-  });
+          reportedFailure = true;
+        const message = extractAgentMessageText(event);
+        if (message) lastAgentMessage = message;
+        const parsed = parseAgentEvent(event);
+        if (parsed && eventCount++ < 160 && pendingLogs < 8) {
+          pendingLogs++;
+          return emit(
+            ctx,
+            job,
+            'agent.event',
+            stage.key,
+            typeof parsed === 'string' ? parsed : parsed.message,
+            typeof parsed === 'string' ? {} : { details: parsed.details },
+            lineSignal,
+          )
+            .then(() => undefined)
+            .finally(() => {
+              pendingLogs--;
+            });
+        }
+      },
+    });
+    completed = true;
+  } finally {
+    if (!completed || reportedFailure) usage.record.complete = false;
+    await emit(
+      ctx,
+      job,
+      'stage.usage',
+      stage.key,
+      usage.record.models.length ? 'CLIが報告した使用量' : 'CLIの使用量は未取得',
+      { usage: usage.record },
+      AbortSignal.timeout(5000),
+    ).catch(() => undefined);
+  }
   if (reportedFailure)
     throw new ExecutionFailure(
       'execution_error',
@@ -946,7 +964,7 @@ async function workLoop() {
         agent: MODE,
         worker: WORKER_ID,
         capacity: concurrency,
-        protocol: 2,
+        protocol: 3,
         ...(PROJECT_FILTER ? { projectId: PROJECT_FILTER } : {}),
       });
       if (!response.job || !response.paths || !response.lease) {
@@ -990,6 +1008,14 @@ async function workLoop() {
             mode: MODE,
             apiOrigin: new URL(API).origin,
             emit: (type, task, message, more) => emit(ctx, job, type, task, message, more),
+            cache: async (task) => {
+              const result = await req<{ event: WorkflowEvent }>(
+                `/api/jobs/${job.id}/cache`,
+                { leaseToken: lease.token, task: task.key, attempt: task.attempts },
+                signal,
+              );
+              return result.event;
+            },
             reload: async () => {
               const result = await fetch(`${API}/api/jobs/${job.id}`, {
                 signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),

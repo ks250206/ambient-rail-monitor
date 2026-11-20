@@ -13,10 +13,41 @@ import {
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
-import { inventory, requireRelativePath, safeFile, type Inventory } from './datasets.ts';
+import {
+  inventory,
+  requireRelativePath,
+  safeFile,
+  snapshotDataset,
+  verifyDataset,
+  type Inventory,
+} from './datasets.ts';
 import { matchesPattern, type ConditionResult } from './conditions.ts';
 import { validateJson, type FileContract } from './contracts.ts';
 import type { OutputManifest, WorkflowJob, JobStage } from './types.ts';
+
+export function isolateMapInput(job: WorkflowJob, task: JobStage, input: string, work: string) {
+  const list = inventory(input);
+  list.files = list.files.filter((file) => file.path === task.item!.path);
+  list.bytes = list.files.reduce((sum, file) => sum + file.bytes, 0);
+  if (list.files.length !== 1) throw new Error('map入力が見つかりません。');
+  const directory = path.join(work, '_railflow/dataset');
+  const manifest = snapshotDataset(list, directory, job.file, 'directory', 'isolated-map');
+  const manifestPath = path.join(work, '_railflow/dataset.json');
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  return { directory, manifestPath, verify: () => verifyDataset(directory, manifest) };
+}
+
+export function verifyMapInput(job: WorkflowJob, task: JobStage, work: string): boolean {
+  if (!task.item || !job.dataset) return false;
+  const files = job.dataset.files.filter((file) => file.path === task.item!.path);
+  return verifyDataset(path.join(work, '_railflow/dataset'), {
+    ...job.dataset,
+    kind: 'directory',
+    files,
+    bytes: files.reduce((sum, file) => sum + file.bytes, 0),
+    hash: createHash('sha256').update(JSON.stringify(files)).digest('hex'),
+  });
+}
 
 export function ownOutputs(root: string): Inventory {
   const list = inventory(root, undefined, true);

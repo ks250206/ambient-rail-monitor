@@ -101,3 +101,11 @@ for the protocol, SQLite journal migration and configuration.
 Opt into sequential or DAG scheduling, parallel file maps, explicit AI/command/Python/HTTP/human stages,
 input/output contracts and selective reruns. Existing jobs retain their frozen execution model.
 See [workflow engine](docs/workflow-engine.md) for configuration and examples.
+
+### Reusable pipelines and provenance
+
+Create projects from built-in or versioned JSON templates, opt into verified task-result caching,
+and check declared Node/Python/CLI/package versions before execution. Isolated map inputs enable
+file-level incremental processing. Run details retain actual environments, token usage and optional
+estimated costs, compare output hashes, and export a complete provenance JSON record.
+See [reusable pipelines](docs/reusable-pipelines.md) for the reuse contract and limitations.

@@ -1,6 +1,8 @@
 import type { Condition, ConditionResult } from './conditions.ts';
 import type { ExecutionPolicy, FailureKind } from './execution-policy.ts';
 import type { QueueSettings } from './queue.ts';
+import type { CachePolicy, RuntimeProfile, RuntimeSnapshot, PriceRate } from './reuse.ts';
+import type { UsageRecord } from './usage.ts';
 import type { StageGraph, GraphSpec, PlannedTask } from './graph.ts';
 
 export type StageKey = string;
@@ -38,6 +40,9 @@ export type EventType =
   | 'stage.interrupted'
   | 'stage.started'
   | 'stage.executed'
+  | 'stage.environment'
+  | 'stage.usage'
+  | 'stage.cache'
   | 'gate.evaluated'
   | 'stage.progress'
   | 'stage.succeeded'
@@ -70,6 +75,7 @@ export type WorkerEventType = Exclude<
   | 'stage.interrupted'
   | 'stage.retry.paused'
   | 'stage.reused'
+  | 'stage.cache'
 >;
 
 export interface StageDefinition {
@@ -79,6 +85,7 @@ export interface StageDefinition {
 }
 
 export interface WorkflowStageSpec extends StageDefinition, StageGraph {
+  cache?: CachePolicy;
   instruction: string;
   llm: LlmConfig;
   acceptanceCriteria?: string;
@@ -154,6 +161,9 @@ export interface ProjectSpec {
   prompt?: string;
   queue?: { maxConcurrentJobs: number; priority: number };
   graph?: GraphSpec;
+  runtime?: RuntimeProfile;
+  pricing?: PriceRate[];
+  templateOrigin?: { name: string; revision: string; hash: string };
 }
 
 export interface JobStage extends StageDefinition {
@@ -161,6 +171,8 @@ export interface JobStage extends StageDefinition {
   dependsOn?: string[];
   item?: { path: string; hash: string };
   output?: OutputManifest;
+  runtime?: RuntimeSnapshot;
+  cache?: { hit: boolean; reason: string; key?: string };
   completion?: {
     mode: 'executed' | 'reused' | 'cached';
     jobId?: string;
@@ -239,6 +251,9 @@ export interface WorkflowEvent {
   completion?: JobStage['completion'];
   parentJobId?: string;
   jobElapsedMs?: number;
+  runtime?: RuntimeSnapshot;
+  usage?: UsageRecord;
+  cache?: JobStage['cache'];
 }
 
 export interface WorkflowJob {
