@@ -166,7 +166,7 @@ function ConditionNode({
             {Object.entries(TITLES)
               .filter(
                 ([op]) =>
-                  op !== 'not' &&
+                  (op !== 'not' || node.op === 'not') &&
                   (scope === 'trigger' || op !== 'quiet') &&
                   (nodeDepth < CONDITION_LIMITS.depth || (op !== 'all' && op !== 'any')),
               )
@@ -275,12 +275,10 @@ function ConditionNode({
             {compare(node.compare, (operator) => change({ ...node, compare: operator }))}
             <label>
               {node.op === 'file.count' ? '件数' : 'バイト数'}
-              <input
-                type="number"
-                min={0}
-                step={1}
+              <NumberValue
                 value={node.value}
-                onChange={(e) => change({ ...node, value: Number(e.target.value) })}
+                integer
+                onChange={(value) => change({ ...node, value })}
               />
             </label>
           </>
@@ -354,13 +352,10 @@ function ConditionNode({
         {node.op === 'quiet' && (
           <label>
             無変更時間（秒）
-            <input
-              type="number"
-              min={0}
-              max={86400}
-              step={1}
+            <NumberValue
               value={node.seconds}
-              onChange={(e) => change({ ...node, seconds: Number(e.target.value) })}
+              integer
+              onChange={(seconds) => change({ ...node, seconds })}
             />
           </label>
         )}

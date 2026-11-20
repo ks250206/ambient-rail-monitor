@@ -42,6 +42,7 @@ interface ActionsSectionProps {
   showAllLogs: boolean;
   project: ProjectSpec;
   nowMs: number;
+  approving?: boolean;
   onSelectStage: (stage: StageKey) => void;
   onShowAllLogs: () => void;
   onApproveReview: (jobId: string) => void;
@@ -53,6 +54,7 @@ export function ActionsSection({
   showAllLogs,
   project,
   nowMs,
+  approving = false,
   onSelectStage,
   onShowAllLogs,
   onApproveReview,
@@ -193,13 +195,16 @@ export function ActionsSection({
                     {selectedJob.status === 'review' && (
                       <button
                         type="button"
+                        disabled={approving}
                         onClick={() => onApproveReview(selectedJob.id)}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-science-blue px-3 py-1.5 text-xs font-bold text-white shadow-2xs transition-colors hover:bg-navy-800"
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-science-blue px-3 py-1.5 text-xs font-bold text-white shadow-2xs transition-colors hover:bg-navy-800 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         <Check className="h-3.5 w-3.5" />
-                        {reviewStage?.failureKind
-                          ? '失敗を確認して例外承認'
-                          : `${reviewStage?.label ?? 'レビュー'}を承認して再開`}
+                        {approving
+                          ? '承認中…'
+                          : reviewStage?.failureKind
+                            ? '失敗を確認して例外承認'
+                            : `${reviewStage?.label ?? 'レビュー'}を承認して再開`}
                       </button>
                     )}
                     {selectedJob.artifacts.length > 0 && (
@@ -575,13 +580,16 @@ export function ActionsSection({
                     {selectedJob.status === 'review' && activeStage.status === 'review' && (
                       <button
                         type="button"
+                        disabled={approving}
                         onClick={() => onApproveReview(selectedJob.id)}
-                        className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-science-blue px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-navy-800"
+                        className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-science-blue px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-navy-800 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         <Check className="h-4 w-4" />
-                        {activeStage.failureKind
-                          ? 'この試行の出力を例外承認して続行'
-                          : 'この工程を承認して続行'}
+                        {approving
+                          ? '承認中…'
+                          : activeStage.failureKind
+                            ? 'この試行の出力を例外承認して続行'
+                            : 'この工程を承認して続行'}
                       </button>
                     )}
                   </div>

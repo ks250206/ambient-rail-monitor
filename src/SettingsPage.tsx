@@ -131,30 +131,24 @@ function WorkflowEditor({
   project: ProjectSpec;
   showToast: (text: string, error?: boolean) => void;
 }) {
-  const [revision, setRevision] = useState(0);
   const save = useMutation({
     mutationFn: (payload: WorkflowUpdatePayload) =>
       request<ProjectResponse>(
         `/api/projects/${encodeURIComponent(project.id)}`,
         jsonRequest('PUT', payload),
       ),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['projects'] }),
+    onSuccess: ({ projects }) => {
+      queryClient.setQueryData(['projects'], { projects });
+      void queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
   });
   function saveWorkflow(payload: WorkflowUpdatePayload) {
     save.mutate(payload, {
       onSuccess: ({ project: saved }) => {
-        setRevision((prev) => prev + 1);
         showToast(`「${saved.name}」の定義を保存しました。`);
       },
       onError: (err) => showToast(err.message, true),
     });
   }
-  return (
-    <WorkflowSpecSection
-      key={revision}
-      project={project}
-      saving={save.isPending}
-      onSave={saveWorkflow}
-    />
-  );
+  return <WorkflowSpecSection project={project} saving={save.isPending} onSave={saveWorkflow} />;
 }

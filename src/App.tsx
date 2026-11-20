@@ -187,9 +187,12 @@ function Monitor({ project }: { project: ProjectSpec }) {
               showAllLogs={showAllLogs}
               project={state.project}
               nowMs={nowMs}
+              approving={approve.isPending}
               onSelectStage={handleSelectStage}
               onShowAllLogs={() => setShowAllLogs(true)}
-              onApproveReview={(jobId) => approve.mutate(jobId)}
+              onApproveReview={(jobId) => {
+                if (!approve.isPending) approve.mutate(jobId);
+              }}
             />
 
             <TraceSection job={selectedJob} nowMs={nowMs} onSelectStage={handleSelectStage} />

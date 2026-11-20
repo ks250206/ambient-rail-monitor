@@ -6,7 +6,6 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
   readdirSync,
   readSync,
   renameSync,
@@ -231,13 +230,33 @@ export function verifyDataset(root: string, manifest: DatasetManifest): boolean 
       return false;
     return manifest.files.every((file) => {
       const filename = safeFile(root, file.path);
-      const stat = lstatSync(filename);
-      return (
-        stat.isFile() &&
-        stat.nlink === 1 &&
-        stat.size === file.bytes &&
-        createHash('sha256').update(readFileSync(filename)).digest('hex') === file.hash
+      const fd = openSync(
+        filename,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
       );
+      try {
+        const before = fstatSync(fd);
+        if (!before.isFile() || before.nlink !== 1 || before.size !== file.bytes) return false;
+        const digest = createHash('sha256');
+        const buffer = Buffer.alloc(256 * 1024);
+        let size = 0;
+        while (true) {
+          const n = readSync(fd, buffer, 0, buffer.length, null);
+          if (!n) break;
+          size += n;
+          if (size > file.bytes) return false;
+          digest.update(buffer.subarray(0, n));
+        }
+        const after = fstatSync(fd);
+        return (
+          size === file.bytes &&
+          after.size === file.bytes &&
+          after.mtimeMs === before.mtimeMs &&
+          digest.digest('hex') === file.hash
+        );
+      } finally {
+        closeSync(fd);
+      }
     });
   } catch {
     return false;

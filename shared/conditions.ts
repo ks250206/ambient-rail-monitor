@@ -170,11 +170,12 @@ export function matchesPattern(filename: string, pattern: string): boolean {
   let previous = Array<boolean>(chars.length + 1).fill(false);
   previous[0] = true;
   for (let i = 0; i < tokens.length; i++) {
+    const start = i;
     let token = tokens[i];
     if (token === '*' && tokens[i + 1] === '*') {
       while (tokens[i + 1] === '*') i++;
       token = '**';
-      if (tokens[i + 1] === '/') {
+      if ((start === 0 || tokens[start - 1] === '/') && tokens[i + 1] === '/') {
         token = '**/';
         i++;
       }

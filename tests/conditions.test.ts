@@ -117,3 +117,10 @@ it('expands prompt variables once and rejects unknown names', () => {
   expect(expandTemplate('{{project.name}} / {{input.count}}', variables)).toBe('{{job.id}} / 3');
   expect(() => expandTemplate('{{unknown}}', variables)).toThrow('不明なプロンプト変数');
 });
+
+it('only collapses **/ when it starts a path segment', () => {
+  expect(matchesPattern('ab.csv', 'a**/b.csv')).toBe(false);
+  expect(matchesPattern('a1/b.csv', 'a**/b.csv')).toBe(true);
+  expect(matchesPattern('a/x/b.csv', 'a**/b.csv')).toBe(true);
+  expect(matchesPattern('b.csv', '**/b.csv')).toBe(true);
+});

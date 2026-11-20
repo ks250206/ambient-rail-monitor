@@ -72,7 +72,7 @@ export function StageExecutionDetails({
           {Math.round(
             ((stage.activeMs ?? 0) +
               (stage.status === 'running' && stage.startedAt
-                ? nowMs - Date.parse(stage.startedAt)
+                ? Math.max(0, nowMs - Date.parse(stage.startedAt))
                 : 0)) /
               1000,
           )}{' '}
@@ -116,7 +116,9 @@ export function StageExecutionDetails({
           <ConditionEvidence result={gate.result} />
         </div>
       ))}
-      {stage.status === 'review' && <ReviewOutputs job={job} stage={stage} />}
+      {stage.status === 'review' && stage.workspace && stage.reviewSequence !== undefined && (
+        <ReviewOutputs job={job} stage={stage} />
+      )}
       {config?.prompt && (
         <details>
           <summary>この試行で送信したプロンプト</summary>

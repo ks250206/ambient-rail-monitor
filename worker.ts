@@ -597,29 +597,35 @@ async function processJob(
       const relative = `.attempts/${stage.key}/${stage.attempts}`;
       const work = path.join(paths.work, relative);
       const attemptPaths = { ...paths, work };
-      const prompt = buildStagePrompt(
-        project,
-        spec,
-        {
-          'project.name': project?.name ?? job.projectId,
-          'job.id': job.id,
-          'dataset.name': job.file,
-          'input.directory': paths.inputDir ?? path.dirname(paths.input),
-          'input.files': JSON.stringify(
-            job.dataset?.files.slice(0, 20).map((file) => file.path) ?? [
-              path.basename(paths.input),
-            ],
-          ),
-          'input.count': String(job.dataset?.files.length ?? 1),
-          'input.manifest': paths.manifest ?? '(legacy single input: ' + paths.input + ')',
-          workspace: work,
-          'stage.key': stage.key,
-          'stage.name': stage.label,
-          attempt: String(stage.attempts),
-          'retry.reason': reason,
-        },
-        final,
-      );
+      let prompt = '';
+      let promptError: Error | undefined;
+      try {
+        prompt = buildStagePrompt(
+          project,
+          spec,
+          {
+            'project.name': project?.name ?? job.projectId,
+            'job.id': job.id,
+            'dataset.name': job.file,
+            'input.directory': paths.inputDir ?? path.dirname(paths.input),
+            'input.files': JSON.stringify(
+              job.dataset?.files.slice(0, 20).map((file) => file.path) ?? [
+                path.basename(paths.input),
+              ],
+            ),
+            'input.count': String(job.dataset?.files.length ?? 1),
+            'input.manifest': paths.manifest ?? '(legacy single input: ' + paths.input + ')',
+            workspace: work,
+            'stage.key': stage.key,
+            'stage.name': stage.label,
+            attempt: String(stage.attempts),
+            'retry.reason': reason,
+          },
+          final,
+        );
+      } catch (error) {
+        promptError = error instanceof Error ? error : new Error(String(error));
+      }
       await emit(
         job,
         'stage.started',
@@ -641,6 +647,7 @@ async function processJob(
       );
       const reportStaging = path.join(paths.work, '.reports', `${stage.key}-${stage.attempts}`);
       try {
+        if (promptError) throw new ExecutionFailure('execution_error', promptError.message);
         prepareAttempt(paths.work, relative, previous);
         if (final) archiveDraftReports(work);
         if (job.dataset && !verifyDataset(paths.inputDir!, job.dataset))
@@ -765,12 +772,12 @@ async function processJob(
           );
           const waitStart = performance.now();
           await sleep(delay);
+          if (stopping) throw new ExecutionFailure('interrupted', 'ワーカーが停止されました。');
           const waited = Math.round(performance.now() - waitStart);
           await emit(job, 'stage.retry.ready', stage.key, 'リトライ待機が終了', {
             elapsedMs: waited,
           });
           stage.activeMs += waited;
-          if (stopping) throw new ExecutionFailure('interrupted', 'ワーカーが停止されました。');
         } else if (
           policy.onFailure === 'review' &&
           !['stage_timeout', 'job_timeout', 'interrupted'].includes(kind)

@@ -33,10 +33,11 @@ export async function runCommand(
   });
   let failure: ExecutionFailure | undefined;
   let stderr = '';
+  let closed = false;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   const telemetry = new AbortController();
   const killTree = (signal: NodeJS.Signals) => {
-    if (!child.pid) return;
+    if (!child.pid || closed) return;
     try {
       if (process.platform === 'win32') {
         const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
@@ -45,7 +46,13 @@ export async function runCommand(
         killer.on('error', () => child.kill(signal));
       } else process.kill(-child.pid, signal);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') child.kill(signal);
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+        try {
+          child.kill(signal);
+        } catch {
+          /* The process has already exited. */
+        }
+      }
     }
   };
   const stop = (kind: FailureKind) => {
@@ -56,6 +63,7 @@ export async function runCommand(
         : `実行時間の上限に達しました (${kind})。`,
     );
     telemetry.abort();
+    if (closed) return;
     killTree('SIGTERM');
     killTimer ??= setTimeout(() => killTree('SIGKILL'), options.graceMs ?? 1000);
   };
@@ -95,7 +103,9 @@ export async function runCommand(
       child.once('close', resolve);
     });
   } finally {
+    if (killTimer) clearTimeout(killTimer);
     killTree('SIGKILL');
+    closed = true;
     reader.close();
     let drainTimer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([

@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, ChevronDown, Plus, RotateCcw, Save, Trash2 } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import type {
   LlmConfig,
@@ -8,6 +8,7 @@ import type {
   WorkflowStageSpec,
 } from '../../shared/types.ts';
 import { projectAutomation, stageAutomation, EMPTY_GATE } from '../../shared/automation.ts';
+import { parseCondition } from '../../shared/conditions.ts';
 import { resolveExecution } from '../../shared/execution-policy.ts';
 import {
   buildStagePrompt,
@@ -19,6 +20,7 @@ import type { ConditionResult } from '../../shared/conditions.ts';
 import { jsonRequest, request, useProjectJobs } from '../api.ts';
 import { ConditionBuilder, ConditionEvidence } from './ConditionBuilder.tsx';
 import { ExecutionPolicyFields } from './ExecutionPolicyFields.tsx';
+import { NumberValue } from './NumberValue.tsx';
 import { clockDate } from '../utils/workflow.ts';
 
 export type WorkflowUpdatePayload = Pick<
@@ -74,11 +76,42 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
   const [stages, setStages] = useState(() => editableStages(project.stages));
   const nextId = useRef(stages.length);
   const [active, setActive] = useState(0);
+  const syncedUpdatedAt = useRef(project.updatedAt);
   const index = Math.max(
     0,
     stages.findIndex((s) => s.rowId === active),
   );
   const stage = stages[index];
+  useEffect(() => {
+    if (syncedUpdatedAt.current === project.updatedAt) return;
+    syncedUpdatedAt.current = project.updatedAt;
+    setAutomation(projectAutomation({}, project));
+    setAcceptance(project.acceptanceCriteria);
+    setLlm(project.llm);
+    setStages((prev) => {
+      const activeKey = prev.find((item) => item.rowId === active)?.key;
+      const nextStages = project.stages.map((spec) => {
+        const existing = prev.find((item) => item.key === spec.key);
+        return { ...spec, rowId: existing ? existing.rowId : nextId.current++ };
+      });
+      const matching = nextStages.find((item) => item.key === activeKey);
+      if (matching) setActive(matching.rowId);
+      else if (nextStages[0]) setActive(nextStages[0].rowId);
+      return nextStages;
+    });
+  }, [project, active]);
+  const availableCandidates = monitor.data?.candidates ?? [];
+  const activeCandidate = availableCandidates.some(
+    (item) => JSON.stringify({ name: item.name, origin: item.origin }) === candidate,
+  )
+    ? candidate
+    : '';
+  let triggerValidation = '';
+  try {
+    parseCondition(automation.input?.condition ?? null, 'trigger');
+  } catch (error) {
+    triggerValidation = (error as Error).message;
+  }
   const payload: WorkflowUpdatePayload = {
     ...automation,
     acceptanceCriteria,
@@ -117,7 +150,10 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
     try {
       const result = await request<{ result: ConditionResult }>(
         `/api/projects/${project.id}/check-input`,
-        jsonRequest('POST', { ...JSON.parse(candidate), condition: automation.input?.condition }),
+        jsonRequest('POST', {
+          ...JSON.parse(activeCandidate),
+          condition: automation.input?.condition,
+        }),
       );
       setTestResult(result.result);
     } catch (error) {
@@ -256,18 +292,15 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
             </label>
             <label>
               監視入力の安定待ち（秒）
-              <input
-                type="number"
-                min={0}
-                max={86400}
-                step={0.001}
-                value={automation.input!.settleMs / 1000}
-                onChange={(e) =>
+              <NumberValue
+                value={automation.input!.settleMs}
+                scale={1000}
+                onChange={(settleMs) =>
                   setAutomation({
                     ...automation,
                     input: {
                       ...automation.input!,
-                      settleMs: Math.round(Number(e.target.value) * 1000),
+                      settleMs,
                     },
                   })
                 }
@@ -290,14 +323,14 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
             <label>
               テストする監視入力
               <select
-                value={candidate}
+                value={activeCandidate}
                 onChange={(e) => {
                   setCandidate(e.target.value);
                   setTestResult(null);
                 }}
               >
                 <option value="">入力を選択…</option>
-                {monitor.data?.candidates?.map((item, i) => (
+                {availableCandidates.map((item, i) => (
                   <option
                     key={`${item.name}-${i}`}
                     value={JSON.stringify({ name: item.name, origin: item.origin })}
@@ -311,7 +344,7 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
             <button
               className="wf-secondary"
               type="button"
-              disabled={!candidate || testing || Boolean(validation)}
+              disabled={!activeCandidate || testing || Boolean(triggerValidation)}
               onClick={() => void testInput()}
             >
               {testing ? '判定中…' : '未保存の条件をテスト'}
@@ -340,16 +373,13 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
           <div className="wf-fields">
             <label>
               ジョブ全体の実行上限（秒・0は無制限）
-              <input
-                type="number"
-                min={0}
-                max={604800}
-                step={0.001}
-                value={(automation.jobTimeoutMs ?? 0) / 1000}
-                onChange={(e) =>
+              <NumberValue
+                value={automation.jobTimeoutMs ?? 0}
+                scale={1000}
+                onChange={(jobTimeoutMs) =>
                   setAutomation({
                     ...automation,
-                    jobTimeoutMs: Math.round(Number(e.target.value) * 1000),
+                    jobTimeoutMs,
                   })
                 }
               />

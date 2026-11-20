@@ -1,5 +1,6 @@
 import { MAX_BUDGET_MS, resolveExecution, RETRY_LABELS } from '../../shared/execution-policy.ts';
 import type { ExecutionPolicy } from '../../shared/execution-policy.ts';
+import { NumberValue } from './NumberValue.tsx';
 
 const NUMBERS = [
   { key: 'maxRetries', label: '追加リトライ回数', unit: 1, max: 10, step: 1 },
@@ -53,19 +54,17 @@ export function ExecutionPolicyFields({
         リトライは初回に追加する回数です。0回なら1回だけ実行。工程・ジョブの上限にはリトライ待機を含め、キュー・レビュー待ちは含めません。上位の時間上限が優先されます。
       </p>
       <div className="wf-fields">
-        {NUMBERS.map(({ key, label, unit, max, step }) => (
+        {NUMBERS.map(({ key, label, unit }) => (
           <div className="policy-field" key={key}>
             {inherited && toggle(key)}
             <label>
               {label}
-              <input
-                type="number"
-                min={0}
-                max={max}
-                step={step}
-                value={effective[key] / unit}
+              <NumberValue
+                value={effective[key]}
+                scale={unit}
+                integer={unit === 1}
                 disabled={Boolean(inherited) && !Object.hasOwn(value, key)}
-                onChange={(e) => update(key, Math.round(Number(e.target.value) * unit))}
+                onChange={(next) => update(key, next)}
               />
             </label>
           </div>

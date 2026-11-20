@@ -212,3 +212,81 @@ it('waits for directory readiness, freezes settings, and deduplicates unchanged 
     await f.close();
   }
 });
+
+it('preserves projects.json with legacy template syntax, allows manual re-upload over legacy jobs, isolates demo runs, and handles check-input errors without 500', async () => {
+  let f = await workflowFixture();
+  try {
+    const home = f.home;
+    const { project } = await f.json<{ project: ProjectSpec }>('/api/projects', {
+      id: 'demo-check',
+      name: 'Demo Check',
+      input: {
+        mode: 'auto',
+        settleMs: 0,
+        condition: { op: 'file.count', pattern: '**/*.csv', compare: 'gte', value: 2 },
+      },
+    });
+    // Demo run should stage outside inbox so watch candidates stay clean.
+    const demo = await f.json<{ job: WorkflowJob }>('/api/demo', { projectId: project.id });
+    expect(demo.job.demo).toBe(true);
+    expect(readdirSync(path.join(home, project.inboxDir))).toEqual([]);
+
+    // check-input should return an error condition result instead of HTTP 500 for symlinked folders.
+    const badDir = path.join(home, project.inboxDir, 'bad-input');
+    mkdirSync(badDir, { recursive: true });
+    writeFileSync(path.join(badDir, 'real.csv'), 'x,y\n1,2\n');
+    symlinkSync(path.join(badDir, 'real.csv'), path.join(badDir, 'link.csv'));
+    const checked = await fetch(f.url + `/api/projects/${project.id}/check-input`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'bad-input', origin: 'project', condition: null }),
+    });
+    expect(checked.status).toBe(200);
+    expect(((await checked.json()) as { result: { status: string } }).result.status).toBe('error');
+
+    // Restart with a legacy project containing unknown {{...}} syntax + a legacy job event.
+    await f.close(true);
+    const projectsFile = path.join(home, 'data', 'projects.json');
+    const saved = JSON.parse(readFileSync(projectsFile, 'utf8')) as ProjectSpec[];
+    saved[0].stages[0].instruction = 'Keep literal {{legacy_token}} without deleting projects.json';
+    writeFileSync(projectsFile, JSON.stringify(saved, null, 2));
+
+    const payload = 'x,y\n1,2\n';
+    const { createHash } = await import('node:crypto');
+    const hash = createHash('sha256').update(payload).digest('hex');
+    const eventsFile = path.join(home, 'data', 'events.jsonl');
+    const legacyEvent = {
+      id: 'evt_legacy_1',
+      at: new Date().toISOString(),
+      type: 'job.created',
+      jobId: 'run_11111111',
+      projectId: 'default',
+      file: 'legacy.csv',
+      bytes: Buffer.byteLength(payload),
+      hash,
+    };
+    writeFileSync(
+      eventsFile,
+      `${existsSync(eventsFile) ? readFileSync(eventsFile, 'utf8') : ''}${JSON.stringify(legacyEvent)}\n`,
+    );
+
+    f = await workflowFixture(home);
+    const list = (await (await fetch(f.url + '/api/projects')).json()) as {
+      projects: ProjectSpec[];
+    };
+    expect(list.projects.map((item) => item.id)).toContain('demo-check');
+    expect(list.projects[0].stages[0].instruction).toContain('{{legacy_token}}');
+
+    // Manual upload matching a legacy job filename + hash must still create a new job.
+    const uploaded = await fetch(f.url + '/api/upload?project=default&filename=legacy.csv', {
+      method: 'POST',
+      headers: { 'content-type': 'text/csv' },
+      body: payload,
+    });
+    expect(uploaded.status).toBe(201);
+    const { job: reuploaded } = (await uploaded.json()) as { job: WorkflowJob };
+    expect(reuploaded.id).not.toBe('run_11111111');
+  } finally {
+    await f.close();
+  }
+});

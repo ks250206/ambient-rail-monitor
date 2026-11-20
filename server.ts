@@ -309,6 +309,7 @@ function buildProjectSpec(
   id: string,
   raw: Record<string, unknown>,
   existing?: ProjectSpec,
+  options: { strictTemplates?: boolean } = {},
 ): ProjectSpec {
   const now = new Date().toISOString();
   const baseStages = existing?.stages ?? defaultStages();
@@ -317,10 +318,12 @@ function buildProjectSpec(
   try {
     stages = normalizeStages(raw.stages, baseStages);
     automation = projectAutomation(raw, existing);
-    validateTemplate(automation.prompt ?? '');
-    for (const stage of stages) {
-      validateTemplate(stage.instruction);
-      validateTemplate(stage.acceptanceCriteria ?? '');
+    if (options.strictTemplates !== false) {
+      validateTemplate(automation.prompt ?? '');
+      for (const stage of stages) {
+        validateTemplate(stage.instruction);
+        validateTemplate(stage.acceptanceCriteria ?? '');
+      }
     }
   } catch (error) {
     throw new HttpError(400, (error as Error).message);
@@ -359,20 +362,26 @@ function saveProjects(): void {
 
 function loadProjects(): void {
   projects.clear();
+  const hadProjectsFile = existsSync(PROJECTS_FILE);
 
-  if (existsSync(PROJECTS_FILE)) {
+  if (hadProjectsFile) {
     try {
       const parsed = JSON.parse(readFileSync(PROJECTS_FILE, 'utf8')) as unknown;
       if (Array.isArray(parsed)) {
         for (const entry of parsed) {
-          if (!entry || typeof entry !== 'object' || Array.isArray(entry))
-            throw new Error('工程の形式が不正です。');
-          const item = entry as Record<string, unknown>;
-          const id = slugifyId(asString(item.id), DEFAULT_PROJECT_ID);
-          if (projects.has(id)) continue;
-          const spec = buildProjectSpec(id, item);
-          if (typeof item.updatedAt === 'string') spec.updatedAt = item.updatedAt;
-          projects.set(id, spec);
+          try {
+            if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+              throw new Error('工程の形式が不正です。');
+            const item = entry as Record<string, unknown>;
+            const id = slugifyId(asString(item.id), DEFAULT_PROJECT_ID);
+            if (projects.has(id)) continue;
+            const spec = buildProjectSpec(id, item, undefined, { strictTemplates: false });
+            if (typeof item.updatedAt === 'string') spec.updatedAt = item.updatedAt;
+            projects.set(id, spec);
+          } catch (entryErr) {
+            const message = entryErr instanceof Error ? entryErr.message : String(entryErr);
+            console.error('Failed to load project entry from projects.json:', message);
+          }
         }
       }
     } catch (err) {
@@ -403,10 +412,15 @@ function loadProjects(): void {
             : stage.instruction,
         llm: normalizeLlmConfig(rawStageLlm[stage.key]),
       }));
-      const spec = buildProjectSpec(DEFAULT_PROJECT_ID, {
-        ...legacy,
-        stages: migratedStages,
-      });
+      const spec = buildProjectSpec(
+        DEFAULT_PROJECT_ID,
+        {
+          ...legacy,
+          stages: migratedStages,
+        },
+        undefined,
+        { strictTemplates: false },
+      );
       projects.set(DEFAULT_PROJECT_ID, spec);
       saveProjects();
     } catch (err) {
@@ -416,6 +430,13 @@ function loadProjects(): void {
   }
 
   if (projects.size === 0) {
+    if (hadProjectsFile && existsSync(PROJECTS_FILE)) {
+      try {
+        renameSync(PROJECTS_FILE, `${PROJECTS_FILE}.corrupt-${Date.now()}`);
+      } catch (backupErr) {
+        console.error('Failed to back up unreadable projects.json:', backupErr);
+      }
+    }
     const spec = buildProjectSpec(DEFAULT_PROJECT_ID, {
       name: '科学データ解析ワークフロー',
     });
@@ -764,28 +785,6 @@ function findJobArtifactFile(job: WorkflowJob, artifactName: string): string {
   return path.join(LEGACY_ARTIFACTS, job.id, artifactName);
 }
 
-function enqueue(
-  file: string,
-  options: { projectId?: string; inboxRoot?: string; demo?: boolean; needsReview?: boolean } = {},
-): WorkflowJob {
-  const project = getProjectOrDefault(options.projectId);
-  const basename = cleanName(file);
-  const inboxDir = options.inboxRoot || projectInboxPath(project.id);
-  return enqueueInventory(
-    project,
-    inventory(inboxDir, basename),
-    basename,
-    'file',
-    `${inboxDir === LEGACY_INBOX ? 'legacy' : 'project'}:file:${basename}`,
-    {
-      ...options,
-      single: basename,
-      quietMs: Infinity,
-      bypassTrigger: Boolean(options.demo),
-    },
-  );
-}
-
 function enqueueInventory(
   project: ProjectSpec,
   list: Inventory,
@@ -822,12 +821,15 @@ function enqueueInventory(
           result,
         );
     }
-    const existing = [...jobs.values()].find(
-      (job) =>
-        job.projectId === project.id &&
-        (job.dataset ? job.dataset.source === source : job.file === name) &&
-        job.hash === dataset.hash,
-    );
+    const manual = source.startsWith('upload:') || source.startsWith('demo:');
+    const existing = manual
+      ? undefined
+      : [...jobs.values()].find(
+          (job) =>
+            job.projectId === project.id &&
+            (job.dataset ? job.dataset.source === source : job.file === name) &&
+            job.hash === dataset.hash,
+        );
     if (existing) {
       rmSync(inputDir, { recursive: true, force: true });
       return existing;
@@ -915,9 +917,12 @@ function scanInboxDir(dir: string, project: ProjectSpec): InputCandidate[] {
         candidate.message = 'この内容は登録済みです。';
         continue;
       }
-      const quietMs = Math.min(
-        Date.now() - observation.seenAt,
-        ...list.files.map((file) => Date.now() - file.mtimeMs),
+      const quietMs = Math.max(
+        0,
+        Math.min(
+          Date.now() - observation.seenAt,
+          ...list.files.map((file) => Date.now() - file.mtimeMs),
+        ),
       );
       if (list.files.length === 0) {
         candidate.message = 'ファイルの追加を待っています。';
@@ -927,23 +932,34 @@ function scanInboxDir(dir: string, project: ProjectSpec): InputCandidate[] {
         candidate.message = `変更が止まってから ${Math.ceil(config.settleMs / 1000)} 秒待ちます。`;
         continue;
       }
+      const source = `${dir === LEGACY_INBOX ? 'legacy' : 'project'}:${kind}:${name}`;
+      const existingMatch =
+        kind === 'directory'
+          ? [...jobs.values()].find(
+              (job) =>
+                job.projectId === project.id &&
+                job.dataset?.source === source &&
+                job.dataset.bytes === list.bytes &&
+                job.dataset.files.length === list.files.length &&
+                verifyDataset(list.root, job.dataset),
+            )
+          : undefined;
+      if (existingMatch) {
+        observation.ingested = true;
+        candidate.status = 'registered';
+        candidate.message = 'この内容は登録済みです。';
+        continue;
+      }
       candidate.result = checkCondition(list, name, quietMs, config.condition);
       if (candidate.result.status !== 'pass') {
         candidate.message = failedEvidence(candidate.result);
         if (candidate.result.status === 'error') candidate.status = 'error';
         continue;
       }
-      enqueueInventory(
-        project,
-        list,
-        name,
-        kind,
-        `${dir === LEGACY_INBOX ? 'legacy' : 'project'}:${kind}:${name}`,
-        {
-          single: kind === 'file' ? name : undefined,
-          quietMs,
-        },
-      );
+      enqueueInventory(project, list, name, kind, source, {
+        single: kind === 'file' ? name : undefined,
+        quietMs,
+      });
       observation.ingested = true;
       candidate.status = 'registered';
       candidate.message = 'この内容をジョブとして登録しました。';
@@ -1023,14 +1039,20 @@ function makeSample(projectId?: string, review = false): WorkflowJob {
       Math.sin(i * 1.7) * 9;
     rows.push(`${x.toFixed(3)},${y.toFixed(2)}`);
   }
-  const inboxDir = projectInboxPath(project.id);
-  writeFileSync(path.join(inboxDir, name), rows.join('\n'));
-  return enqueue(name, {
-    projectId: project.id,
-    inboxRoot: inboxDir,
-    demo: true,
-    needsReview: review,
-  });
+  const staging = path.join(UPLOADS, randomUUID());
+  mkdirSync(staging, { recursive: true });
+  try {
+    writeFileSync(path.join(staging, name), rows.join('\n'), { flag: 'wx' });
+    return enqueueInventory(project, inventory(staging), name, 'file', `demo:${randomUUID()}`, {
+      single: name,
+      demo: true,
+      needsReview: review,
+      quietMs: Infinity,
+      bypassTrigger: true,
+    });
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
 }
 
 function serveFile(
@@ -1213,6 +1235,10 @@ const server = http.createServer(async (req, res) => {
       const dir = projectInboxPath(projectId);
       inboxWatchers.get(dir)?.close();
       inboxWatchers.delete(dir);
+      inputCandidates.delete(projectId);
+      for (const key of observed.keys()) {
+        if (key.startsWith(`${dir}::`)) observed.delete(key);
+      }
       projects.delete(projectId);
       saveProjects();
       broadcastUpdate({ deletedProjectId: projectId });
@@ -1394,7 +1420,18 @@ const server = http.createServer(async (req, res) => {
       const target = path.join(dir, name);
       if (!existsSync(target) || lstatSync(target).isSymbolicLink())
         throw new HttpError(404, '入力が見つかりません。');
-      const list = lstatSync(target).isDirectory() ? inventory(target) : inventory(dir, name);
+      let list: Inventory;
+      try {
+        list = lstatSync(target).isDirectory() ? inventory(target) : inventory(dir, name);
+      } catch (error) {
+        return deliverJSON(res, {
+          result: {
+            status: 'error',
+            label: '入力ファイルの検証',
+            message: (error as Error).message,
+          } satisfies ConditionResult,
+        });
+      }
       const quiet = Math.max(
         0,
         Math.min(
@@ -1745,7 +1782,7 @@ const server = http.createServer(async (req, res) => {
       if (!job || !stage?.workspace || job.status !== 'review')
         throw new HttpError(404, 'レビュー中の出力がありません。');
       const root = path.join(jobWorkspace(job), stage.workspace);
-      const list = inventory(root, undefined, true);
+      const list = validate(() => inventory(root, undefined, true));
       if (!previewMatch[2])
         return deliverJSON(res, { files: list.files, reviewSequence: stage.reviewSequence });
       if (Number(url.searchParams.get('sequence')) !== stage.reviewSequence)
@@ -1756,7 +1793,7 @@ const server = http.createServer(async (req, res) => {
       return serveFile(
         res,
         safeFile(root, relative),
-        MIME_TYPES[path.extname(relative)] ?? 'application/octet-stream',
+        MIME_TYPES[path.extname(relative).toLowerCase()] ?? 'application/octet-stream',
         'GET',
         true,
       );
@@ -1821,7 +1858,7 @@ const server = http.createServer(async (req, res) => {
       return serveFile(
         res,
         file,
-        MIME_TYPES[path.extname(file)] || 'application/octet-stream',
+        MIME_TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream',
         req.method,
         true,
       );
@@ -1853,7 +1890,7 @@ const server = http.createServer(async (req, res) => {
       return serveFile(
         res,
         file,
-        MIME_TYPES[path.extname(file)] || 'application/octet-stream',
+        MIME_TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream',
         req.method,
         false,
       );
