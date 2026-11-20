@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { once } from 'node:events';
 import path from 'node:path';
@@ -482,6 +482,117 @@ it('fails wrong output types before publication and stops parallel tasks at the 
     );
     expect(timeout.stages.filter((task) => task.status === 'running')).toEqual([]);
     expect(timeout.activeMs).toBeGreaterThanOrEqual(400);
+  } finally {
+    await f.close();
+  }
+});
+
+it('blocks cross-origin/non-JSON CSRF attempts, detects added unreviewed files, blocks self-API SSRF, and preserves sibling branches on stage_timeout', async () => {
+  const { outputManifest, verifyOutput } = await import('../shared/task-files.ts');
+  const { inventory } = await import('../shared/datasets.ts');
+  const f = await workflowFixture();
+  try {
+    // 1. CSRF / Content-Type / Origin / Host guards reject drive-by requests.
+    const textPlain = await fetch(f.url + '/api/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: JSON.stringify({ id: 'csrf', name: 'CSRF' }),
+    });
+    expect(textPlain.status).toBe(415);
+
+    const crossOrigin = await fetch(f.url + '/api/projects', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: 'https://evil.example',
+      },
+      body: JSON.stringify({ id: 'csrf', name: 'CSRF' }),
+    });
+    expect(crossOrigin.status).toBe(403);
+
+    const crossSiteFetch = await fetch(f.url + '/api/demo', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'sec-fetch-site': 'cross-site',
+      },
+      body: JSON.stringify({}),
+    });
+    expect(crossSiteFetch.status).toBe(403);
+
+    // 2. verifyOutput rejects newly added files (and empty-manifest tampering).
+    const dir = path.join(f.home, 'verify-test');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, 'report.html'), '<h1>ok</h1>');
+    const manifest = outputManifest(inventory(dir, undefined, true));
+    expect(verifyOutput(dir, manifest, { excludeInternal: true })).toBe(true);
+    writeFileSync(path.join(dir, 'report.pptx'), 'unreviewed');
+    expect(verifyOutput(dir, manifest, { excludeInternal: true })).toBe(false);
+
+    const emptyDir = path.join(f.home, 'empty-test');
+    mkdirSync(emptyDir, { recursive: true });
+    const emptyManifest = outputManifest(inventory(emptyDir, undefined, true));
+    expect(verifyOutput(emptyDir, emptyManifest)).toBe(true);
+    writeFileSync(path.join(emptyDir, 'forged.json'), '{}');
+    expect(verifyOutput(emptyDir, emptyManifest)).toBe(false);
+
+    // 3. HTTP stage cannot call Railflow's own control API (SSRF defense).
+    await f.json('/api/projects', {
+      id: 'ssrf',
+      name: 'SSRF',
+      graph: { mode: 'dag', maxParallelTasks: 2, publishStage: 'call' },
+      execution: { maxRetries: 0 },
+      stages: [
+        {
+          key: 'call',
+          dependsOn: [],
+          runner: {
+            kind: 'http',
+            method: 'GET',
+            url: `${f.url}/api/projects`,
+            body: '',
+            output: 'response.json',
+            successStatus: 200,
+            idempotencyKey: false,
+          },
+        },
+      ],
+    });
+    const { job: ssrfJob } = await f.json<{ job: WorkflowJob }>('/api/demo', { projectId: 'ssrf' });
+    f.worker('process.exit(99)');
+    const ssrfFailed = await f.until(ssrfJob.id, 'failed');
+    expect(ssrfFailed.stages[0].status).toBe('failed');
+    expect(ssrfFailed.artifacts).toEqual([]);
+
+    // 4. stage_timeout retry budget exhaustion does not abort independent sibling branches.
+    await f.json('/api/projects', {
+      id: 'branch-budget',
+      name: 'Branch Budget',
+      graph: { mode: 'dag', maxParallelTasks: 2, publishStage: 'publish' },
+      execution: { maxRetries: 2, retryDelayMs: 500, stageTimeoutMs: 250 },
+      stages: [
+        {
+          key: 'b',
+          dependsOn: [],
+          runner: command('process.exit(1);'),
+        },
+        {
+          key: 'c',
+          dependsOn: [],
+          execution: { maxRetries: 0, stageTimeoutMs: 5000 },
+          runner: command(
+            `setTimeout(()=>{fs.writeFileSync('ok.txt','survived');process.exit(0);}, 350);`,
+          ),
+        },
+        final,
+      ],
+    });
+    const { job: branchJob } = await f.json<{ job: WorkflowJob }>('/api/demo', {
+      projectId: 'branch-budget',
+    });
+    const branchResult = await f.until(branchJob.id, 'failed');
+    expect(branchResult.stages.find((task) => task.key === 'b')?.status).toBe('failed');
+    expect(branchResult.stages.find((task) => task.key === 'c')?.status).toBe('success');
   } finally {
     await f.close();
   }

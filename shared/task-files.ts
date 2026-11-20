@@ -9,10 +9,11 @@ import {
   openSync,
   readFileSync,
   readSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
-import { inventory, safeFile, type Inventory } from './datasets.ts';
+import { inventory, requireRelativePath, safeFile, type Inventory } from './datasets.ts';
 import { matchesPattern, type ConditionResult } from './conditions.ts';
 import { validateJson, type FileContract } from './contracts.ts';
 import type { OutputManifest, WorkflowJob, JobStage } from './types.ts';
@@ -136,8 +137,24 @@ export function outputManifest(list: Inventory, contracts: FileContract[] = []):
   return { files, hash: createHash('sha256').update(JSON.stringify(files)).digest('hex') };
 }
 
-export function verifyOutput(root: string, expected: OutputManifest): boolean {
+export function verifyOutput(
+  root: string,
+  expected: OutputManifest,
+  options: { excludeInternal?: boolean } = {},
+): boolean {
   try {
+    const actual = options.excludeInternal ? ownOutputs(root) : inventory(root, undefined, true);
+    if (actual.files.length !== expected.files.length) return false;
+    const expectedSorted = [...expected.files].sort((a, b) =>
+      a.path < b.path ? -1 : a.path > b.path ? 1 : 0,
+    );
+    if (
+      !actual.files.every(
+        (file, index) =>
+          file.path === expectedSorted[index]?.path && file.bytes === expectedSorted[index]?.bytes,
+      )
+    )
+      return false;
     const files = expected.files.map((file) => hashFile(root, file));
     return createHash('sha256').update(JSON.stringify(files)).digest('hex') === expected.hash;
   } catch {
@@ -151,15 +168,22 @@ export function copyOutput(
   manifest: OutputManifest,
   readOnly = false,
 ): void {
-  if (!verifyOutput(root, manifest)) throw new Error('合格済み出力のハッシュが変わっています。');
+  if (!verifyOutput(root, manifest, { excludeInternal: true }))
+    throw new Error('合格済み出力のハッシュが変わっています。');
   mkdirSync(destination, { recursive: true });
-  for (const file of manifest.files) {
-    const target = path.join(destination, file.path);
-    mkdirSync(path.dirname(target), { recursive: true });
-    copyFileSync(safeFile(root, file.path), target, constants.COPYFILE_EXCL);
-    chmodSync(target, (readOnly ? 0o400 : 0o600) | (file.executable ? 0o100 : 0));
+  try {
+    for (const file of manifest.files) {
+      requireRelativePath(file.path);
+      const target = path.join(destination, file.path);
+      mkdirSync(path.dirname(target), { recursive: true });
+      copyFileSync(safeFile(root, file.path), target, constants.COPYFILE_EXCL);
+      chmodSync(target, (readOnly ? 0o400 : 0o600) | (file.executable ? 0o100 : 0));
+    }
+    if (!verifyOutput(destination, manifest)) throw new Error('コピー中に出力が変わりました。');
+  } catch (error) {
+    rmSync(destination, { recursive: true, force: true });
+    throw error;
   }
-  if (!verifyOutput(destination, manifest)) throw new Error('コピー中に出力が変わりました。');
 }
 
 export function prepareTaskInputs(job: WorkflowJob, task: JobStage, root: string, work: string) {

@@ -141,7 +141,10 @@ export function validateJson(value: unknown, schema: JsonSchema): string[] {
       if (rule.maximum !== undefined && data > rule.maximum)
         errors.push(`${field}: 最大値 ${rule.maximum} 超過`);
     }
-    if (typeof data === 'string') {
+    if (
+      typeof data === 'string' &&
+      (rule.minLength !== undefined || rule.maxLength !== undefined)
+    ) {
       const length = Array.from(data).length;
       if (length < (rule.minLength ?? 0) || length > (rule.maxLength ?? Infinity))
         errors.push(`${field}: 文字数が範囲外`);
@@ -166,7 +169,10 @@ export function validateJson(value: unknown, schema: JsonSchema): string[] {
   return errors.slice(0, 20);
 }
 
-export function parseContracts(value: unknown): FileContract[] {
+export function parseContracts(
+  value: unknown,
+  scope: 'inputs' | 'outputs' = 'inputs',
+): FileContract[] {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 20) throw new Error('ファイル契約は20件以内です。');
   return value.map((item) => {
@@ -178,13 +184,17 @@ export function parseContracts(value: unknown): FileContract[] {
     const minFiles = boundedInteger(raw.minFiles ?? 1, '最小ファイル数', 5000);
     const maxFiles = boundedInteger(raw.maxFiles ?? 5000, '最大ファイル数', 5000);
     if (minFiles > maxFiles) throw new Error('最小ファイル数が最大値を超えています。');
+    if (scope === 'outputs' && raw.source !== undefined)
+      throw new Error('出力契約には参照元(source)を指定できません。');
     if (raw.source !== undefined && raw.source !== 'dataset' && raw.source !== 'upstream')
       throw new Error('入力契約の参照元が不正です。');
     return {
       pattern: raw.pattern,
       minFiles,
       maxFiles,
-      ...(raw.schema ? { schema: parseSchema(raw.schema) } : {}),
+      ...(raw.schema !== undefined && raw.schema !== null
+        ? { schema: parseSchema(raw.schema) }
+        : {}),
       ...(raw.source ? { source: raw.source as 'dataset' | 'upstream' } : {}),
     };
   });

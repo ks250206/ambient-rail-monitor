@@ -135,11 +135,28 @@ export function WorkflowSpecSection({
   try {
     projectAutomation(payload);
     validateTemplate(automation.prompt ?? '');
+    if (
+      !graph &&
+      payload.stages.some(
+        (item) =>
+          (item.runner?.kind ?? 'ai') !== 'ai' ||
+          item.map ||
+          item.contracts?.inputs.length ||
+          item.contracts?.outputs.length,
+      )
+    )
+      throw new Error('工程の種類・map・入出力契約を使うにはWorkflow v2を有効にしてください。');
     for (const item of payload.stages) {
       stageAutomation({ ...item });
       parseStageGraph({ ...item });
       validateTemplate(item.instruction);
       validateTemplate(item.acceptanceCriteria ?? '');
+      if (item.runner?.kind === 'command' || item.runner?.kind === 'python')
+        for (const arg of item.runner.args) validateTemplate(arg);
+      if (item.runner?.kind === 'http') {
+        validateTemplate(item.runner.url);
+        validateTemplate(item.runner.body);
+      }
     }
     parseGraph(graph, payload.stages);
     const draftProject = { ...project, ...payload };
@@ -190,19 +207,22 @@ export function WorkflowSpecSection({
   }
   if (externalUpdate && !dirty) loadVersion(project);
   function update(patch: Partial<WorkflowStageSpec>) {
+    const oldKey = stage.key;
+    const renaming = patch.key !== undefined;
+    const newKey = patch.key;
     setStages((prev) =>
       prev.map((item) => {
         const next = item.rowId === stage.rowId ? { ...item, ...patch } : item;
         return {
           ...next,
-          dependsOn: next.dependsOn?.map((key) =>
-            patch.key && key === stage.key ? patch.key : key,
-          ),
+          dependsOn:
+            renaming && next.dependsOn
+              ? next.dependsOn.map((key) => (key === oldKey ? newKey! : key))
+              : next.dependsOn,
         };
       }),
     );
-    if (patch.key && graph?.publishStage === stage.key)
-      setGraph({ ...graph, publishStage: patch.key });
+    if (renaming && graph?.publishStage === oldKey) setGraph({ ...graph, publishStage: newKey! });
   }
   function add() {
     const rowId = Math.max(nextId.current, ...stages.map((item) => item.rowId + 1));
@@ -512,6 +532,15 @@ export function WorkflowSpecSection({
                 onChange={(event) => {
                   if (event.target.value === 'legacy') {
                     setGraph(undefined);
+                    setStages((prev) =>
+                      prev.map((item) => ({
+                        ...item,
+                        runner: undefined,
+                        dependsOn: undefined,
+                        map: null,
+                        contracts: undefined,
+                      })),
+                    );
                     return;
                   }
                   const mode = event.target.value as 'sequential' | 'dag';
@@ -640,7 +669,11 @@ export function WorkflowSpecSection({
             </div>
             {graph && (
               <>
-                <StageRunnerFields value={stage.runner} onChange={(runner) => update({ runner })} />
+                <StageRunnerFields
+                  value={stage.runner}
+                  disableHuman={graph.publishStage === stage.key}
+                  onChange={(runner) => update({ runner })}
+                />
                 {graph.mode === 'dag' && (
                   <fieldset className="wf-disclosure">
                     <legend>この工程の開始前に合格が必要な工程</legend>

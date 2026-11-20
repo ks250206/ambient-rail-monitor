@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import type { FileContract, JsonSchema } from '../../shared/contracts.ts';
+import { NumberValue } from './NumberValue.tsx';
 
 const types: JsonSchema['type'][] = [
   'object',
@@ -18,6 +20,7 @@ export function ContractFields({
   onChange: (next: FileContract[]) => void;
   input?: boolean;
 }) {
+  const [keyError, setKeyError] = useState('');
   const update = (index: number, patch: Partial<FileContract>) =>
     onChange(value.map((item, i) => (i === index ? { ...item, ...patch } : item)));
   return (
@@ -55,22 +58,18 @@ export function ContractFields({
             </label>
             <label>
               最低件数
-              <input
-                type="number"
-                min={0}
-                max={5000}
+              <NumberValue
                 value={contract.minFiles}
-                onChange={(event) => update(index, { minFiles: Number(event.target.value) })}
+                integer
+                onChange={(minFiles) => update(index, { minFiles })}
               />
             </label>
             <label>
               最大件数
-              <input
-                type="number"
-                min={0}
-                max={5000}
+              <NumberValue
                 value={contract.maxFiles}
-                onChange={(event) => update(index, { maxFiles: Number(event.target.value) })}
+                integer
+                onChange={(maxFiles) => update(index, { maxFiles })}
               />
             </label>
             <label>
@@ -102,20 +101,33 @@ export function ContractFields({
           {contract.schema?.type === 'object' && (
             <div className="schema-fields">
               {Object.entries(contract.schema.properties ?? {}).map(([name, rule]) => {
-                const replace = (nextName: string, nextRule: JsonSchema) =>
+                const replace = (nextName: string, nextRule: JsonSchema) => {
+                  const entries = Object.entries(contract.schema!.properties ?? {});
+                  if (nextName !== name && entries.some(([key]) => key === nextName)) {
+                    setKeyError(`同じ名前のJSONキー「${nextName}」が既に存在します。`);
+                    return;
+                  }
+                  setKeyError('');
                   update(index, {
                     schema: {
                       ...contract.schema!,
                       properties: Object.fromEntries(
-                        Object.entries(contract.schema!.properties ?? {}).map(([key, item]) =>
+                        entries.map(([key, item]) =>
                           key === name ? [nextName, nextRule] : [key, item],
                         ),
                       ),
-                      required: contract.schema!.required?.map((key) =>
-                        key === name ? nextName : key,
-                      ),
+                      required: contract.schema!.required
+                        ? [
+                            ...new Set(
+                              contract.schema!.required.map((key) =>
+                                key === name ? nextName : key,
+                              ),
+                            ),
+                          ]
+                        : undefined,
                     },
                   });
+                };
                 return (
                   <div className="condition-toolbar" key={name}>
                     <label>
@@ -129,9 +141,13 @@ export function ContractFields({
                       型
                       <select
                         value={rule.type}
-                        onChange={(event) =>
-                          replace(name, { type: event.target.value as JsonSchema['type'] })
-                        }
+                        onChange={(event) => {
+                          const nextType = event.target.value as JsonSchema['type'];
+                          const numeric =
+                            (rule.type === 'number' || rule.type === 'integer') &&
+                            (nextType === 'number' || nextType === 'integer');
+                          replace(name, numeric ? { ...rule, type: nextType } : { type: nextType });
+                        }}
                       >
                         {types.map((type) => (
                           <option key={type}>{type}</option>
@@ -196,6 +212,11 @@ export function ContractFields({
               >
                 JSONキーを追加
               </button>
+              {keyError && (
+                <p className="condition-error" role="alert">
+                  {keyError}
+                </p>
+              )}
             </div>
           )}
         </fieldset>

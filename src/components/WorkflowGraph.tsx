@@ -10,11 +10,11 @@ export function WorkflowGraph({ project, job }: { project: ProjectSpec; job?: Wo
         最大 {project.graph.maxParallelTasks} タスク並列
       </summary>
       <div className="workflow-graph" role="list" aria-label="工程の依存関係">
-        {project.stages.map((stage) => {
+        {project.stages.map((stage, i) => {
           const tasks = job?.stages.filter((task) => (task.stageKey ?? task.key) === stage.key);
           const parents = dependencies(project, stage);
           return (
-            <div role="listitem" className="graph-node" key={stage.key}>
+            <div role="listitem" className="graph-node" key={`${stage.key}-${i}`}>
               <small>
                 {parents.length
                   ? parents

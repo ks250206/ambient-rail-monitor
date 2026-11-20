@@ -51,6 +51,90 @@ interface Runtime {
     signal: AbortSignal,
   ): Promise<void>;
   mode: 'demo' | 'codex' | 'claude';
+  apiOrigin?: string;
+}
+
+const SAFE_ENV_KEYS = new Set([
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'LANG',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'SYSTEMROOT',
+  'SystemRoot',
+  'PATHEXT',
+  'COMSPEC',
+  'ComSpec',
+  'VIRTUAL_ENV',
+]);
+
+function filteredProcessEnv(): NodeJS.ProcessEnv {
+  const result: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (
+      SAFE_ENV_KEYS.has(key) ||
+      key.startsWith('LC_') ||
+      key.startsWith('PYTHON') ||
+      key.startsWith('RAILFLOW_') ||
+      key.startsWith('TEST_')
+    ) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function isBlockedHttpHost(hostname: string): boolean {
+  const lower = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (
+    lower === '0.0.0.0' ||
+    lower === '::' ||
+    lower === 'metadata.google.internal' ||
+    lower === 'metadata'
+  )
+    return true;
+  if (
+    lower.startsWith('169.254.') ||
+    lower.startsWith('fe80:') ||
+    lower.startsWith('::ffff:169.254.')
+  )
+    return true;
+  return false;
+}
+
+function expandSafeUrl(template: string, variables: PromptVariables, apiOrigin?: string): string {
+  const baseUrl = new URL(template);
+  const encodedVariables = Object.fromEntries(
+    Object.entries(variables).map(([key, value]) => [key, encodeURIComponent(value)]),
+  ) as PromptVariables;
+  const expanded = expandTemplate(template, encodedVariables);
+  const resolved = new URL(expanded);
+  if (
+    !['http:', 'https:'].includes(resolved.protocol) ||
+    resolved.username ||
+    resolved.password ||
+    resolved.origin !== baseUrl.origin
+  )
+    throw new ExecutionFailure(
+      'execution_error',
+      'テンプレート展開後のHTTP URLが元のオリジンまたはプロトコル制約に違反しています。',
+    );
+  if (isBlockedHttpHost(resolved.hostname))
+    throw new ExecutionFailure(
+      'execution_error',
+      'リンクローカルまたはメタデータURLには接続できません。',
+    );
+  if (apiOrigin && resolved.origin === apiOrigin)
+    throw new ExecutionFailure(
+      'execution_error',
+      'HTTPステージからRailflow自身のコントロールAPIには接続できません。',
+    );
+  return resolved.toString();
 }
 
 async function delay(ms: number, signal: AbortSignal) {
@@ -74,8 +158,10 @@ async function runTyped(
   timeoutKind: FailureKind,
   signal: AbortSignal,
   emit: (line: string) => Promise<void>,
+  apiOrigin?: string,
 ) {
-  const env = {
+  const env: NodeJS.ProcessEnv = {
+    ...filteredProcessEnv(),
     RAILFLOW_INPUT_DIR: variables['input.directory'],
     RAILFLOW_INPUT_MANIFEST: variables['input.manifest'],
     RAILFLOW_INPUT_ITEM: variables['input.item'],
@@ -97,16 +183,18 @@ async function runTyped(
       : undefined;
     const requestSignal = timeout ? AbortSignal.any([signal, timeout]) : signal;
     try {
-      const response = await fetch(expandTemplate(runner.url, variables), {
+      const targetUrl = expandSafeUrl(runner.url, variables, apiOrigin);
+      const headers: Record<string, string> = {
+        ...(runner.method === 'POST' ? { 'content-type': 'application/json' } : {}),
+        ...(runner.idempotencyKey
+          ? { 'Idempotency-Key': `${variables['job.id']}/${variables['task.id']}` }
+          : {}),
+      };
+      const response = await fetch(targetUrl, {
         method: runner.method,
         signal: requestSignal,
         redirect: 'error',
-        headers: {
-          'content-type': 'application/json',
-          ...(runner.idempotencyKey
-            ? { 'Idempotency-Key': `${variables['job.id']}/${variables['task.id']}` }
-            : {}),
-        },
+        headers,
         ...(runner.method === 'POST' ? { body: expandTemplate(runner.body, variables) } : {}),
       });
       if (response.status !== runner.successStatus) {
@@ -118,7 +206,10 @@ async function runTyped(
       if (response.body)
         for await (const chunk of response.body) {
           size += chunk.byteLength;
-          if (size > 2 * 1024 * 1024) throw new Error('HTTPレスポンスの上限は2 MiBです。');
+          if (size > 2 * 1024 * 1024) {
+            await response.body.cancel();
+            throw new Error('HTTPレスポンスの上限は2 MiBです。');
+          }
           chunks.push(chunk);
         }
       const output = path.join(work, runner.output);
@@ -143,6 +234,7 @@ async function runTyped(
   await runCommand(program, args, {
     cwd: work,
     env,
+    replaceEnv: true,
     signal,
     timeoutMs,
     timeoutKind,
@@ -204,13 +296,23 @@ export async function executeGraph(
       };
     };
     if (task.status === 'retry' && (task.retryAt || task.retryRemainingMs !== undefined)) {
-      if (task.retryRemainingMs !== undefined)
+      if (task.retryRemainingMs !== undefined) {
         task.retryAt = (
           await emit('stage.retry.resumed', task.key, '保存した待機時間から再開')
         ).retryAt;
+        task.retryRemainingMs = undefined;
+      }
       const wait = Math.max(0, Date.parse(task.retryAt!) - Date.now());
-      if (wait >= scopeBudget().left)
-        throw new ExecutionFailure(scopeBudget().kind, 'リトライ待機の時間予算がありません。');
+      const budgetLeft = scopeBudget();
+      if (wait >= budgetLeft.left) {
+        if (budgetLeft.kind === 'job_timeout')
+          throw new ExecutionFailure('job_timeout', 'リトライ待機の時間予算がありません。');
+        await emit('stage.failed', task.key, 'リトライ待機が工程の時間上限を超えるため停止', {
+          failureKind: 'stage_timeout',
+        }).catch(() => undefined);
+        task.status = 'failed';
+        return;
+      }
       const start = performance.now();
       await delay(wait, signal);
       interrupted();
@@ -220,8 +322,14 @@ export async function executeGraph(
     }
     while (true) {
       interrupted();
-      const left = scopeBudget().left;
-      if (left <= 0) throw new ExecutionFailure(scopeBudget().kind, '工程の時間上限に達しました。');
+      const budgetLeft = scopeBudget();
+      if (budgetLeft.left <= 0) {
+        if (budgetLeft.kind === 'job_timeout')
+          throw new ExecutionFailure('job_timeout', 'ジョブ全体の時間上限に達しました。');
+        task.status = 'failed';
+        return;
+      }
+      const left = budgetLeft.left;
       const envCap = Number(process.env.RAILFLOW_AGENT_TIMEOUT_MS);
       const limit = Math.min(
         left,
@@ -262,7 +370,13 @@ export async function executeGraph(
         attempt: String(task.attempts),
         'retry.reason': reason,
       };
-      const prompt = buildStagePrompt(project, spec, variables, final);
+      let prompt = '';
+      let promptError: Error | undefined;
+      try {
+        prompt = buildStagePrompt(project, spec, variables, final);
+      } catch (error) {
+        promptError = error instanceof Error ? error : new Error(String(error));
+      }
       const llm = {
         model: spec.llm.model || project.llm.model,
         effort: spec.llm.effort || project.llm.effort,
@@ -277,6 +391,7 @@ export async function executeGraph(
       task.workspace = relative;
       const reports = path.join(paths.work, '.reports', task.key + '-' + task.attempts);
       try {
+        if (promptError) throw new ExecutionFailure('execution_error', promptError.message);
         mkdirSync(path.dirname(work), { recursive: true });
         mkdirSync(work);
         const inputs = prepareTaskInputs(job, task, paths.work, work);
@@ -297,6 +412,7 @@ export async function executeGraph(
         await check('input');
         remaining();
         let summary = '';
+        const allowDemoExec = process.env.RAILFLOW_ALLOW_LOCAL_EXEC === '1';
         if (runner.kind === 'ai') {
           if (runtime.mode === 'demo' && runner.engine === 'worker') {
             if (final) await runtime.runDemo(task, { ...paths, work }, remaining(), kind, signal);
@@ -305,7 +421,12 @@ export async function executeGraph(
               writeFileSync(path.join(work, 'summary.txt'), `Demo: ${task.label}`);
             }
             summary = 'デモ処理を完了しました。';
-          } else
+          } else {
+            if (runtime.mode === 'demo' && !allowDemoExec)
+              throw new ExecutionFailure(
+                'execution_error',
+                'demo モードでは外部 AI エンジンを実行できません（RAILFLOW_ALLOW_LOCAL_EXEC=1 で許可）。',
+              );
             summary = await runtime.runAI(
               task,
               work,
@@ -316,10 +437,24 @@ export async function executeGraph(
               signal,
               runner.engine,
             );
-        } else
-          summary = await runTyped(runner, work, variables, remaining(), kind, signal, (line) =>
-            emit('agent.event', task.key, line).then(() => undefined),
+          }
+        } else {
+          if (runtime.mode === 'demo' && runner.kind !== 'human' && !allowDemoExec)
+            throw new ExecutionFailure(
+              'execution_error',
+              'demo モードではローカルコマンド・Python・HTTP ステージを実行できません（RAILFLOW_ALLOW_LOCAL_EXEC=1 で許可）。',
+            );
+          summary = await runTyped(
+            runner,
+            work,
+            variables,
+            remaining(),
+            kind,
+            signal,
+            (line) => emit('agent.event', task.key, line).then(() => undefined),
+            runtime.apiOrigin,
           );
+        }
         remaining();
         if (!inputs.verify() || !verifyDataset(paths.inputDir!, job.dataset!))
           throw new ExecutionFailure('acceptance_failed', '実行中に入力が変更されました。');
@@ -329,14 +464,19 @@ export async function executeGraph(
         if (final) await check('final');
         if (final) {
           mkdirSync(reports, { recursive: true });
-          await publishAgentReports(work, reports);
+          try {
+            await publishAgentReports(work, reports);
+          } catch (error) {
+            throw new ExecutionFailure('acceptance_failed', (error as Error).message);
+          }
         }
         remaining();
         const elapsedMs = elapsed();
         const review =
           runner.kind === 'human' ||
           spec.gate?.requireReview ||
-          (final && project.finalGate?.requireReview);
+          (final && project.finalGate?.requireReview) ||
+          (final && job.needsReview && task.approvedAttempt !== task.attempts);
         const event = await emit(
           review ? 'review.required' : 'stage.succeeded',
           task.key,
@@ -361,8 +501,12 @@ export async function executeGraph(
         task.status = 'failed';
         if (canRetry(policy, failureKind, (task.retryCount ?? 0) + 1)) {
           const wait = retryDelay(policy, (task.retryCount ?? 0) + 1);
-          if (wait >= scopeBudget().left)
-            throw new ExecutionFailure(scopeBudget().kind, 'リトライ待機の時間予算がありません。');
+          const budgetLeft = scopeBudget();
+          if (wait >= budgetLeft.left) {
+            if (budgetLeft.kind === 'job_timeout')
+              throw new ExecutionFailure('job_timeout', 'リトライ待機の時間予算がありません。');
+            return;
+          }
           await emit('stage.retry', task.key, `${wait} ms後に再試行`, {
             retryAt: new Date(Date.now() + wait).toISOString(),
           });
@@ -398,15 +542,29 @@ export async function executeGraph(
     while (true) {
       interrupted();
       const loadingActive = new Set(active.keys());
-      const latest = await runtime.reload();
+      let latest: WorkflowJob;
+      try {
+        latest = await runtime.reload();
+      } catch {
+        interrupted();
+        await delay(200, signal);
+        continue;
+      }
+      if (latest.status === 'pausing' || latest.status === 'cancelling') {
+        budget.abort();
+        await Promise.allSettled(active.values());
+        return;
+      }
       if (latest.status !== 'running')
         throw new ExecutionFailure('interrupted', 'ジョブの実行状態が変更されました。');
-      for (const task of job.stages)
-        if (!active.has(task.key) && !loadingActive.has(task.key))
-          Object.assign(
-            task,
-            latest.stages.find((item) => item.key === task.key),
-          );
+      job.artifacts = latest.artifacts;
+      for (let i = 0; i < job.stages.length; i++) {
+        const task = job.stages[i];
+        if (!active.has(task.key) && !loadingActive.has(task.key)) {
+          const updated = latest.stages.find((item) => item.key === task.key);
+          if (updated) job.stages[i] = updated;
+        }
+      }
       const available = job.stages.filter((task) => !active.has(task.key) && readyTask(job, task));
       for (const task of available.slice(0, project.graph!.maxParallelTasks - active.size)) {
         const promise = runTask(task)
@@ -416,21 +574,31 @@ export async function executeGraph(
           .finally(() => active.delete(task.key));
         active.set(task.key, promise);
       }
+      interrupted();
       if (taskError) throw taskError;
       if (!active.size) {
         if (job.stages.every((task) => task.status === 'success')) {
           const final = job.stages.find((task) => task.key === project.graph!.publishStage)!;
-          if (!final.output || !verifyOutput(path.join(paths.work, final.workspace!), final.output))
+          if (
+            !final.output ||
+            !verifyOutput(path.join(paths.work, final.workspace!), final.output, {
+              excludeInternal: true,
+            })
+          )
             throw new Error('公開直前に出力が変更されています。');
           const names = await publishAgentReports(
             path.join(paths.work, final.workspace!),
             paths.artifacts,
           );
           interrupted();
-          for (const name of names)
-            await emit('artifact.created', final.key, `成果物 ${name} を公開`, {
+          for (const name of names) {
+            if (job.artifacts.some((item) => item.name === name)) continue;
+            const created = await emit('artifact.created', final.key, `成果物 ${name} を公開`, {
               artifact: { name },
             });
+            if (created.artifact && !job.artifacts.some((item) => item.name === name))
+              job.artifacts.push(created.artifact);
+          }
           await emit('job.completed', null, '全タスクの契約・承認と公開が完了');
           return;
         }
@@ -457,15 +625,21 @@ export async function executeGraph(
       await Promise.race([...active.values(), delay(200, signal)]);
     }
   } catch (error) {
+    const timedOut =
+      budget.signal.aborted || (error instanceof ExecutionFailure && error.kind === 'job_timeout');
     budget.abort();
     await Promise.allSettled(active.values());
     if (runtime.signal.aborted) throw error;
-    const kind = error instanceof ExecutionFailure ? error.kind : 'execution_error';
+    const kind: FailureKind = timedOut
+      ? 'job_timeout'
+      : error instanceof ExecutionFailure
+        ? error.kind
+        : 'execution_error';
     for (const task of job.stages.filter((item) => item.status === 'running')) {
       await emit('stage.failed', task.key, 'ジョブ全体の停止でタスクを終了', {
         failureKind: kind,
         elapsedMs: Math.round(performance.now() - (startedAt.get(task.key) ?? performance.now())),
-      });
+      }).catch(() => undefined);
     }
     await emit('job.failed', null, error instanceof Error ? error.message : String(error), {
       failureKind: kind,

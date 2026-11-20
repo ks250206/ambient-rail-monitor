@@ -24,9 +24,10 @@ export function RerunControls({ job, task }: { job: WorkflowJob; task: string })
   const labels = (keys: string[]) =>
     keys.map((key) => job.stages.find((item) => item.key === key)?.label ?? key).join('、') ||
     'なし';
+  const targetLabel = job.stages.find((item) => item.key === task)?.label ?? task;
   return (
     <details className="wf-disclosure">
-      <summary>このタスクから再実行</summary>
+      <summary>「{targetLabel}」から再実行</summary>
       <p className="wf-help">
         元の入力・定義を使って新しいジョブを作成します。選択タスクと後続をやり直し、他の合格済み出力はハッシュを検証して引き継ぎます。
       </p>

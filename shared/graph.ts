@@ -94,6 +94,8 @@ export function parseStageGraph(raw: Record<string, unknown>): StageGraph {
       const output = text(runner.output ?? 'response.json', 'レスポンス保存先', 512);
       if (
         !validRelativePath(output) ||
+        output === '_inputs' ||
+        output === '_railflow' ||
         output.startsWith('_inputs/') ||
         output.startsWith('_railflow/')
       )
@@ -135,8 +137,8 @@ export function parseStageGraph(raw: Record<string, unknown>): StageGraph {
     dependsOn,
     map,
     contracts: {
-      inputs: parseContracts(contracts.inputs),
-      outputs: parseContracts(contracts.outputs),
+      inputs: parseContracts(contracts.inputs, 'inputs'),
+      outputs: parseContracts(contracts.outputs, 'outputs'),
     },
   };
 }

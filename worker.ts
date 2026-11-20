@@ -988,6 +988,7 @@ async function workLoop() {
           await executeGraph(job, paths, project, {
             signal,
             mode: MODE,
+            apiOrigin: new URL(API).origin,
             emit: (type, task, message, more) => emit(ctx, job, type, task, message, more),
             reload: async () => {
               const result = await fetch(`${API}/api/jobs/${job.id}`, {

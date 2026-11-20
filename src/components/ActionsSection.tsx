@@ -237,9 +237,9 @@ export function ActionsSection({
                   job={selectedJob}
                 />
                 <RerunControls
-                  key={`${selectedJob.id}-${selectedStage}`}
+                  key={`${selectedJob.id}-${activeStage?.key ?? selectedStage}`}
                   job={selectedJob}
-                  task={selectedStage}
+                  task={activeStage?.key ?? selectedStage}
                 />
                 {/* Compact Run Facts */}
                 <div className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-3.5 sm:grid-cols-4">

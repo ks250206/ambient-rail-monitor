@@ -1032,6 +1032,13 @@ function recoverFailures(job: WorkflowJob): boolean {
       });
       if (job.workflow?.version !== 2) return false;
     } else {
+      if (job.workflow?.version === 2) {
+        const hasOtherWork = job.stages.some(
+          (item) =>
+            item.status === 'pending' || item.status === 'retry' || item.status === 'review',
+        );
+        if (hasOtherWork) continue;
+      }
       appendEvent({
         type: 'job.failed',
         jobId: job.id,
@@ -1098,7 +1105,68 @@ function readBody(req: IncomingMessage, limit = 100_000): Promise<Buffer> {
   });
 }
 
+function isAllowedHostHeader(hostHeader: string | undefined): boolean {
+  if (!hostHeader) return true;
+  const trimmed = hostHeader.trim();
+  if (!trimmed || trimmed.includes('/') || trimmed.includes('@')) return false;
+  let hostname: string;
+  try {
+    hostname = new URL(`http://${trimmed}`).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  const configured = (process.env.HOST || '127.0.0.1')
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '');
+  const normalized = hostname.replace(/^\[|\]$/g, '');
+  return (
+    normalized === '127.0.0.1' ||
+    normalized === 'localhost' ||
+    normalized === '::1' ||
+    (configured !== '0.0.0.0' && configured !== '::' && normalized === configured)
+  );
+}
+
+function assertSafeRequest(req: IncomingMessage): void {
+  if (!isAllowedHostHeader(req.headers.host)) {
+    throw new HttpError(403, '許可されていない Host ヘッダです。');
+  }
+  const method = (req.method || 'GET').toUpperCase();
+  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return;
+  const fetchSite = String(req.headers['sec-fetch-site'] ?? '')
+    .trim()
+    .toLowerCase();
+  if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') {
+    throw new HttpError(403, 'クロスサイトからの変更リクエストは拒否されました。');
+  }
+  const origin = req.headers.origin;
+  if (origin !== undefined) {
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      throw new HttpError(403, '不正な Origin ヘッダです。');
+    }
+    const host = (req.headers.host || '').trim().toLowerCase();
+    if (
+      !['http:', 'https:'].includes(parsed.protocol) ||
+      !host ||
+      parsed.host.toLowerCase() !== host
+    ) {
+      throw new HttpError(403, '別オリジンからの変更リクエストは拒否されました。');
+    }
+  }
+}
+
 async function readJSON(req: IncomingMessage, limit = 100_000): Promise<Record<string, unknown>> {
+  const mediaType = String(req.headers['content-type'] ?? '')
+    .split(';')[0]
+    .trim()
+    .toLowerCase();
+  if (mediaType !== 'application/json') {
+    throw new HttpError(415, 'Content-Type: application/json を指定してください。');
+  }
   const value: unknown = JSON.parse((await readBody(req, limit)).toString('utf8') || '{}');
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new HttpError(400, 'JSON オブジェクトを指定してください。');
@@ -1291,6 +1359,11 @@ function scanInboxDir(dir: string, project: ProjectSpec): InputCandidate[] {
         candidate.message = 'この内容は登録済みです。';
         continue;
       }
+      if (observation.failedRevision === project.updatedAt && observation.failedMessage) {
+        candidate.status = 'error';
+        candidate.message = observation.failedMessage;
+        continue;
+      }
       const quietMs = Math.max(
         0,
         Math.min(
@@ -1339,9 +1412,16 @@ function scanInboxDir(dir: string, project: ProjectSpec): InputCandidate[] {
         quietMs,
       });
       observation.ingested = true;
+      observation.failedRevision = undefined;
+      observation.failedMessage = undefined;
       candidate.status = 'registered';
       candidate.message = 'この内容をジョブとして登録しました。';
     } catch (error) {
+      const obs = observed.get(obsKey);
+      if (obs && !obs.ingested) {
+        obs.failedRevision = project.updatedAt;
+        obs.failedMessage = (error as Error).message;
+      }
       const candidate = candidates.find((item) => item.name === name);
       if (candidate) {
         candidate.status = 'error';
@@ -1527,6 +1607,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    assertSafeRequest(req);
     if (pathname === '/api/state' && req.method === 'GET') {
       const requestedProjectId = url.searchParams.get('project');
       const activeProject = getProjectOrDefault(requestedProjectId);
@@ -1832,6 +1913,17 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/upload' && req.method === 'POST') {
+      const uploadType = String(req.headers['content-type'] ?? '')
+        .split(';')[0]
+        .trim()
+        .toLowerCase();
+      if (
+        uploadType === 'text/plain' ||
+        uploadType === 'application/x-www-form-urlencoded' ||
+        uploadType === 'multipart/form-data'
+      ) {
+        throw new HttpError(415, 'Unsupported Content-Type for direct upload');
+      }
       const requestedId = url.searchParams.get('project');
       const project = requestedId ? projects.get(requestedId) : getDefaultProject();
       if (!project) return deliverJSON(res, { error: 'Project not found' }, 404);
@@ -1966,6 +2058,8 @@ const server = http.createServer(async (req, res) => {
       const original = jobs.get(rerunMatch[1]);
       if (!original?.workflow || !original.dataset)
         throw new HttpError(400, '定義と入力を保存したジョブが必要です。');
+      if (original.workflow.version !== 2)
+        throw new HttpError(400, '選択工程の再実行にはWorkflow v2を有効にしたジョブが必要です。');
       if (!['done', 'failed', 'cancelled', 'paused', 'review'].includes(original.status))
         throw new HttpError(409, '実行を停止してから再実行してください。');
       const selected = original.stages.find((task) => task.key === body.task);
@@ -1986,13 +2080,13 @@ const server = http.createServer(async (req, res) => {
             .map((task) => task.key),
           reuse: reusable.map((task) => task.key),
         });
-      if (original.workflow.version !== 2)
-        throw new HttpError(400, '選択工程の再実行にはWorkflow v2を有効にしたジョブが必要です。');
       for (const task of reusable)
         if (
           !task.workspace ||
           !task.output ||
-          !verifyOutput(path.join(jobWorkspace(original), task.workspace), task.output)
+          !verifyOutput(path.join(jobWorkspace(original), task.workspace), task.output, {
+            excludeInternal: true,
+          })
         )
           throw new HttpError(409, '再利用元の出力が変更または削除されています。');
       if (!verifyDataset(path.join(DATA, 'inputs', original.id), original.dataset))
@@ -2032,12 +2126,15 @@ const server = http.createServer(async (req, res) => {
             stage: task.key,
             workspace,
             output: task.output,
-            completion: {
-              mode: 'reused',
-              jobId: original.id,
-              task: task.key,
-              attempt: task.attempts,
-            },
+            completion:
+              task.completion?.mode === 'reused'
+                ? task.completion
+                : {
+                    mode: 'reused',
+                    jobId: original.id,
+                    task: task.key,
+                    attempt: task.attempts,
+                  },
             summary: task.summary ?? undefined,
             message: '元ジョブの合格済み出力をハッシュ検証して再利用',
           });
@@ -2608,9 +2705,11 @@ const server = http.createServer(async (req, res) => {
         );
       if (
         job.workflow?.version === 2 &&
-        step?.output &&
-        step.workspace &&
-        !verifyOutput(path.join(jobWorkspace(job), step.workspace), step.output)
+        (!step?.output ||
+          !step.workspace ||
+          !verifyOutput(path.join(jobWorkspace(job), step.workspace), step.output, {
+            excludeInternal: true,
+          }))
       )
         throw new HttpError(409, 'レビュー中の出力が変更されています。');
       appendEvent({

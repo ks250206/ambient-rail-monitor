@@ -1,4 +1,5 @@
 import type { StageRunner } from '../../shared/graph.ts';
+import { NumberValue } from './NumberValue.tsx';
 
 const defaults: Record<StageRunner['kind'], StageRunner> = {
   ai: { kind: 'ai', engine: 'worker' },
@@ -22,9 +23,11 @@ const defaults: Record<StageRunner['kind'], StageRunner> = {
 export function StageRunnerFields({
   value = defaults.ai,
   onChange,
+  disableHuman = false,
 }: {
   value?: StageRunner;
   onChange: (next: StageRunner) => void;
+  disableHuman?: boolean;
 }) {
   return (
     <div className="wf-fields">
@@ -40,7 +43,9 @@ export function StageRunnerFields({
           <option value="command">プログラム・シェル</option>
           <option value="python">Python</option>
           <option value="http">HTTP API</option>
-          <option value="human">人間の確認</option>
+          <option value="human" disabled={disableHuman}>
+            人間の確認{disableHuman ? '（公開工程は不可）' : ''}
+          </option>
         </select>
       </label>
       {value.kind === 'ai' && (
@@ -89,14 +94,17 @@ export function StageRunnerFields({
               onChange={(event) =>
                 onChange({
                   ...value,
-                  args: event.target.value ? event.target.value.split('\n') : [],
+                  args: event.target.value
+                    ? event.target.value.replace(/\n+$/, '').split('\n')
+                    : [],
                 })
               }
             />
           </label>
           <p className="wf-help wf-wide">
             入力は環境変数 RAILFLOW_INPUT_DIR、RAILFLOW_INPUT_ITEM、RAILFLOW_UPSTREAM_MANIFEST
-            から参照できます。引数にはプロンプトと同じ変数を使えます。
+            から参照できます。bash -c 等のシェル文字列には {'{{...}}'}{' '}
+            を直接埋め込まず、環境変数を使用してください。
           </p>
         </>
       )}
@@ -144,14 +152,10 @@ export function StageRunnerFields({
           )}
           <label>
             成功ステータス
-            <input
-              type="number"
-              min={200}
-              max={299}
+            <NumberValue
               value={value.successStatus}
-              onChange={(event) =>
-                onChange({ ...value, successStatus: Number(event.target.value) })
-              }
+              integer
+              onChange={(successStatus) => onChange({ ...value, successStatus })}
             />
           </label>
           <label>
