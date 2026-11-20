@@ -1,8 +1,8 @@
 const sections = [
   ['#overview', '概要'],
-  ['#actions', '実行履歴'],
   ['#board', 'ジョブボード'],
-  ['#railway', '実行工程'],
+  ['#actions', '実行履歴'],
+  ['#workflow', 'ワークフロー定義'],
   ['#trace', 'トレース'],
   ['#events', 'イベント'],
 ];

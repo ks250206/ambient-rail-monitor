@@ -19,6 +19,7 @@ it.skipIf(process.platform === 'win32')(
       `#!/usr/bin/env node
 const fs = require('node:fs');
 if (process.argv.at(-1).includes('stage "publish"')) {
+  console.log(JSON.stringify({type: 'item.completed', item: {type: 'error', message: 'Optional renderer unavailable'}}));
   fs.writeFileSync('report.html', '<h1>Workflow report</h1>');
   fs.writeFileSync('report.pptx', Buffer.from([80, 75, 3, 4]));
   fs.writeFileSync('report_template.html', 'intermediate');
@@ -55,6 +56,13 @@ if (process.argv.at(-1).includes('stage "publish"')) {
           .toMatch(/^(done|failed)$/);
         const result = await getJob();
         expect(result.status).toBe('done');
+        expect(result.events).toContainEqual(
+          expect.objectContaining({
+            type: 'agent.event',
+            stage: 'publish',
+            message: 'item.completed · error: Optional renderer unavailable',
+          }),
+        );
         expect(result.stages.find((stage) => stage.key === 'publish')?.attempts).toBe(1);
         expect(result.artifacts.map((artifact) => artifact.name).sort()).toEqual([
           'report.html',

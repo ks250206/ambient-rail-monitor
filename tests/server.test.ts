@@ -6,7 +6,12 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vite-plus/test';
 
-import type { AppStateResponse, ClaimResponse, WorkflowJob } from '../shared/types.ts';
+import type {
+  AppStateResponse,
+  ClaimResponse,
+  WorkflowJob,
+  WorkflowSpec,
+} from '../shared/types.ts';
 import { actionSeconds, axisTime, bytes, getSpans } from '../src/utils/workflow.ts';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -94,7 +99,7 @@ describe('workflow helpers', () => {
 });
 
 describe('API integration', () => {
-  it('handles file enqueue -> pull claim -> spans -> review -> artifact -> replay', async () => {
+  it('handles workflow spec, stage summaries, file enqueue -> pull claim -> spans -> review -> artifact -> replay', async () => {
     const temp = mkdtempSync(path.join(os.tmpdir(), 'railflow-test-'));
     const port = 30_000 + Math.floor(Math.random() * 25_000);
     const api = `http://127.0.0.1:${port}`;
@@ -119,6 +124,30 @@ describe('API integration', () => {
         return res.ok;
       });
 
+      // Update workflow spec (purpose, acceptance criteria, custom stage instructions)
+      const putRes = await fetch(`${api}/api/workflow`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          title: 'XPS 実験解析',
+          purpose: 'スペクトル CSV を検品・解析してレポートを作成する',
+          acceptanceCriteria: '- 単位の欠損を明示すること\n- HTML レポートを出力すること',
+          stageInstructions: {
+            ingest: '列名と欠損行数を必ず確認する',
+            preprocess: '',
+            analysis: '54 eV 付近の最大強度を報告する',
+            validate: '',
+            visualize: '',
+            publish: '',
+          },
+        }),
+      });
+      expect(putRes.status).toBe(200);
+      const putBody = (await putRes.json()) as { workflow: WorkflowSpec };
+      expect(putBody.workflow.title).toBe('XPS 実験解析');
+      expect(putBody.workflow.stageInstructions.ingest).toBe('列名と欠損行数を必ず確認する');
+      expect(existsSync(path.join(temp, 'data', 'workflow-spec.json'))).toBe(true);
+
       const init = await post<{ job: WorkflowJob }>('/api/demo', { review: true });
       expect(init.status).toBe(201);
       const id = init.body.job.id;
@@ -128,25 +157,40 @@ describe('API integration', () => {
         worker: 'test-worker',
       });
       expect(claim.body.job?.id).toBe(id);
+      expect(claim.body.workflow?.title).toBe('XPS 実験解析');
+      expect(claim.body.workflow?.stageInstructions.analysis).toBe(
+        '54 eV 付近の最大強度を報告する',
+      );
 
       const second = await post<ClaimResponse>('/api/jobs/claim', { agent: 'demo' });
       expect(second.body.job).toBeNull();
 
-      const send = async (type: string, stage: string | null, message = '') =>
-        post(`/api/jobs/${id}/events`, { type, stage, message });
+      const send = async (
+        type: string,
+        stage: string | null,
+        message = '',
+        extra: Record<string, unknown> = {},
+      ) => post(`/api/jobs/${id}/events`, { type, stage, message, ...extra });
 
       await send('stage.started', 'ingest');
-      await send('stage.succeeded', 'ingest');
+      await send('stage.succeeded', 'ingest', 'ingest: 完了', {
+        summary: '141行・2列のCSVを確認し欠損なし',
+      });
       await send('stage.started', 'analysis');
       await send('stage.failed', 'analysis', 'failed once');
       await send('stage.retry', 'analysis');
       await send('stage.started', 'analysis');
-      await send('stage.succeeded', 'analysis');
+      await send('stage.succeeded', 'analysis', 'analysis: 完了', {
+        summary: '2回目の試行でピーク強度 790 を算出',
+      });
       await send('review.required', 'validate', 'please inspect');
 
       let state = (await (await fetch(`${api}/api/state`)).json()) as AppStateResponse;
+      expect(state.workflow.title).toBe('XPS 実験解析');
       expect(state.jobs[0].status).toBe('review');
+      expect(state.jobs[0].stages[0].summary).toBe('141行・2列のCSVを確認し欠損なし');
       expect(state.jobs[0].stages[2].attempts).toBe(2);
+      expect(state.jobs[0].stages[2].summary).toBe('2回目の試行でピーク強度 790 を算出');
       expect(state.events.filter((event) => event.type === 'stage.failed')).toHaveLength(1);
 
       const approval = await post(`/api/jobs/${id}/approve`);
@@ -188,6 +232,7 @@ describe('API integration', () => {
       expect(logs.headers.get('content-disposition')).toMatch(/attachment/);
       const logText = await logs.text();
       expect(logText).toMatch(/stage\.failed \[analysis\] failed once/);
+      expect(logText).toMatch(/Summary: 141行・2列のCSVを確認し欠損なし/);
       expect(logText).toMatch(/review\.approved/);
 
       const noLogs = await fetch(`${api}/api/jobs/run_deadbeef/logs`);

@@ -1,14 +1,14 @@
 import { Upload } from 'lucide-react';
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { AppStateResponse, StageKey, WorkflowJob } from '../shared/types.ts';
+import type { AppStateResponse, StageKey, WorkflowJob, WorkflowSpec } from '../shared/types.ts';
 import { ActionsSection } from './components/ActionsSection.tsx';
 import { BottomGrid } from './components/BottomGrid.tsx';
 import { KanbanSection } from './components/KanbanSection.tsx';
 import { MetricsGrid } from './components/MetricsGrid.tsx';
-import { RailwayAndInspector } from './components/RailwayAndInspector.tsx';
 import { SectionNavigation } from './components/SectionNavigation.tsx';
 import { TraceSection } from './components/TraceSection.tsx';
+import { WorkflowSpecSection } from './components/WorkflowSpecSection.tsx';
 import { clock, pickDefaultStage } from './utils/workflow.ts';
 
 interface ToastState {
@@ -16,9 +16,24 @@ interface ToastState {
   error: boolean;
 }
 
-async function postJson<T>(route: string, payload: unknown): Promise<T> {
+const EMPTY_WORKFLOW: WorkflowSpec = {
+  title: '科学データ解析ワークフロー',
+  purpose: '',
+  acceptanceCriteria: '',
+  stageInstructions: {
+    ingest: '',
+    preprocess: '',
+    analysis: '',
+    validate: '',
+    visualize: '',
+    publish: '',
+  },
+  updatedAt: '',
+};
+
+async function sendJson<T>(route: string, method: 'POST' | 'PUT', payload: unknown): Promise<T> {
   const res = await fetch(route, {
-    method: 'POST',
+    method,
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
   });
@@ -32,6 +47,7 @@ export function App() {
     jobs: [],
     events: [],
     stages: [],
+    workflow: EMPTY_WORKFLOW,
     updatedAt: '',
   });
   const [initialLoading, setInitialLoading] = useState(true);
@@ -50,6 +66,7 @@ export function App() {
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [toast, setToast] = useState<ToastState | null>(null);
   const [reviewDemo, setReviewDemo] = useState(false);
+  const [savingWorkflow, setSavingWorkflow] = useState(false);
   const [dragVisible, setDragVisible] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -227,7 +244,7 @@ export function App() {
   const handleDemoRun = useCallback(
     async (review: boolean) => {
       try {
-        const answer = await postJson<{ job: WorkflowJob }>('/api/demo', { review });
+        const answer = await sendJson<{ job: WorkflowJob }>('/api/demo', 'POST', { review });
         setSelectedJobId(answer.job.id);
         setSelectedStage('ingest');
         setShowAllLogs(false);
@@ -245,7 +262,7 @@ export function App() {
   const handleApproveReview = useCallback(
     async (jobId: string) => {
       try {
-        await postJson(`/api/jobs/${jobId}/approve`, {});
+        await sendJson(`/api/jobs/${jobId}/approve`, 'POST', {});
         showToast('レビューを承認しました。Workerの次回claimで再開します。');
         await refresh();
       } catch (err) {
@@ -253,6 +270,22 @@ export function App() {
       }
     },
     [refresh, showToast],
+  );
+
+  const handleSaveWorkflow = useCallback(
+    async (next: Omit<WorkflowSpec, 'updatedAt'>) => {
+      setSavingWorkflow(true);
+      try {
+        const answer = await sendJson<{ workflow: WorkflowSpec }>('/api/workflow', 'PUT', next);
+        setState((prev) => ({ ...prev, workflow: answer.workflow }));
+        showToast('ワークフロー定義とカスタム指示を保存しました');
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '保存に失敗しました', true);
+      } finally {
+        setSavingWorkflow(false);
+      }
+    },
+    [showToast],
   );
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -299,14 +332,16 @@ export function App() {
           <div aria-hidden="true" className="hero-arches" />
           <div className="page-width relative py-7 sm:py-10">
             <div className="hero-copy">
+              <p className="text-xs font-bold text-eyebrow">{state.workflow.title}</p>
               <h1
                 lang="en"
-                className="font-en text-4xl font-bold leading-tight text-science-blue sm:text-5xl"
+                className="font-en mt-1 text-4xl font-bold leading-tight text-science-blue sm:text-5xl"
               >
                 Ambient workflows
               </h1>
               <p className="mt-2 max-w-xl text-base leading-7">
-                ファイル投入から解析、検証、成果物の生成まで、ジョブごとの実行状況を確認できます。
+                {state.workflow.purpose ||
+                  'ファイル投入から解析、検証、成果物の生成まで、ジョブごとの実行状況を確認できます。'}
               </p>
               <div className="mt-5 flex flex-wrap gap-3">
                 <button
@@ -350,20 +385,7 @@ export function App() {
           {/* KPI Metrics */}
           <MetricsGrid jobs={state.jobs} loading={initialLoading} />
 
-          {/* 01 / Actions / Runs */}
-          <ActionsSection
-            jobs={state.jobs}
-            selectedJob={selectedJob}
-            selectedStage={selectedStage}
-            showAllLogs={showAllLogs}
-            nowMs={nowMs}
-            onSelectJob={handleSelectJob}
-            onSelectStage={handleSelectStage}
-            onShowAllLogs={() => setShowAllLogs(true)}
-            onApproveReview={(jobId) => void handleApproveReview(jobId)}
-          />
-
-          {/* 02 / Kanban Board */}
+          {/* 01 / Kanban Job Board (First!) */}
           <KanbanSection
             jobs={state.jobs}
             selectedJobId={selectedJobId}
@@ -372,19 +394,32 @@ export function App() {
             onRefresh={() => void refresh()}
           />
 
-          {/* 03 / Execution Railway + Step Inspector */}
-          <RailwayAndInspector
-            job={selectedJob}
+          {/* 02 / Unified Execution History & Stage Details (includes per-step result summaries) */}
+          <ActionsSection
+            jobs={state.jobs}
+            selectedJob={selectedJob}
             selectedStage={selectedStage}
+            showAllLogs={showAllLogs}
+            workflow={state.workflow}
             nowMs={nowMs}
+            onSelectJob={handleSelectJob}
             onSelectStage={handleSelectStage}
+            onShowAllLogs={() => setShowAllLogs(true)}
             onApproveReview={(jobId) => void handleApproveReview(jobId)}
+          />
+
+          {/* 03 / Workflow Specification, Acceptance Criteria & Stage Custom Instructions */}
+          <WorkflowSpecSection
+            workflow={state.workflow}
+            stages={state.stages}
+            saving={savingWorkflow}
+            onSave={handleSaveWorkflow}
           />
 
           {/* 04 / Trace Explorer */}
           <TraceSection job={selectedJob} nowMs={nowMs} onSelectStage={handleSelectStage} />
 
-          {/* 05 / Recent Events & 06 / Artifacts */}
+          {/* 05 / Recent Events & Artifacts */}
           <BottomGrid job={selectedJob} />
 
           <footer className="mt-10 flex flex-wrap justify-between gap-3 border-t-2 border-science-blue pt-4 text-sm text-ink-muted">

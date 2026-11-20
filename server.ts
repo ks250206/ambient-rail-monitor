@@ -23,6 +23,7 @@ import type {
   WorkerEventType,
   WorkflowEvent,
   WorkflowJob,
+  WorkflowSpec,
 } from './shared/types.ts';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -33,6 +34,7 @@ const DATA = path.join(HOME, 'data');
 const ARTIFACTS = path.join(HOME, 'artifacts');
 const WORK = path.join(HOME, 'work');
 const EVENTS = path.join(DATA, 'events.jsonl');
+const WORKFLOW_FILE = path.join(DATA, 'workflow-spec.json');
 const MAX_UPLOAD = 20 * 1024 * 1024;
 
 for (const dir of [INBOX, DATA, ARTIFACTS, WORK]) {
@@ -47,6 +49,26 @@ const STAGES: StageDefinition[] = [
   { key: 'visualize', label: '図表・可視化', short: 'Visualization' },
   { key: 'publish', label: 'HTML / PPTX生成', short: 'Publish' },
 ];
+
+const DEFAULT_WORKFLOW: Omit<WorkflowSpec, 'updatedAt'> = {
+  title: '科学データ解析ワークフロー',
+  purpose:
+    '投入された実験データ（CSV / TSV / JSON / TXT / DAT）を6工程で自動処理し、各段階の検証記録と再現可能な HTML / PPTX レポートを生成します。',
+  acceptanceCriteria: [
+    '- 入力データの列名・単位・欠損値と異常値を記録すること（不明な単位や条件は推測しない）',
+    '- 変換・解析の処理手順とスクリプトをジョブの作業ディレクトリに保存すること',
+    '- 記述的クイックルックと物理的に検証されたピーク帰属を明確に区別すること',
+    '- 最終成果物として自己完結した report.html（任意で report.pptx）を生成すること',
+  ].join('\n'),
+  stageInstructions: {
+    ingest: '列構成・行数・区切り形式・欠損や外れ値の有無を確認し、01_ingest.md に整理する。',
+    preprocess: '実施した前処理と前提条件をすべて 02_preprocess.md に記録する。',
+    analysis: '再現可能なスクリプトで定量解析を行い、中間データと 03_analysis.md を保存する。',
+    validate: '単位・フィット品質・限界や未解決の確認事項を 04_validation.md に明記する。',
+    visualize: '単位とキャプションを付けた図を作成し、05_visualization.md にまとめる。',
+    publish: '手法・図表・結果概要・限界を含む report.html（任意で report.pptx）を作成する。',
+  },
+};
 
 const WORKER_EVENT_TYPES = new Set<WorkerEventType>([
   'stage.started',
@@ -72,6 +94,76 @@ const allEvents: WorkflowEvent[] = [];
 const subscribers = new Set<ServerResponse>();
 const observed = new Map<string, ObservedFile>();
 let eventSerial = 0;
+
+function asString(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+}
+
+function normalizeWorkflowSpec(raw: unknown): WorkflowSpec {
+  const input = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const rawInstructions =
+    input.stageInstructions && typeof input.stageInstructions === 'object'
+      ? (input.stageInstructions as Record<string, unknown>)
+      : {};
+
+  const stageInstructions = Object.fromEntries(
+    STAGES.map((stage) => {
+      const value = rawInstructions[stage.key];
+      const text =
+        typeof value === 'string'
+          ? value.slice(0, 2000)
+          : DEFAULT_WORKFLOW.stageInstructions[stage.key];
+      return [stage.key, text];
+    }),
+  ) as Record<StageKey, string>;
+
+  return {
+    title:
+      typeof input.title === 'string' && input.title.trim()
+        ? input.title.trim().slice(0, 120)
+        : DEFAULT_WORKFLOW.title,
+    purpose:
+      typeof input.purpose === 'string' ? input.purpose.slice(0, 2000) : DEFAULT_WORKFLOW.purpose,
+    acceptanceCriteria:
+      typeof input.acceptanceCriteria === 'string'
+        ? input.acceptanceCriteria.slice(0, 4000)
+        : DEFAULT_WORKFLOW.acceptanceCriteria,
+    stageInstructions,
+    updatedAt: typeof input.updatedAt === 'string' ? input.updatedAt : new Date().toISOString(),
+  };
+}
+
+function loadWorkflowSpec(): WorkflowSpec {
+  if (existsSync(WORKFLOW_FILE)) {
+    try {
+      const parsed = JSON.parse(readFileSync(WORKFLOW_FILE, 'utf8')) as unknown;
+      return normalizeWorkflowSpec(parsed);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('Failed to read workflow spec, using default:', message);
+    }
+  }
+  return {
+    ...DEFAULT_WORKFLOW,
+    stageInstructions: { ...DEFAULT_WORKFLOW.stageInstructions },
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+let workflowSpec: WorkflowSpec = loadWorkflowSpec();
+
+function broadcastUpdate(payloadObject: Record<string, unknown>): void {
+  const payload = `data: ${JSON.stringify(payloadObject)}\n\n`;
+  for (const subscriber of subscribers) {
+    try {
+      subscriber.write(payload);
+    } catch {
+      subscribers.delete(subscriber);
+    }
+  }
+}
 
 function isStageKey(value: unknown): value is StageKey {
   return typeof value === 'string' && STAGES.some((stage) => stage.key === value);
@@ -105,6 +197,7 @@ function rebuild(event: WorkflowEvent): void {
         attempts: 0,
         startedAt: null,
         endedAt: null,
+        summary: null,
       })),
       artifacts: [],
       events: [event],
@@ -135,16 +228,31 @@ function rebuild(event: WorkflowEvent): void {
         step.endedAt = null;
       }
       break;
+    case 'stage.progress':
+      if (step && event.summary) {
+        step.summary = event.summary;
+      }
+      break;
     case 'stage.succeeded':
       if (step) {
         step.status = 'success';
         step.endedAt = event.at;
+        if (event.summary) {
+          step.summary = event.summary;
+        } else if (event.message && !step.summary) {
+          step.summary = event.message;
+        }
       }
       break;
     case 'stage.failed':
       if (step) {
         step.status = 'failed';
         step.endedAt = event.at;
+        if (event.summary) {
+          step.summary = event.summary;
+        } else if (event.message) {
+          step.summary = event.message;
+        }
       }
       break;
     case 'stage.retry':
@@ -154,12 +262,22 @@ function rebuild(event: WorkflowEvent): void {
       break;
     case 'review.required':
       job.status = 'review';
-      if (step) step.status = 'review';
+      if (step) {
+        step.status = 'review';
+        if (event.summary) {
+          step.summary = event.summary;
+        } else if (event.message && !step.summary) {
+          step.summary = event.message;
+        }
+      }
       break;
     case 'review.approved':
       job.reviewApproved = true;
       job.status = 'queued';
-      if (step) step.status = 'success';
+      if (step) {
+        step.status = 'success';
+        if (event.summary) step.summary = event.summary;
+      }
       break;
     case 'artifact.created':
       if (event.artifact && !job.artifacts.some((item) => item.name === event.artifact?.name)) {
@@ -200,14 +318,7 @@ function appendEvent(data: NewEventPayload): WorkflowEvent {
   };
   appendFileSync(EVENTS, `${JSON.stringify(event)}\n`);
   rebuild(event);
-  const payload = `data: ${JSON.stringify({ sequence: event.sequence })}\n\n`;
-  for (const subscriber of subscribers) {
-    try {
-      subscriber.write(payload);
-    } catch {
-      subscribers.delete(subscriber);
-    }
-  }
+  broadcastUpdate({ sequence: event.sequence });
   return event;
 }
 
@@ -403,16 +514,11 @@ interface ClaimRequestBody {
   worker?: string;
 }
 
-function asString(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  return '';
-}
-
 interface EventRequestBody {
   type?: unknown;
   stage?: unknown;
   message?: unknown;
+  summary?: unknown;
   details?: unknown;
   artifact?: { name?: unknown };
 }
@@ -433,8 +539,24 @@ const server = http.createServer(async (req, res) => {
         jobs: [...jobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
         events: allEvents.slice(-300),
         stages: STAGES,
+        workflow: workflowSpec,
         updatedAt: new Date().toISOString(),
       });
+    }
+
+    if (pathname === '/api/workflow' && req.method === 'GET') {
+      return deliverJSON(res, { workflow: workflowSpec });
+    }
+
+    if (pathname === '/api/workflow' && req.method === 'PUT') {
+      const body = JSON.parse((await readBody(req, 100_000)).toString('utf8') || '{}') as unknown;
+      workflowSpec = normalizeWorkflowSpec({
+        ...(body && typeof body === 'object' ? (body as Record<string, unknown>) : {}),
+        updatedAt: new Date().toISOString(),
+      });
+      writeFileSync(WORKFLOW_FILE, `${JSON.stringify(workflowSpec, null, 2)}\n`, 'utf8');
+      broadcastUpdate({ workflowUpdatedAt: workflowSpec.updatedAt });
+      return deliverJSON(res, { workflow: workflowSpec });
     }
 
     if (pathname === '/api/stream' && req.method === 'GET') {
@@ -499,6 +621,7 @@ const server = http.createServer(async (req, res) => {
           work: path.join(WORK, job.id),
           artifacts: path.join(ARTIFACTS, job.id),
         },
+        workflow: workflowSpec,
       });
     }
 
@@ -516,8 +639,8 @@ const server = http.createServer(async (req, res) => {
         ...job.events.map(
           (event) =>
             `[${event.at}] ${event.type}${event.stage ? ` [${event.stage}]` : ''} ${event.message || ''}${
-              event.details ? `\n  ${event.details.replace(/\n/g, '\n  ')}` : ''
-            }`,
+              event.summary ? `\n  Summary: ${event.summary}` : ''
+            }${event.details ? `\n  ${event.details.replace(/\n/g, '\n  ')}` : ''}`,
         ),
       ].join('\n')}\n`;
       res.writeHead(200, {
@@ -562,12 +685,14 @@ const server = http.createServer(async (req, res) => {
         };
       }
 
+      const rawSummary = asString(input.summary).trim();
       const rawDetails = asString(input.details);
       appendEvent({
         type: input.type,
         jobId: job.id,
         stage: isStageKey(input.stage) ? input.stage : null,
         message: asString(input.message).slice(0, 600),
+        summary: rawSummary ? rawSummary.slice(0, 1200) : undefined,
         artifact,
         details: rawDetails ? rawDetails.slice(0, 1300) : undefined,
       });

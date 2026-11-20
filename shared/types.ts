@@ -32,12 +32,21 @@ export interface JobStage extends StageDefinition {
   attempts: number;
   startedAt: string | null;
   endedAt: string | null;
+  summary: string | null;
 }
 
 export interface ArtifactInfo {
   name: string;
   uri: string;
   bytes: number;
+}
+
+export interface WorkflowSpec {
+  title: string;
+  purpose: string;
+  acceptanceCriteria: string;
+  stageInstructions: Record<StageKey, string>;
+  updatedAt: string;
 }
 
 export interface WorkflowEvent {
@@ -47,6 +56,7 @@ export interface WorkflowEvent {
   sequence: number;
   stage?: StageKey | null;
   message?: string;
+  summary?: string;
   details?: string;
   artifact?: ArtifactInfo;
   file?: string;
@@ -82,6 +92,7 @@ export interface AppStateResponse {
   jobs: WorkflowJob[];
   events: WorkflowEvent[];
   stages: StageDefinition[];
+  workflow: WorkflowSpec;
   updatedAt: string;
 }
 
@@ -94,6 +105,7 @@ export interface ClaimPaths {
 export interface ClaimResponse {
   job: WorkflowJob | null;
   paths?: ClaimPaths;
+  workflow?: WorkflowSpec;
 }
 
 export interface StageSpan {

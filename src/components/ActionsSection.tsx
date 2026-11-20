@@ -5,15 +5,17 @@ import {
   ChevronRight,
   Download,
   ExternalLink,
+  FileText,
   List,
   Play,
   RotateCw,
   Search,
+  SlidersHorizontal,
   Terminal,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
-import type { StageKey, WorkflowJob } from '../../shared/types.ts';
+import type { StageKey, WorkflowJob, WorkflowSpec } from '../../shared/types.ts';
 import {
   ACTION_STATUS_LABELS,
   actionDuration,
@@ -22,11 +24,14 @@ import {
   actionSeconds,
   clock,
   clockDate,
+  dateMs,
+  elapsed,
   getSpans,
   groupStageAttempts,
   normalizeActionStatus,
+  STAGE_STATUS_LABELS,
 } from '../utils/workflow.ts';
-import { StatusIcon } from './StatusBadge.tsx';
+import { StatusIcon, StatusPill } from './StatusBadge.tsx';
 
 type RunFilter = 'all' | 'running' | 'done' | 'review';
 
@@ -37,6 +42,7 @@ interface ActionsSectionProps {
   selectedJob: WorkflowJob | null;
   selectedStage: StageKey;
   showAllLogs: boolean;
+  workflow: WorkflowSpec;
   nowMs: number;
   onSelectJob: (jobId: string) => void;
   onSelectStage: (stage: StageKey) => void;
@@ -56,6 +62,7 @@ export function ActionsSection({
   selectedJob,
   selectedStage,
   showAllLogs,
+  workflow,
   nowMs,
   onSelectJob,
   onSelectStage,
@@ -96,6 +103,11 @@ export function ActionsSection({
 
   const spans = useMemo(() => (selectedJob ? getSpans(selectedJob) : []), [selectedJob]);
 
+  const failedStageKeys = useMemo(
+    () => new Set(spans.filter((span) => span.status === 'failed').map((span) => span.stage)),
+    [spans],
+  );
+
   const activeStageSeconds = useMemo(
     () =>
       spans.reduce(
@@ -132,15 +144,54 @@ export function ActionsSection({
     ? selectedJob.stages.filter((stage) => stage.status === 'success').length
     : 0;
 
+  const activeStage =
+    selectedJob?.stages.find((stage) => stage.key === selectedStage) ||
+    selectedJob?.stages[0] ||
+    null;
+
+  const activeStageEvents = useMemo(() => {
+    if (!selectedJob || !activeStage) return [];
+    return selectedJob.events.filter((event) => event.stage === activeStage.key);
+  }, [selectedJob, activeStage]);
+
+  const activeStageSpans = useMemo(() => {
+    if (!activeStage) return [];
+    return spans.filter((span) => span.stage === activeStage.key);
+  }, [spans, activeStage]);
+
+  const activeStageFallbackMessage = useMemo(() => {
+    const relevant = activeStageEvents.filter((event) =>
+      [
+        'stage.failed',
+        'stage.progress',
+        'stage.retry',
+        'stage.succeeded',
+        'stage.started',
+        'review.required',
+        'agent.event',
+      ].includes(event.type),
+    );
+    return relevant.at(-1)?.message || null;
+  }, [activeStageEvents]);
+
+  const customStageInstruction = activeStage
+    ? workflow.stageInstructions[activeStage.key]?.trim() || ''
+    : '';
+
   return (
     <section
       id="actions"
-      aria-label="Actions style workflow execution monitoring"
-      className="mt-8 scroll-mt-6"
+      aria-label="実行履歴と工程詳細"
+      className="mt-8 scroll-mt-6 border-t-2 border-science-sub pt-4"
     >
-      <h2 className="section-heading mb-4">実行履歴</h2>
+      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="section-heading">実行履歴・工程詳細</h2>
+        <span className="text-xs text-ink-muted">
+          ステップを選択すると、結果の概要・試行回数・ログを確認できます
+        </span>
+      </div>
 
-      <div className="grid min-h-[560px] grid-cols-1 overflow-hidden rounded-md border border-line bg-white xl:grid-cols-[minmax(300px,0.78fr)_minmax(0,1.62fr)]">
+      <div className="grid min-h-[600px] grid-cols-1 overflow-hidden rounded-md border border-line bg-white xl:grid-cols-[minmax(290px,0.72fr)_minmax(0,1.68fr)]">
         {/* Left pane: Run history list */}
         <div className="flex min-w-0 flex-col border-b border-line bg-bg-2/70 xl:border-b-0 xl:border-r">
           <div className="flex items-center justify-between px-4 pb-3 pt-4">
@@ -204,7 +255,7 @@ export function ActionsSection({
           </div>
 
           <div
-            className="max-h-[340px] flex-1 overflow-y-auto xl:max-h-[500px]"
+            className="max-h-[340px] flex-1 overflow-y-auto xl:max-h-[620px]"
             aria-label="Workflow runs"
           >
             {pageJobs.length === 0 ? (
@@ -262,7 +313,7 @@ export function ActionsSection({
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <strong className="truncate text-xs font-bold text-ink">{job.file}</strong>
                       <span className="truncate text-xs text-ink-muted">
-                        Experiment analysis · {(job.agent || 'unassigned').toUpperCase()}
+                        {workflow.title} · {(job.agent || 'unassigned').toUpperCase()}
                       </span>
                       <span className="truncate font-mono text-xs text-ink-muted">
                         {job.id} · {clockDate(job.createdAt)}
@@ -317,20 +368,18 @@ export function ActionsSection({
           </div>
         </div>
 
-        {/* Right pane: Run header + Steps + Log Console */}
+        {/* Right pane: Run header + Pipeline strip + Steps + Step Detail/Summary & Log Console */}
         <div className="flex min-w-0 flex-col">
           {/* Run Header */}
           <div className="border-b border-line bg-white px-5 py-4">
             {!selectedJob ? (
               <div className="flex min-h-[140px] items-center justify-center text-xs text-ink-muted">
-                Select a workflow run to inspect its logs.
+                実行履歴からジョブを選択すると、工程ごとの結果概要とログを確認できます。
               </div>
             ) : (
               <>
                 <div className="flex items-center justify-between gap-2 text-xs">
-                  <span className="font-en font-bold tracking-[0.08em] text-eyebrow uppercase">
-                    Experiment analysis
-                  </span>
+                  <span className="font-bold text-eyebrow">{workflow.title}</span>
                   <span className="font-mono text-ink-muted">{selectedJob.id}</span>
                 </div>
 
@@ -359,7 +408,7 @@ export function ActionsSection({
                         className="inline-flex items-center gap-1.5 rounded-lg bg-science-blue px-3 py-1.5 text-xs font-bold text-white shadow-2xs transition-colors hover:bg-navy-800"
                       >
                         <Check className="h-3.5 w-3.5" />
-                        Approve &amp; resume
+                        レビューを承認して再開
                       </button>
                     )}
                     {selectedJob.artifacts.length > 0 && (
@@ -383,12 +432,13 @@ export function ActionsSection({
                       href="#trace"
                       className="inline-flex items-center gap-1 rounded-lg border border-line bg-white px-2.5 py-1.5 text-xs font-semibold text-eyebrow transition-colors hover:bg-bg-1 hover:text-science-blue"
                     >
-                      Trace explorer
+                      トレース
                       <ExternalLink className="h-3 w-3" />
                     </a>
                   </div>
                 </div>
 
+                {/* Compact Run Facts */}
                 <div className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-3.5 sm:grid-cols-4">
                   <div>
                     <span className="font-en text-xs font-bold tracking-[0.1em] text-eyebrow uppercase">
@@ -455,16 +505,68 @@ export function ActionsSection({
                     </p>
                   </div>
                 </div>
+
+                {/* Inline Pipeline Railway Overview (replaces duplicate Railway section) */}
+                <div className="mt-4 overflow-x-auto border-t border-line pt-3">
+                  <div className="grid min-w-[540px] grid-cols-6 gap-2">
+                    {selectedJob.stages.map((stage, index) => {
+                      const active = selectedStage === stage.key && !showAllLogs;
+                      const retried = failedStageKeys.has(stage.key);
+                      return (
+                        <button
+                          key={stage.key}
+                          type="button"
+                          onClick={() => onSelectStage(stage.key)}
+                          aria-pressed={active}
+                          className={`flex flex-col items-start gap-1 rounded-md border px-2.5 py-2 text-left transition-colors ${
+                            active
+                              ? 'border-science-blue bg-navy-50 ring-1 ring-science-blue'
+                              : 'border-line bg-bg-2/60 hover:border-eyebrow hover:bg-white'
+                          }`}
+                        >
+                          <div className="flex w-full items-center justify-between gap-1">
+                            <span className="font-mono text-[11px] font-bold text-eyebrow">
+                              {String(index + 1).padStart(2, '0')}
+                            </span>
+                            <StatusIcon status={stage.status} size="sm" />
+                          </div>
+                          <span className="font-en truncate text-xs font-bold text-ink">
+                            {stage.short}
+                          </span>
+                          <div className="flex w-full items-center justify-between gap-1">
+                            <span className="font-mono text-[11px] text-ink-muted tabular-nums">
+                              {stage.startedAt
+                                ? elapsed(
+                                    stage.startedAt,
+                                    stage.endedAt ? dateMs(stage.endedAt) : nowMs,
+                                  )
+                                : '—'}
+                            </span>
+                            {retried && (
+                              <span
+                                className="inline-flex items-center gap-0.5 rounded bg-st-orange-bg px-1 py-0.5 text-[10px] font-bold text-st-orange-dark"
+                                title="失敗後に再試行"
+                              >
+                                <RotateCw className="h-2.5 w-2.5" />
+                                再試行
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               </>
             )}
           </div>
 
-          {/* Steps + Log Console Split */}
-          <div className="grid flex-1 grid-cols-1 lg:grid-cols-[minmax(200px,0.75fr)_minmax(0,1.6fr)]">
-            {/* Step list */}
+          {/* Steps + Step Detail & Logs Split */}
+          <div className="grid flex-1 grid-cols-1 lg:grid-cols-[minmax(220px,0.82fr)_minmax(0,1.58fr)]">
+            {/* Step list with per-step result summary preview */}
             <div className="flex min-w-0 flex-col border-b border-line bg-bg-2/40 lg:border-b-0 lg:border-r">
               <div className="flex items-center justify-between border-b border-line bg-bg-1/70 px-3.5 py-2.5 text-xs font-bold tracking-[0.12em] text-eyebrow uppercase">
-                <span className="font-en">Jobs &amp; Steps</span>
+                <span className="font-en">Steps &amp; Summaries</span>
                 <span className="font-mono tracking-normal text-ink-muted">
                   {selectedJob ? `${selectedJob.stages.length} steps` : ''}
                 </span>
@@ -479,38 +581,49 @@ export function ActionsSection({
                   {selectedJob.stages.map((stage) => {
                     const retryCount = spans.filter((span) => span.stage === stage.key).length;
                     const active = selectedStage === stage.key && !showAllLogs;
+                    const previewSummary = stage.summary || null;
+
                     return (
                       <button
                         key={stage.key}
                         type="button"
                         aria-pressed={active}
                         onClick={() => onSelectStage(stage.key)}
-                        className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors ${
+                        className={`flex w-full items-start gap-2.5 px-3 py-3 text-left transition-colors ${
                           active
                             ? 'border-l-[3px] border-l-science-blue bg-white pl-2.5'
                             : 'hover:bg-bg-1/70'
                         }`}
                       >
-                        <StatusIcon status={stage.status} size="sm" />
-                        <span className="flex min-w-0 flex-1 flex-col">
-                          <strong className="font-en text-xs font-bold text-ink">
-                            {stage.short}
-                          </strong>
-                          <span className="truncate text-xs text-ink-muted">{stage.label}</span>
+                        <span className="pt-0.5">
+                          <StatusIcon status={stage.status} size="sm" />
                         </span>
-                        <span className="flex shrink-0 flex-col items-end gap-0.5 text-right font-mono text-xs text-ink-muted tabular-nums">
-                          <span>
-                            {stage.startedAt
-                              ? actionDuration(stage.startedAt, stage.endedAt, nowMs)
-                              : '—'}
+                        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                          <span className="flex items-baseline justify-between gap-2">
+                            <strong className="font-en text-xs font-bold text-ink">
+                              {stage.short}
+                            </strong>
+                            <span className="shrink-0 font-mono text-[11px] text-ink-muted tabular-nums">
+                              {stage.startedAt
+                                ? actionDuration(stage.startedAt, stage.endedAt, nowMs)
+                                : '—'}
+                            </span>
                           </span>
-                          {retryCount > 1 && (
-                            <span
-                              className="inline-flex items-center gap-0.5 rounded bg-st-orange-bg px-1 py-0.5 font-semibold text-st-orange-dark"
-                              title={`${retryCount} attempts`}
-                            >
-                              <RotateCw className="h-2.5 w-2.5" />
-                              {retryCount}
+                          <span className="flex items-center gap-1.5 text-xs text-ink-muted">
+                            <span className="truncate">{stage.label}</span>
+                            {retryCount > 1 && (
+                              <span
+                                className="inline-flex shrink-0 items-center gap-0.5 rounded bg-st-orange-bg px-1 py-0.5 font-mono text-[10px] font-semibold text-st-orange-dark"
+                                title={`${retryCount} attempts`}
+                              >
+                                <RotateCw className="h-2.5 w-2.5" />
+                                {retryCount}
+                              </span>
+                            )}
+                          </span>
+                          {previewSummary && (
+                            <span className="mt-1 line-clamp-2 text-[11px] leading-snug text-ink">
+                              {previewSummary}
                             </span>
                           )}
                         </span>
@@ -545,8 +658,115 @@ export function ActionsSection({
               </div>
             </div>
 
-            {/* Step logs */}
+            {/* Right column: Selected Step Summary & Inspector + Step Logs */}
             <div className="flex min-w-0 flex-col bg-white text-ink">
+              {/* Step Summary & Inspector Card (integrated from former Step Inspector) */}
+              {selectedJob && activeStage && !showAllLogs && (
+                <div className="border-b border-line bg-navy-50/70 px-4 py-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <strong className="text-sm font-bold text-science-blue">
+                          {activeStage.label}
+                        </strong>
+                        <span className="font-mono text-xs text-ink-muted">
+                          {activeStage.short} / {activeStage.key}
+                        </span>
+                      </div>
+                    </div>
+                    <StatusPill
+                      status={activeStage.status}
+                      label={STAGE_STATUS_LABELS[activeStage.status]}
+                    />
+                  </div>
+
+                  {/* Result Summary Box */}
+                  <div className="mt-3 rounded-md border border-line bg-white p-3">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-eyebrow">
+                      <FileText className="h-3.5 w-3.5" />
+                      <span>結果の概要</span>
+                    </div>
+                    <p className="mt-1.5 whitespace-pre-wrap text-xs leading-relaxed text-ink">
+                      {activeStage.summary ||
+                        activeStageFallbackMessage ||
+                        'この工程はまだ開始していません。完了すると結果の概要がここに表示されます。'}
+                    </p>
+                  </div>
+
+                  {/* Step Execution Facts */}
+                  <dl className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+                    <div className="rounded border border-line bg-white px-2.5 py-1.5">
+                      <dt className="text-[11px] text-ink-muted">試行回数</dt>
+                      <dd className="font-mono text-xs font-bold text-ink">
+                        {activeStage.attempts}
+                      </dd>
+                    </div>
+                    <div className="rounded border border-line bg-white px-2.5 py-1.5">
+                      <dt className="text-[11px] text-ink-muted">経過時間</dt>
+                      <dd className="font-mono text-xs font-bold text-ink tabular-nums">
+                        {activeStage.startedAt
+                          ? elapsed(
+                              activeStage.startedAt,
+                              activeStage.endedAt ? dateMs(activeStage.endedAt) : nowMs,
+                            )
+                          : '—'}
+                      </dd>
+                    </div>
+                    <div className="rounded border border-line bg-white px-2.5 py-1.5">
+                      <dt className="text-[11px] text-ink-muted">開始時刻</dt>
+                      <dd className="font-mono text-xs font-bold text-ink tabular-nums">
+                        {clock(activeStage.startedAt)}
+                      </dd>
+                    </div>
+                    <div className="rounded border border-line bg-white px-2.5 py-1.5">
+                      <dt className="text-[11px] text-ink-muted">失敗試行</dt>
+                      <dd className="font-mono text-xs font-bold text-ink">
+                        {activeStageSpans.filter((span) => span.status === 'failed').length}
+                      </dd>
+                    </div>
+                    <div className="rounded border border-line bg-white px-2.5 py-1.5">
+                      <dt className="text-[11px] text-ink-muted">エージェント出力</dt>
+                      <dd className="font-mono text-xs font-bold text-ink">
+                        {activeStageEvents.filter((event) => event.type === 'agent.event').length}
+                      </dd>
+                    </div>
+                  </dl>
+
+                  {/* Custom instruction preview for this stage */}
+                  {customStageInstruction && (
+                    <div className="mt-3 flex items-start justify-between gap-3 rounded-md border border-dashed border-science-sub bg-white/80 px-3 py-2">
+                      <div className="min-w-0">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-bold text-science-blue">
+                          <SlidersHorizontal className="h-3 w-3" />
+                          この工程のカスタム指示
+                        </span>
+                        <p className="mt-0.5 whitespace-pre-wrap text-xs text-ink-muted">
+                          {customStageInstruction}
+                        </p>
+                      </div>
+                      <a
+                        href="#workflow"
+                        className="shrink-0 text-xs font-semibold text-eyebrow underline hover:text-science-blue"
+                      >
+                        編集
+                      </a>
+                    </div>
+                  )}
+
+                  {selectedJob.status === 'review' && activeStage.status === 'review' && (
+                    <button
+                      type="button"
+                      onClick={() => onApproveReview(selectedJob.id)}
+                      className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-science-blue px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-navy-800"
+                    >
+                      <Check className="h-4 w-4" />
+                      レビューを承認して後続工程を再開
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Step logs header */}
               <div className="flex items-center justify-between gap-2 border-b border-line bg-bg-1 px-3.5 py-2.5">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="inline-flex shrink-0 text-science-blue">
@@ -557,7 +777,7 @@ export function ActionsSection({
                       ? 'Step logs'
                       : showAllLogs
                         ? 'All run logs'
-                        : `${selectedJob.stages.find((stage) => stage.key === selectedStage)?.short || 'Step'} / logs`}
+                        : `${activeStage?.short || 'Step'} / logs`}
                   </strong>
                 </div>
 
@@ -605,7 +825,7 @@ export function ActionsSection({
               <div
                 role="region"
                 aria-label="Step log output"
-                className="max-h-[410px] min-h-[280px] flex-1 overflow-y-auto py-2.5 font-mono text-xs"
+                className="max-h-[380px] min-h-[240px] flex-1 overflow-y-auto py-2.5 font-mono text-xs"
               >
                 {!selectedJob ? (
                   <div className="px-4 py-10 text-center font-sans text-xs text-ink-muted">
@@ -755,6 +975,11 @@ function LogLineRow({ event, showTimestamps }: LogLineRowProps) {
       <div className="min-w-0 break-words whitespace-pre-wrap">
         {event.stage && <span className="mr-1.5 text-ink-muted">[{event.stage}]</span>}
         <span className="text-ink">{event.message || event.type}</span>
+        {event.summary && (
+          <div className="mt-1 rounded bg-navy-50 px-2 py-1 font-sans text-xs text-science-blue">
+            概要: {event.summary}
+          </div>
+        )}
         {event.details && (
           <pre className="mt-1.5 border-l-2 border-line pl-2.5 text-xs whitespace-pre-wrap text-ink-muted">
             {event.details}

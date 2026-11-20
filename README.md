@@ -1,15 +1,17 @@
 # RAILFLOW — Ambient Agent Workflow Observatory
 
+[日本語](README.ja.md)
+
 A local-first proof of concept for **pull-based Codex / Claude Code scientific-analysis jobs**, styled with the **Institute of Science Tokyo (東京科学大学 / Science Tokyo)** design system and built with **Node.js 26, pnpm 12, Vite+, React 19, TypeScript, and Tailwind CSS v4**.
 
 ![RAILFLOW workflow overview](docs/preview.png)
 
-Four synchronized operational views:
+Four synchronized operational views plus workflow specification editing:
 
-- **Actions / Runs** — GitHub Actions-inspired run history, active/review/failed status filtering, step list, collapsible attempts, expandable timestamped logs, live durations, search, and raw log download. [Step logs](docs/actions.png) · [Review gate](docs/review.png)
-- **Kanban** — queue, running, review/blocked, completed. [Job board](docs/board.png)
-- **Railway execution** — stage-by-stage success and failure/retry routes, human review gate, and step inspector.
-- **Trace explorer** — individual execution attempts rendered against elapsed time with Science Tokyo colors and visible status labels, raw agent events, and artifacts.
+- **Job board (Kanban)** — first view showing queue, running, review/blocked, and completed jobs. [Job board](docs/board.png)
+- **Actions / Runs & stage details** — unified run history, inline 6-stage pipeline overview, per-step result summaries, active/review/failed status filtering, collapsible attempts, expandable timestamped logs, live durations, search, human review approval, and raw log download. [Step logs](docs/actions.png) · [Review gate](docs/review.png)
+- **Workflow specification & custom instructions** — editable workflow title, purpose, acceptance criteria, and per-stage custom instructions saved to `data/workflow-spec.json` (`GET/PUT /api/workflow`) and passed to workers on claim.
+- **Trace explorer & events** — individual execution attempts rendered against elapsed time with Science Tokyo colors and visible status labels, raw agent events, and artifacts.
 
 ## Tech stack
 
