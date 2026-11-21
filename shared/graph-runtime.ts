@@ -10,7 +10,8 @@ import {
   type FailureKind,
 } from './execution-policy.ts';
 import { readyTask, taskSpec, type StageRunner } from './graph.ts';
-import { prepareTaskInputs, verifyOutput } from './task-files.ts';
+import { inspectRuntime } from './runtime-environment.ts';
+import { prepareTaskInputs, verifyOutput, isolateMapInput } from './task-files.ts';
 import { buildStagePrompt, expandTemplate, type PromptVariables } from './prompts.ts';
 import { ExecutionFailure, runCommand } from './process-runner.ts';
 import { publishAgentReports } from './publish-reports.ts';
@@ -40,6 +41,7 @@ interface Runtime {
     more?: Record<string, unknown>,
   ): Promise<WorkflowEvent>;
   reload(): Promise<WorkflowJob>;
+  cache(task: JobStage): Promise<WorkflowEvent>;
   runAI(
     task: JobStage,
     work: string,
@@ -167,6 +169,7 @@ async function runTyped(
   timeoutKind: FailureKind,
   signal: AbortSignal,
   emit: (line: string) => Promise<void>,
+  python: string,
   apiOrigin?: string,
 ) {
   const env: NodeJS.ProcessEnv = {
@@ -229,7 +232,7 @@ async function runTyped(
   if (runner.kind === 'python') {
     const file = path.join(work, '_railflow/task.py');
     writeFileSync(file, runner.code);
-    program = process.env.RAILFLOW_PYTHON || 'python3';
+    program = python || process.env.RAILFLOW_PYTHON || 'python3';
     args = [file, ...args];
   } else program = runner.program;
   let lines = 0;
@@ -363,14 +366,18 @@ export async function executeGraph(
       task.attempts++;
       const relative = `.attempts/${task.key}/${task.attempts}`;
       const work = path.join(paths.work, relative);
+      const isolated = !!spec.map?.isolateInput && !!task.item;
+      const inputFiles = isolated
+        ? job.dataset!.files.filter((file) => file.path === task.item!.path)
+        : job.dataset!.files;
       const variables: PromptVariables = {
         'project.name': project.name,
         'job.id': job.id,
         'dataset.name': job.file,
-        'input.directory': paths.inputDir!,
-        'input.manifest': paths.manifest!,
-        'input.files': JSON.stringify(job.dataset!.files.slice(0, 20).map((file) => file.path)),
-        'input.count': String(job.dataset!.files.length),
+        'input.directory': isolated ? path.join(work, '_railflow/dataset') : paths.inputDir!,
+        'input.manifest': isolated ? path.join(work, '_railflow/dataset.json') : paths.manifest!,
+        'input.files': JSON.stringify(inputFiles.slice(0, 20).map((file) => file.path)),
+        'input.count': String(inputFiles.length),
         'input.item': task.item?.path ?? '',
         'upstream.manifest': path.join(work, '_railflow/inputs.json'),
         workspace: work,
@@ -405,6 +412,9 @@ export async function executeGraph(
         mkdirSync(path.dirname(work), { recursive: true });
         mkdirSync(work);
         const inputs = prepareTaskInputs(job, task, paths.work, work);
+        const scopedInput = isolated
+          ? isolateMapInput(job, task, paths.inputDir!, work)
+          : undefined;
         writeFileSync(path.join(work, '_railflow/instructions.md'), prompt);
         const check = async (scope: 'input' | 'output' | 'stage' | 'final') => {
           const event = await emit(
@@ -420,10 +430,35 @@ export async function executeGraph(
             );
         };
         await check('input');
+        const inspectionLeft = remaining();
+        const inspectionSignal = Number.isFinite(inspectionLeft)
+          ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, Math.ceil(inspectionLeft)))])
+          : signal;
+        const snapshot = await inspectRuntime(
+          project,
+          spec,
+          runtime.mode,
+          work,
+          inspectionSignal,
+          inspectionLeft,
+        ).catch((error: unknown) => {
+          remaining();
+          throw error;
+        });
+        const recorded = await emit('stage.environment', task.key, 'この試行の実行環境を記録', {
+          runtime: snapshot,
+        });
+        task.runtime = recorded.runtime;
         remaining();
-        let summary = '';
+        if (recorded.runtime!.issues.length)
+          throw new ExecutionFailure('acceptance_failed', recorded.runtime!.issues.join('; '));
+        const cached = spec.cache?.enabled ? await runtime.cache(task) : undefined;
+        if (cached?.completion) task.completion = cached.completion;
         const allowDemoExec = process.env.RAILFLOW_ALLOW_LOCAL_EXEC === '1';
-        if (runner.kind === 'ai') {
+        let summary = cached?.cache?.hit ? '検証済みの出力をキャッシュから復元しました。' : '';
+        if (cached?.cache?.hit) {
+          // The current input/output contracts and all review gates still run below.
+        } else if (runner.kind === 'ai') {
           if (runtime.mode === 'demo' && runner.engine === 'worker') {
             if (final) await runtime.runDemo(task, { ...paths, work }, remaining(), kind, signal);
             else {
@@ -462,13 +497,24 @@ export async function executeGraph(
             kind,
             signal,
             (line) => emit('agent.event', task.key, line).then(() => undefined),
+            project.runtime?.python ?? '',
             runtime.apiOrigin,
           );
         }
         remaining();
-        if (!inputs.verify() || !verifyDataset(paths.inputDir!, job.dataset!))
+        if (
+          !inputs.verify() ||
+          (scopedInput && !scopedInput.verify()) ||
+          !verifyDataset(paths.inputDir!, job.dataset!)
+        )
           throw new ExecutionFailure('acceptance_failed', '実行中に入力が変更されました。');
-        await emit('stage.executed', task.key, '処理が終了しました。');
+        await emit(
+          'stage.executed',
+          task.key,
+          cached?.cache?.hit
+            ? 'キャッシュ復元を完了。新規実行は省略しました。'
+            : '処理が終了しました。',
+        );
         await check('output');
         await check('stage');
         if (final) await check('final');
@@ -495,6 +541,7 @@ export async function executeGraph(
         );
         task.status = review ? 'review' : 'success';
         task.output = event.output;
+        task.completion = event.completion;
         task.activeMs = (task.activeMs ?? 0) + elapsedMs;
         return;
       } catch (error) {

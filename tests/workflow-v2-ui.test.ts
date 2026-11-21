@@ -196,6 +196,7 @@ it('opens the selected review evidence before approving its exact attempt; graph
       nowMs: 0,
     });
   }
+  client.setQueryData(['monitor', project.id], { jobs: [run] });
   const key = ['review-outputs', run.id, 'scan_b', 17];
   client.setQueryData(key, { reviewSequence: 16, files: [{ path: 'old.txt', bytes: 1 }] });
   await render(h(Monitor));
@@ -246,3 +247,82 @@ it('counts a running job with gated tasks once under approvals and keeps its run
       ?.textContent,
   ).toBe('1');
 });
+
+it.each([
+  ['numpy', 'numpy'],
+  ['a.b', 'a-b'],
+])('keeps both editable package rows for %s and %s until corrected', async (first, duplicate) => {
+  const definition = workflow([spec('main')]);
+  definition.runtime = { revision: 'env', python: '', expected: {}, packages: { [first]: '1' } };
+  const save = await editor(definition);
+  await click(button('パッケージを追加'));
+  const name = (i: number) =>
+    document.querySelector<HTMLInputElement>(`[aria-label="パッケージ名 ${i}"]`)!;
+  const version = (i: number) =>
+    document.querySelector<HTMLInputElement>(`[aria-label="固定バージョン ${i}"]`)!;
+  await enter(version(2), '2');
+  await enter(name(2), duplicate);
+  expect(name(1).value).toBe(first);
+  expect(name(2)?.value).toBe(duplicate);
+  expect(version(2).value).toBe('2');
+  expect(button('パッケージを追加').disabled).toBe(true);
+  expect(button('定義を保存').disabled).toBe(true);
+  await click(button('パッケージを追加'));
+  expect(name(3)).toBeNull();
+  await enter(name(2), 'Package.1');
+  expect(button('パッケージを追加').disabled).toBe(false);
+  await click(button('定義を保存'));
+  expect(save.mock.lastCall![0].runtime?.packages).toEqual({ [first]: '1', 'Package.1': '2' });
+  await click(button('パッケージを追加'));
+  expect(name(3).value).toBe('package-2');
+  await click(button('戻す'));
+  expect(name(2)).toBeNull();
+});
+
+it.each(['human', 'http'])(
+  'keeps runtime and cache drafts until a confirmed incompatible %s or legacy save',
+  async (kind) => {
+    const definition = workflow([
+      spec('prep', { cache: { enabled: true, revision: 'cache-1' } }),
+      spec('publish', { dependsOn: ['prep'] }),
+    ]);
+    definition.runtime = {
+      revision: 'env',
+      python: 'python3',
+      expected: { node: '22' },
+      packages: { numpy: '2' },
+    };
+    const save = await editor(definition);
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal('confirm', confirm);
+    await enter(field('環境の版'), 'env-2');
+    await enter(field('キャッシュの版'), 'cache-2');
+    await enter(field('工程の種類'), kind);
+    await click(button('定義を保存'));
+    expect(confirm.mock.lastCall?.join('')).toMatch(/対象 1 工程[\s\S]*prep：.*キャッシュ/);
+    expect(save).not.toHaveBeenCalled();
+    confirm.mockReturnValue(true);
+    await click(button('定義を保存'));
+    expect(save.mock.lastCall![0].stages[0].cache?.enabled).toBeFalsy();
+    expect(save.mock.lastCall![0].stages[0].cache?.revision).toBeFalsy();
+    expect(save.mock.lastCall![0].runtime?.revision).toBe('env-2');
+    await enter(field('工程の種類'), 'ai');
+    expect(field('キャッシュの版').value).toBe('cache-2');
+    await enter(field('実行モデル'), 'legacy');
+    await enter(field('実行モデル'), 'sequential');
+    expect(field('環境の版').value).toBe('env-2');
+    expect(field('キャッシュの版').value).toBe('cache-2');
+    await enter(field('実行モデル'), 'legacy');
+    confirm.mockReturnValue(false);
+    await click(button('定義を保存'));
+    expect(confirm.mock.lastCall?.join('')).toMatch(/キャッシュ[\s\S]*実行環境/);
+    expect(save).toHaveBeenCalledTimes(1);
+    confirm.mockReturnValue(true);
+    await click(button('定義を保存'));
+    const saved = save.mock.lastCall![0];
+    expect(saved.graph).toBeUndefined();
+    expect(saved.runtime).toEqual({ revision: '', python: '', expected: {}, packages: {} });
+    expect(saved.stages[0].cache?.enabled).toBeFalsy();
+    expect(saved.stages[0].cache?.revision).toBeFalsy();
+  },
+);

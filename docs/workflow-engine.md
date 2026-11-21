@@ -18,8 +18,9 @@ the publishing gate itself.
 Existing projects stay in legacy sequential mode until explicitly changed.
 Registered v1 jobs always retain their original sequential execution model.
 Changing a project cannot change an existing job's frozen plan. v2 jobs are only
-claimed by workers advertising protocol 2. Server and worker must use matching
-releases.
+claimed by workers advertising protocol 2 or later. Runtime requirements and
+isolated map inputs require protocol 3; see [reusable pipelines](reusable-pipelines.md).
+Server and worker should use matching releases.
 
 ## Map and reduce
 

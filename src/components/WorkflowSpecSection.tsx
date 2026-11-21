@@ -1,5 +1,6 @@
 import {
   stageForSave,
+  supportsCache,
   runnerChange,
   settingsLostOnSave,
   type StageDraft,
@@ -13,6 +14,8 @@ import {
 } from '../../shared/graph.ts';
 import { ContractFieldError, contractFieldLabels, parseContracts } from '../../shared/contracts.ts';
 import { flushSync } from 'react-dom';
+import { DEFAULT_RUNTIME, packageRecord, packageRowsError } from '../../shared/reuse.ts';
+import { RuntimeFields, type PackageRow } from './RuntimeFields.tsx';
 import { ContractFields } from './ContractFields.tsx';
 import { StageRunnerFields } from './StageRunnerFields.tsx';
 import { WorkflowGraph } from './WorkflowGraph.tsx';
@@ -54,6 +57,8 @@ export type WorkflowUpdatePayload = Pick<
   | 'prompt'
   | 'queue'
   | 'graph'
+  | 'runtime'
+  | 'pricing'
 >;
 
 interface WorkflowSpecSectionProps {
@@ -90,6 +95,14 @@ function editableStages(stages: WorkflowStageSpec[]): StageDraft[] {
   return stages.map((stage, rowId) => ({ ...stage, rowId }));
 }
 
+function editablePackages(project: ProjectSpec): PackageRow[] {
+  return Object.entries(project.runtime?.packages ?? {}).map(([name, version], id) => ({
+    name,
+    version,
+    id,
+  }));
+}
+
 export function WorkflowSpecSection({
   project,
   saving,
@@ -99,6 +112,12 @@ export function WorkflowSpecSection({
   const [graph, setGraph] = useState(project.graph);
   const [otherGraphs, setOtherGraphs] = useState<Partial<Record<GraphSpec['mode'], GraphSpec>>>({});
   const [automation, setAutomation] = useState(() => projectAutomation({}, project));
+  const [packageRows, setPackageRows] = useState(() => editablePackages(project));
+  const packageError = packageRowsError(packageRows);
+  const runtime = {
+    ...(automation.runtime ?? DEFAULT_RUNTIME),
+    packages: packageRecord(packageRows),
+  };
   const monitor = useProjectJobs(project.id);
   const [candidate, setCandidate] = useState('');
   const [testResult, setTestResult] = useState<ConditionResult | null>(null);
@@ -128,21 +147,22 @@ export function WorkflowSpecSection({
     triggerValidation = (error as Error).message;
   }
   const converting = Object.keys(otherGraphs).length > 0;
-  const discarded = settingsLostOnSave(stages, graph, otherGraphs);
+  const discarded = settingsLostOnSave(stages, graph, otherGraphs, runtime);
   const payload: WorkflowUpdatePayload = {
     ...automation,
+    runtime: graph ? runtime : DEFAULT_RUNTIME,
     graph,
     acceptanceCriteria,
     llm,
     stages: stages.map((item) => stageForSave(item, graph?.mode, converting)),
   };
   const dirty =
-    Boolean(discarded) ||
+    Boolean(packageError || discarded) ||
     JSON.stringify(graph) !== JSON.stringify(baseline.graph) ||
     acceptanceCriteria !== baseline.acceptanceCriteria ||
     JSON.stringify(llm) !== JSON.stringify(baseline.llm) ||
     JSON.stringify(payload.stages) !== JSON.stringify(baseline.stages) ||
-    JSON.stringify(automation) !== JSON.stringify(projectAutomation({}, baseline));
+    JSON.stringify({ ...automation, runtime }) !== JSON.stringify(projectAutomation({}, baseline));
   const externalUpdate = project.updatedAt > baseline.updatedAt;
   useEffect(() => {
     onDirtyChange(dirty);
@@ -154,7 +174,12 @@ export function WorkflowSpecSection({
   let fieldName = 'プロジェクト設定';
   let promptPreview = '';
   try {
-    projectAutomation(payload);
+    if (graph && packageError) {
+      target = 'runtime-packages';
+      fieldName = 'Pythonパッケージ';
+      throw new Error(packageError);
+    }
+    const parsedAutomation = projectAutomation(payload);
     target = 'workflow-prompt';
     fieldName = '共通プロンプト';
     validateTemplate(automation.prompt ?? '');
@@ -196,6 +221,11 @@ export function WorkflowSpecSection({
     target = 'graph-settings';
     fieldName = '工程の接続・並列実行';
     parseGraph(graph, payload.stages);
+    if (
+      payload.stages.some((item) => item.cache?.enabled) &&
+      (!graph || !parsedAutomation.runtime?.revision)
+    )
+      throw new Error('キャッシュにはWorkflow v2と実行環境の版が必要です。');
     const draftProject = { ...project, ...payload };
     promptPreview = buildStagePrompt(
       draftProject,
@@ -255,6 +285,7 @@ export function WorkflowSpecSection({
     setGraph(version.graph);
     setOtherGraphs({});
     setAutomation(projectAutomation({}, version));
+    setPackageRows(editablePackages(version));
     setTestResult(null);
     setTestError('');
     setAcceptance(version.acceptanceCriteria);
@@ -552,6 +583,16 @@ export function WorkflowSpecSection({
             </p>
           )}
         </details>
+        <RuntimeFields
+          value={automation.runtime}
+          pricing={automation.pricing}
+          onRuntime={(runtime) => setAutomation({ ...automation, runtime })}
+          onPricing={(pricing) => setAutomation({ ...automation, pricing })}
+          enabled={Boolean(graph)}
+          rows={packageRows}
+          onRows={setPackageRows}
+          packageError={packageError}
+        />
         <details className="wf-disclosure">
           <summary>
             実行の既定値・ジョブ全体の上限 <ChevronDown size={17} />
@@ -805,6 +846,18 @@ export function WorkflowSpecSection({
                 </label>
                 {stage.map && (
                   <div className="wf-fields">
+                    <label className="wf-wide">
+                      <span>
+                        <input
+                          type="checkbox"
+                          checked={stage.map.isolateInput ?? false}
+                          onChange={(event) =>
+                            update({ map: { ...stage.map!, isolateInput: event.target.checked } })
+                          }
+                        />{' '}
+                        このファイルだけを入力に渡す（ファイル単位の差分解析）
+                      </span>
+                    </label>
                     <label>
                       対象パターン
                       <input
@@ -849,6 +902,39 @@ export function WorkflowSpecSection({
                 </details>
               </>
             )}
+            <fieldset className="wf-cache" disabled={!supportsCache(graph?.mode, stage.runner)}>
+              <legend>結果の再利用</legend>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={
+                    supportsCache(graph?.mode, stage.runner) && Boolean(stage.cache?.enabled)
+                  }
+                  onChange={(e) =>
+                    update({
+                      cache: { enabled: e.target.checked, revision: stage.cache?.revision ?? '' },
+                    })
+                  }
+                />{' '}
+                入力・定義・環境が一致する合格済み出力をキャッシュする
+              </label>
+              <p className="wf-help">
+                時刻・外部サービス・ジョブIDに依存しない処理に使います。環境の版を指定してください。入力契約・出力判定・必要な人間の承認は毎回確認します。
+              </p>
+              {supportsCache(graph?.mode, stage.runner) && stage.cache?.enabled && (
+                <label>
+                  キャッシュの版
+                  <input
+                    maxLength={120}
+                    value={stage.cache.revision}
+                    onChange={(e) =>
+                      update({ cache: { ...stage.cache!, revision: e.target.value } })
+                    }
+                    placeholder="変更すると既存結果を再利用しません"
+                  />
+                </label>
+              )}
+            </fieldset>
             <div className="wf-fields">
               <label>
                 工程名

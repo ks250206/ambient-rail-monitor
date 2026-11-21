@@ -593,3 +593,106 @@
 .schema-fields {
   margin-block: 12px;
 }
+
+.wf-runtime,
+.wf-template,
+.wf-cache,
+.run-metrics {
+  margin-block: 1.25rem;
+  border: 1px solid var(--color-line, #d7dce4);
+  padding: 1rem;
+  border-radius: 0.4rem;
+}
+.wf-runtime summary,
+.run-metrics summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.wf-runtime h3,
+.wf-template h3 {
+  margin: 1rem 0 0.6rem;
+  font-weight: 700;
+}
+.wf-package {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  margin-block: 0.6rem;
+}
+.wf-price-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+  padding: 1rem;
+  border: 1px solid #d7dce4;
+  margin-block: 1rem;
+}
+.wf-template label,
+.wf-runtime label,
+.wf-cache label {
+  display: grid;
+  gap: 0.4rem;
+  margin-block: 0.5rem;
+}
+.wf-cache > label {
+  display: block;
+}
+.wf-template input,
+.wf-template select,
+.wf-runtime input,
+.wf-runtime select,
+.wf-cache input:not([type='checkbox']) {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #b9c2d0;
+  border-radius: 0.25rem;
+  padding: 0.5rem;
+  background: white;
+}
+.wf-template-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+.wf-template-preview {
+  padding: 1rem;
+  background: #f3f6fc;
+  margin-block: 1rem;
+}
+.run-metrics p {
+  margin-block: 0.6rem;
+}
+.run-metrics pre {
+  max-height: 16rem;
+  overflow: auto;
+  font-size: 0.75rem;
+}
+.runtime-table {
+  width: 100%;
+  font-size: 0.8rem;
+  text-align: left;
+}
+.runtime-table th,
+.runtime-table td {
+  border-bottom: 1px solid #d7dce4;
+  padding: 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.run-comparison {
+  margin-top: 1rem;
+}
+.run-comparison label {
+  display: grid;
+  gap: 0.4rem;
+  margin-block: 0.6rem;
+}
+.run-comparison select {
+  border: 1px solid #b9c2d0;
+  padding: 0.5rem;
+  width: 100%;
+}
+.comparison-outputs {
+  max-height: 20rem;
+  overflow: auto;
+}

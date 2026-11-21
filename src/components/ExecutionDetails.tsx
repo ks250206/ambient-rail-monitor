@@ -1,3 +1,4 @@
+import { RunMetrics, RuntimeDetails } from './RunMetrics.tsx';
 import { useQuery } from '@tanstack/react-query';
 import { resolveExecution, RETRY_LABELS } from '../../shared/execution-policy.ts';
 import type { JobStage, WorkflowJob } from '../../shared/types.ts';
@@ -8,6 +9,7 @@ import { ConditionEvidence } from './ConditionBuilder.tsx';
 export function DatasetDetails({ job }: { job: WorkflowJob }) {
   return (
     <div className="dataset-details">
+      <RunMetrics job={job} />
       {job.parentJobId && (
         <p className="wf-help">
           再実行元: <a href={monitorJobHref(job.projectId, job.parentJobId)}>{job.parentJobId}</a>
@@ -77,15 +79,20 @@ export function StageExecutionDetails({
           対象ファイル：<strong>{stage.item.path}</strong>
         </p>
       )}
-      {stage.completion?.mode === 'reused' && (
+      {(stage.completion?.mode === 'reused' || stage.completion?.mode === 'cached') && (
         <p>
-          元ジョブ{' '}
+          {stage.completion.mode === 'cached'
+            ? 'キャッシュで実行を省略。元ジョブ '
+            : 'チェックポイントを再利用。元ジョブ '}
           <a href={monitorJobHref(job.projectId, stage.completion.jobId!)}>
             {stage.completion.jobId}
-          </a>{' '}
-          の試行 {stage.completion.attempt} を再利用しました。
+          </a>
+          {stage.completion.task ? ` (${stage.completion.task})` : ''} の試行{' '}
+          {stage.completion.attempt} を再利用しました。
         </p>
       )}
+      {stage.cache && <p className="wf-help">{stage.cache.reason}</p>}
+      <RuntimeDetails job={job} stage={stage} />
       {stage.output && (
         <details>
           <summary>

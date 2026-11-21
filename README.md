@@ -1,103 +1,210 @@
-# RAILFLOW — Ambient Agent Workflow Observatory
+# RAILFLOW
 
 [日本語](README.ja.md)
 
-A local-first proof of concept for **pull-based Codex / Claude Code scientific-analysis jobs**, styled with the **Institute of Science Tokyo (東京科学大学 / Science Tokyo)** design system and built with **Node.js 26, pnpm 12, Vite+, React 19, TypeScript, and Tailwind CSS v4**.
+RAILFLOW is a local-first workflow runner and execution monitor for analyzing experimental data and reviewing per-stage outputs and execution records. Define an analysis workflow per project, and pull workers process single files, multiple selected files, or entire folders as a single job. It supports Codex CLI and Claude Code CLI, and the UI follows the **Institute of Science Tokyo (Science Tokyo)** design system (Noto Sans JP, Hind, and Science Blue).
 
-![RAILFLOW workflow overview](docs/preview.png)
+> **Note on official logos:** Per the Science Tokyo Design System guidelines, no official university logo ("Science S" or logotype) is fabricated or embedded.
 
-The RAILFLOW header link opens the landing page (`/`). From there, select a project to access its workflow, jobs, and execution monitor.
+![Execution monitor (Workflow v2 DAG connections and cache reuse)](docs/preview.png)
 
-- **Projects (`/projects`)** — create projects, edit their names and descriptions, and find their input and artifact directories. Select a project to open its details, workflow, jobs, and monitor.
-- **Workflow (`/workflow`)** — edit no-code input triggers, per-stage/final acceptance checks, prompts, retry/timeout policies, and variable stage count (add/remove/reorder 1–20 stages), default and per-stage LLM model and reasoning effort (`--model`, `-c model_reasoning_effort` for Codex / `--effort` for Claude), and per-stage custom instructions saved to `data/projects.json` (`GET/POST /api/projects`, `PUT/DELETE /api/projects/:id`).
-- **Jobs (`/jobs`)** — submit directories or multiple files as one dataset, or demo runs and track their status on the board. Select a job to open it in the execution monitor. [Job board](docs/board.png)
-- **Actions / Runs & stage details** — a persistent run-history sidebar with Actions-style vertical step tabs and a single-grid right pane switching between **Summary** (LLM-generated `summary_<stage>.txt` with fallback to final agent output) and **Logs**, plus active/review/failed status filtering, collapsible attempts, timestamps, live durations, search, human review approval, and raw log download. [Step logs](docs/actions.png) · [Review gate](docs/review.png)
-- **Trace explorer & events** — individual execution attempts rendered against elapsed time with Science Tokyo colors and visible status labels, and raw agent events. The artifact viewer opens on the selected job. Compare it with another job in the same project, preview HTML reports, or download presentations.
+## Try the demo
 
-## Tech stack
+Prepare Node.js 26+, pnpm 12, and Python 3. Because the demo worker generates reports with a local Python script, no Codex or Claude authentication is required.
 
-- **Runtime**: Node.js 26+ (native TypeScript execution for `server.ts`, `worker.ts`, and `start-demo.ts`)
-- **Package manager**: pnpm 12 (`packageManager: pnpm@12.21.0`)
-- **Toolchain**: Vite+ (`vite-plus` / `vp` CLI — Vite 8 / Rolldown, Vitest, Oxlint, Oxfmt)
-- **Frontend**: React 19 + TypeScript + Tailwind CSS v4 (`@tailwindcss/vite`)
-- **Design system**: Science Tokyo palette (`#1c3177` Science Blue, `#7f96c2` Sub color, `#435ea5` Navy 700, `#f2f4f9` / `#e8eaf1` surfaces, WCAG 2.1 AA contrast), self-hosted **Noto Sans JP** & **Hind** fonts (`@fontsource/noto-sans-jp`, `@fontsource/hind`)
-
-> **Note on official university logos:** Per the Science Tokyo Design System guidelines, no official university logo ("Science S" / logotype) is fabricated or embedded. Obtain official brand assets from the intranet-only Science Tokyo Design System if needed.
-
-## Quick start (Node.js 26+, pnpm 12+)
-
-```bash
+```sh
 pnpm install
 pnpm run demo
-# Open http://127.0.0.1:4173
-# Click "Demo run" to generate a sample XPS-like CSV and execute six quicklook stages.
-# Select 「デモをレビューで一時停止」 before starting to pause for human review. Shift + click also works.
 ```
 
-For Vite HMR frontend development alongside the local API server:
+1. Open [http://127.0.0.1:4173](http://127.0.0.1:4173) in a browser and open the default project from **Projects**.
+2. On **Jobs**, click **Demo run**. A sample XPS-like CSV is submitted and its execution monitor opens.
+3. Select a stage in **Job details**. **Summary** shows the stage summary, and **Logs** shows per-attempt records. In the default demo, the analysis stage fails once and retries automatically.
+4. Once completed, open `report.html` under **Artifacts**. If `python-pptx` is installed in the demo Python environment, `report.pptx` is also available for download.
 
-```bash
-pnpm run dev:server   # terminal A: HTTP API, inbox watcher, SSE stream on :4173
-pnpm run dev          # terminal B: Vite+ dev server on :5173 (proxies /api and /artifacts)
-pnpm run worker:demo  # terminal C: demo worker (or worker:codex / worker:claude)
+To try human review, check **デモをレビューで一時停止** (pause demo for review) before submitting—or Shift-click **Demo run**. When paused for review, inspect the target stage outputs and then approve to continue. Demo reports are descriptive quicklooks and do not perform scientific XPS peak fitting or peak assignment.
+
+## Projects and templates
+
+From **Projects**, click **New project**, enter a name and description, and create a project. In addition to the default setup, you can start from built-in templates (**CSVの一括点検** / **AI解析と人間の確認**), saved templates, or an external template JSON file. When an external JSON template includes command, Python, or HTTP stages or a custom Python executable path, the UI displays a full preview of the executable contents and requires explicit confirmation before creating the project.
+
+![Project management and versioned template export](docs/projects.png)
+
+Opening a project shows **Project**, **Workflow**, **Jobs**, and **Monitor** in the header. On **Project**, you can edit the project name and description, inspect its inbox and artifact directories, save the current saved workflow as a named and versioned template, or export it as JSON. Saved templates can be deleted from the catalog after confirming their name and revision. Exported and saved templates never include input data, run history, or local storage paths.
+
+## Workflow definition
+
+On **Workflow**, edit acceptance requirements and per-stage settings, then save with **Save definition**. If the same project is updated from another tab while you are editing, your unsaved draft is preserved with a notification letting you either load the latest version or explicitly overwrite. Switching projects or leaving the page with unsaved edits also prompts for confirmation.
+
+![Workflow editor (Workflow v2 DAG and Python stage)](docs/workflow.png)
+
+### Execution models and stage types
+
+Alongside the default legacy sequential model, Workflow v2 supports **sequential** and **dependency-based (DAG)** scheduling. The default 6 stages (ingest/validation, preprocessing/calibration, analysis, scientific validation, visualization, and report generation) can be added, removed, or reordered between 1 and 20 stages.
+
+| Item                             | Details                                                                                                                                         |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Execution models                 | Legacy sequential / Workflow v2 (sequential or DAG, up to 8 parallel tasks)                                                                     |
+| Stage types (v2)                 | AI (worker default, Codex, Claude) / Command / Python / HTTP / Human approval                                                                   |
+| Per-file processing (map)        | Expands matching files into separate tasks; enable isolated input to pass only the matched file                                                 |
+| Input/output file contracts (v2) | Validates file count ranges and JSON schemas per pattern, with readable summaries of all active constraints (numeric bounds, array items, etc.) |
+
+Drafts are preserved when switching between execution models or stage runner kinds. When saving would discard incompatible settings, the UI shows the number of affected stages and the settings to be dropped for confirmation. Model name and reasoning effort are resolved in order: stage setting, project default, then CLI default.
+
+### Inputs and trigger conditions
+
+Under **Inputs and trigger conditions**, choose the watched inbox unit (individual files, immediate subdirectories, or both) and the quiet wait time (default 1.5s). Build nested **AND**, **OR**, and **NOT** condition groups comparing file presence, file count, total bytes, text contents, typed JSON values, dataset name, and quiet time.
+
+`*.csv` matches files in the top level, while `**/*.csv` includes subdirectories. JSON keys such as `quality.score` distinguish strings, numbers, and booleans. Missing keys, malformed JSON, and type mismatches evaluate to _unknown_, and **NOT** does not convert _unknown_ into pass. An **OR** group passes if another branch passes, while retaining the full evaluation breakdown.
+
+Use **Test unsaved conditions** to evaluate the condition against real watched inputs without creating a job. Waiting or unknown reasons appear in the inbox status panel on **Jobs**. Manual uploads treat completed transfer as quiet and evaluate all other trigger conditions; only **Demo run** skips trigger checks.
+
+### Stage gates, retries, and timeouts
+
+Project-wide and per-stage acceptance requirements are plain-text instructions passed to agents. Stage automatic gates and final publication gates are evaluated by the server against output files after execution (text and JSON checks apply to regular files up to 2 MiB). Exit code 0 alone does not pass a failing or unknown automatic gate.
+
+Configure project defaults under **Execution defaults**, and toggle per-stage overrides to customize individual stages.
+
+| Setting                 | Meaning and default                                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Additional retries      | Retries added after the first attempt (`0` = 1 attempt total, `2` = up to 3 attempts). Default `1`, max `10` |
+| Per-attempt timeout     | Default `1500`s (25 min). `0` removes the limit                                                              |
+| Cumulative stage limit  | Sum of all attempts and retry waits for a stage. Default `0` (unlimited)                                     |
+| Cumulative job limit    | Cumulative active time across stages. Default `0` (unlimited)                                                |
+| Retry delay and backoff | Default `0.5`s fixed. Exponential backoff available up to 1 hour                                             |
+| Retryable failures      | Choose among execution error, attempt timeout, and acceptance gate failure                                   |
+| On retry exhaustion     | Stop the job as failed, or wait for human review                                                             |
+
+Active stage and job budgets include workspace preparation, CLI execution, gate evaluation, pre-publication report checks, and retry waits; they exclude intake, queue wait, human review wait, and post-approval publication copies. On timeout, the process group is terminated and reaped before retrying. Failed attempt outputs are isolated so retries always start from the last accepted checkpoint. Deterministic failures (such as template syntax errors or tampered input snapshots) stop immediately without retrying.
+
+### Prompt variables, runtime environment, and caching
+
+Common prompts, stage instructions, and acceptance requirements support variables such as `{{dataset.name}}`, `{{input.count}}`, `{{input.directory}}`, `{{input.manifest}}`, and `{{retry.reason}}`. Check available variables and rendered previews in **Prompt variables & preview**; the exact prompt sent at runtime is also recorded in the monitor.
+
+Under runtime environment settings, declare an existing virtualenv Python path, expected Node / Python / AI CLI versions, and pinned Python package versions. Mismatches or missing metadata are caught before running code; RAILFLOW does not automatically provision environments.
+
+Result caching is opt-in per stage. When inputs, workflow definition, and observed runtime match a previously accepted run, outputs are hash-verified and restored, while current acceptance gates and any required human approvals still run every time. Enabling isolated input on map stages allows incremental processing by reusing unchanged file results.
+
+## Submitting jobs and queue controls
+
+On **Jobs**, select or drop multiple files or folders to submit one dataset as one job, preserving relative paths (such as `sample_A/data.csv` and `sample_B/data.csv`). Limits are 1,000 files, 20 MiB per file, 200 MiB total, and 12 directory levels. Symlinks, hard links, and parent directory traversal are rejected. If a second file selection or drop fails validation, the previously valid selection and dataset name are preserved.
+
+![Jobs board with intake, queue status, and four status columns](docs/board.png)
+
+Jobs are organized into four columns: **Queued / Paused**, **Running**, **Needs approval**, and **Completed** (displaying separate counts for succeeded, failed, and cancelled runs), with a direct jump link to **Needs approval** at the top of the page. Search matches dataset name, included relative file paths, job ID, agent name, or worker ID, including collapsed cards.
+
+Input manifests and workflow definitions are snapshotted at job creation, so later workflow edits never alter queued or review-waiting runs. Unchanged watched inbox inputs are deduplicated across restarts, while manual uploads always enqueue a new run.
+
+### Queue settings and execution controls
+
+The **Queue** panel configures global concurrency (`1–32`), per-worker limit (`1–16`), and automatic recovery limit (`0–20`). Per-job priority (`-100–100`), pause/resume, and confirmed **Cancel job** controls are available directly in the UI. For stopped Workflow v2 jobs, you can selectively rerun a chosen task and its downstream dependents as a new job—recomputing selected tasks without cache while keeping the original job and history intact.
+
+### Starting Codex / Claude Code workers
+
+Install and authenticate the CLI you plan to use in the same terminal. Stop the demo if running (`Ctrl+C`), build the frontend, and start the server:
+
+```sh
+pnpm run build
+pnpm start
 ```
 
-## Scripts
+Start a worker in another terminal:
 
-```bash
-pnpm run dev          # Start Vite+ dev server (vp dev)
-pnpm run build        # Production frontend build into dist/ (vp build)
-pnpm run start        # Run HTTP server serving dist/ and API (node server.ts)
-pnpm run demo         # Build frontend and launch server + demo worker
-pnpm run worker:demo  # Run demo pull worker
-pnpm run worker:codex # Run Codex CLI pull worker
-pnpm run worker:claude# Run Claude Code CLI pull worker
-pnpm run check        # Format, lint, and type check (vp check)
-pnpm run test         # Run Vitest suite (vp test run)
+| CLI             | Command                  |
+| --------------- | ------------------------ |
+| Codex CLI       | `pnpm run worker:codex`  |
+| Claude Code CLI | `pnpm run worker:claude` |
+
+Use `RAILFLOW_PROJECT=xps pnpm run worker:codex` to scope a worker to one project, and pass `--concurrency=2` (`1–16`) for parallel job slots. Running the demo worker alongside a CLI worker may cause the demo worker to claim jobs first.
+
+## Execution monitor, review approval, and provenance
+
+The left sidebar lists run history for the selected project; picking another run switches details, traces, events, and artifacts together.
+
+### Human review approval
+
+Enabling per-stage review or final pre-publication review pauses the stage in **Needs approval**. Even while sibling branches are still running in Workflow v2, review-waiting tasks are counted under **Needs approval** and can be opened directly from the top button or DAG graph cards.
+
+![Human review approval view with stage summary and outputs](docs/review.png)
+
+Inspect the attempt's output files from stage details before approving. Approvals are bound to a specific stage, attempt, and review sequence so an approval cannot carry over to another stage. When failure handling is set to wait for human review, failed gate results remain visible while allowing an explicit exception approval. Stage/job timeouts and worker interruptions cannot be exception-approved.
+
+### Logs, traces, usage, and artifact comparison
+
+Switch between **Summary** and **Logs** per stage under **Job details**. **Logs** supports collapsible attempts, timestamps, line filtering, and full-job log downloads.
+
+![Stage logs and retry attempt history](docs/actions.png)
+
+| What to inspect                          | Where to open                                                                          |
+| ---------------------------------------- | -------------------------------------------------------------------------------------- |
+| Stage summary and gate checks            | Select a stage in **Job details** → **Summary**                                        |
+| Per-attempt logs and failure cause       | **Job details** → **Logs** (expand attempts, filter, or download)                      |
+| Token usage, estimated cost, cache reuse | **Job details** → **Usage & provenance** (compare runs or export provenance JSON)      |
+| Stage timing breakdown                   | **Trace** tab                                                                          |
+| Chronological event log                  | **Events** tab                                                                         |
+| Artifact preview and run comparison      | **Artifacts** tab → **Single view** or **Compare jobs** (HTML preview / PPTX download) |
+
+**Usage & provenance** reports collected tokens (including retries), rate-table cost estimates with coverage scope, and cache/checkpoint reuse counts. Missing usage or unconfigured rates are never treated as zero. The run comparison table shows per-task output hashes, durations, and cost coverage by stage label and relative file path.
+
+## Data storage layout
+
+Paths are relative to the repository root unless `RAILFLOW_HOME` is set when starting the server.
+
+| Path                                                               | Contents                                                                                                                                    |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `data/projects.json`                                               | Project settings and workflow definitions (partially unreadable files are backed up to `.corrupt-<ts>` while preserving unreadable entries) |
+| `data/journal.sqlite`                                              | SQLite database for event journal, lease state, queue settings, and saved templates                                                         |
+| `data/events.jsonl`                                                | Event log exported from the SQLite journal                                                                                                  |
+| `data/cache/`                                                      | Verified stage output cache (pruned oldest-first beyond 512 MiB / 256 entries)                                                              |
+| `data/inputs/<job-id>/`                                            | Input dataset snapshot taken at job creation (preserving relative paths)                                                                    |
+| `data/manifests/<job-id>.json`                                     | Relative paths, byte sizes, and SHA-256 hashes of all inputs                                                                                |
+| `projects/<project-id>/inbox/`                                     | Watched inbox directory                                                                                                                     |
+| `projects/<project-id>/work/<job-id>/.attempts/<stage>/<attempt>/` | Isolated per-attempt workspace                                                                                                              |
+| `projects/<project-id>/artifacts/<job-id>/`                        | Published reports after final stage and required reviews                                                                                    |
+
+## Development and configuration
+
+The frontend uses React 19, TypeScript, TanStack Query, Tailwind CSS v4, and the Vite+ (`vp`) toolchain. Job updates stream from the server over SSE.
+
+For live frontend development alongside the API server, run in separate terminals and open [http://127.0.0.1:5173](http://127.0.0.1:5173):
+
+```sh
+pnpm run dev:server   # API server, inbox watcher, SSE (:4173)
+pnpm run dev          # Vite+ dev server (:5173, proxies /api and /artifacts)
+pnpm run worker:demo  # Demo worker (or worker:codex / worker:claude)
 ```
 
-The demo worker creates a genuine `report.html` (styled with the Science Tokyo palette) and, if `python-pptx` is installed, a `report.pptx` using Yu Gothic. For a multi-file dataset it produces an HTML inventory and independent CSV/TSV quicklooks, without combining unrelated traces. It simulates a retry at the analysis stage to exercise the failure rail. **This is descriptive demo data processing, not a scientific XPS peak-fitting or peak assignment.**
+### Common commands
 
-The Codex and Claude workers write intermediate files and final reports in isolated `projects/<project-id>/work/<run-id>/.attempts/<stage>/<attempt>/` directories. Each attempt inherits only the last accepted checkpoint; failed output never contaminates a retry. After the final stage and any required approval, the worker copies the finished reports into `projects/<project-id>/artifacts/<run-id>/` and registers them in the dashboard. The agent only needs write access to its workspace.
-
-## Datasets, conditions and execution policies
-
-Use **Jobs → select multiple files / select a folder**, or drop a folder into the intake area. Review the relative paths, then submit one dataset as one job. Uploads are staged until every declared file has arrived; interrupted transfers cannot create partial jobs. Limits are 1000 files, 20 MiB per file, 200 MiB total, and 12 path levels. The watched inbox can process individual files, each immediate subdirectory recursively, or both.
-
-**Workflow** provides a shared no-code condition builder for input triggers, each stage's output gate, and the final publication gate. Nest AND/OR groups and NOT, compare file presence/count/bytes, text contents, typed JSON fields, dataset names, and (for triggers) quiet time. Missing or malformed evidence is a third state, _unknown_, and NOT does not turn it into success. An OR with a passing alternative passes; the full evidence tree is retained. Try an unsaved trigger against a watched dataset without creating a job.
-
-Project defaults and per-stage overrides control **additional retries**, retryable failure kinds, fixed/exponential delay, per-attempt timeout, cumulative stage budget, and stop/review behavior. A separate cumulative job budget applies across stages. Zero retries means one total attempt. Zero timeout removes that limit, while narrower parent limits still apply. Queue and review wait do not consume the active budget. Process groups are terminated before retrying; a timeout stays a failure even if the process exits zero after TERM.
-
-Plain-text acceptance requirements are agent instructions. Automatic gates are evaluated by the server after execution; CLI exit code zero alone does not pass a configured gate. Review approval is tied to a specific stage, attempt and review event. Review outputs can be inspected before approval, and no report is published until all stages and the final gate have passed or been explicitly approved. Failed checks remain visible after an exception approval.
-
-Prompts support named variables and a preview generated by the same builder used by the worker. Every new job snapshots its dataset manifest and complete workflow definition, so edits affect future jobs and cannot change a queued or reviewed run. Unchanged watched datasets are deduplicated across restarts; manual uploads can intentionally repeat a run.
-
-See the [Japanese user guide](README.ja.md) and [schema, semantics, and API examples](docs/workflow-policies.md). Worker recovery and queue controls are described in [execution and recovery](docs/reliable-execution.md).
-
-## File structure
-
-```text
-index.html           Vite HTML entry point
-vite.config.ts       Vite+ unified config (React, Tailwind CSS v4, proxy, lint, fmt, test)
-shared/types.ts      Shared TypeScript event/job domain types
-src/                 React + TypeScript + Tailwind CSS dashboard UI
-server.ts            fs.watch, job queue API, SQLite journal, SSE, static dist/ server
-worker.ts            Pull worker (demo / Codex / Claude adapters)
-start-demo.ts        Launches server.ts + demo worker
-scripts/             Science Tokyo-styled quicklook HTML/PPTX report generator
-tests/               Vitest API, event-replay, and helper tests
+```sh
+pnpm run check   # Format, lint, and type check (vp check)
+pnpm run test    # Run Vitest suite (vp test run)
+pnpm run build   # Production frontend build into dist/
+pnpm run start   # Serve dist/ and API in production mode
 ```
 
-Set `PORT`, `HOST`, `RAILFLOW_HOME`, `RAILFLOW_URL`, `RAILFLOW_AGENT_TIMEOUT_MS`, and `RAILFLOW_PYTHON` for deployment differences. The demo is designed for **localhost only** (default bind `127.0.0.1`), and has **no authentication**. As a DNS-rebinding guard the API only accepts `localhost`, `127.0.0.1`, `::1` and a concrete `HOST` bind address as the `Host` header. When binding `HOST=0.0.0.0` for remote workers or browsers, list the names or IPs they connect with in `RAILFLOW_ALLOWED_HOSTS` (comma-separated, no wildcards), and expose the port only on a trusted network.
+### Environment variables and security notes
 
-### Reliable execution
+| Variable                    | Purpose and default                                                                                                   |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `HOST` / `PORT`             | API server bind address. Default `127.0.0.1:4173`                                                                     |
+| `RAILFLOW_ALLOWED_HOSTS`    | Allowed `Host` header values when accepting remote connections such as `HOST=0.0.0.0` (comma-separated, no wildcards) |
+| `RAILFLOW_HOME`             | Root directory for data and project folders. Default repository root                                                  |
+| `RAILFLOW_URL`              | API URL used by workers and the Vite dev proxy. Default `http://127.0.0.1:4173`                                       |
+| `RAILFLOW_PROJECT`          | Scope a worker to a single project ID. Default all projects                                                           |
+| `RAILFLOW_AGENT_TIMEOUT_MS` | Optional additional execution timeout cap in milliseconds (minimum of this and workflow setting applies)              |
+| `RAILFLOW_PYTHON`           | Default Python executable for demo reports and Python stages. Default `python3`                                       |
+| `RAILFLOW_ALLOW_LOCAL_EXEC` | Set to `1` to allow command, Python, HTTP, and external AI stages under `--mode=demo` (blocked by default)            |
 
-The monitor supports pause/resume/cancel, queue priorities, concurrency limits,
-and lease-based recovery from worker failure. See [execution and recovery](docs/reliable-execution.md)
-for the protocol, SQLite journal migration and configuration.
+RAILFLOW has no authentication and is designed for local use by default. The API validates `Host`, `Origin`, `Sec-Fetch-Site`, and `Content-Type` against DNS rebinding and CSRF, and HTTP stages block link-local/metadata IPs and Railflow's own API port. If you bind `HOST=0.0.0.0` on a trusted network, list the allowed hostnames or IPs in `RAILFLOW_ALLOWED_HOSTS`.
 
-### Workflow Engine v2
+## Compatibility and specifications
 
-Opt into sequential or DAG scheduling, parallel file maps, explicit AI/command/Python/HTTP/human stages,
-input/output contracts and selective reruns. Existing jobs retain their frozen execution model.
-See [workflow engine](docs/workflow-engine.md) for configuration and examples.
+Existing project definitions automatically receive defaults for new fields, and legacy event formats and single-file APIs remain readable. If a running worker crashes or is forcibly terminated, its lease expires and the server automatically recovers the job while keeping accepted stages (counting against the recovery budget). Planned `SIGINT` / `SIGTERM` stops interrupt the active attempt and requeue the job without spending the recovery budget.
+
+Detailed specifications, API schemas, and constraints are documented in:
+
+- [Workflow policies, conditions, and execution limits](docs/workflow-policies.md)
+- [Execution recovery, leases, and queue controls](docs/reliable-execution.md)
+- [Workflow Engine v2 (DAG, contracts, selective reruns)](docs/workflow-engine.md)
+- [Reusable templates, caching, and provenance](docs/reusable-pipelines.md)

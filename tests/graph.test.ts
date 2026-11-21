@@ -253,7 +253,7 @@ it('does not roll completed tasks back when an older status response arrives lat
       if (snapshot.job.stages[0].status === 'running' && !delayed) {
         delayed = true;
         await expect
-          .poll(async () => (await f.job(snapshot.job.id)).stages[0].status)
+          .poll(async () => (await f.job(snapshot.job.id)).stages[0].status, { timeout: 5000 })
           .toBe('success');
       }
     }

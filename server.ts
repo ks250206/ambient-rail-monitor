@@ -58,7 +58,19 @@ import {
   verifyOutput,
   copyOutput,
   verifyTaskInputs,
+  verifyMapInput,
 } from './shared/task-files.ts';
+import {
+  exportTemplate,
+  parseWorkflowTemplate,
+  templateOrigin,
+  type WorkflowTemplate,
+} from './shared/templates.ts';
+import { STARTER_WORKFLOWS } from './shared/starter-templates.ts';
+import { ResultCache, cacheIdentity } from './shared/result-cache.ts';
+import { parseRuntime, runtimeIssues } from './shared/reuse.ts';
+import { parseRuntimeSnapshot } from './shared/runtime-environment.ts';
+import { priceUsage, usageSummary } from './shared/usage.ts';
 import { Journal, type Lease } from './shared/journal.ts';
 import { DEFAULT_QUEUE, parseQueue, parsePriority, type QueueSettings } from './shared/queue.ts';
 
@@ -96,6 +108,7 @@ for (const dir of [LEGACY_INBOX, DATA, LEGACY_ARTIFACTS, LEGACY_WORK, PROJECTS_R
 }
 
 const journal = new Journal(path.join(DATA, 'journal.sqlite'), EVENTS);
+const resultCache = new ResultCache(path.join(DATA, 'cache'));
 let queueSettings = journal.setting<QueueSettings>('queue') ?? DEFAULT_QUEUE;
 const leaseMs = Math.max(1000, Math.min(300_000, Number(process.env.RAILFLOW_LEASE_MS) || 30_000));
 
@@ -166,6 +179,8 @@ const DEFAULT_ACCEPTANCE = [
 const WORKER_EVENT_TYPES = new Set<WorkerEventType>([
   'stage.started',
   'stage.executed',
+  'stage.environment',
+  'stage.usage',
   'gate.evaluated',
   'stage.progress',
   'stage.succeeded',
@@ -338,7 +353,7 @@ function buildProjectSpec(
   id: string,
   raw: Record<string, unknown>,
   existing?: ProjectSpec,
-  options: { strictTemplates?: boolean } = {},
+  options: { strictTemplates?: boolean; prepareDirs?: boolean } = {},
 ): ProjectSpec {
   // A project timestamp also identifies its revision, including back-to-back saves.
   const previousTime = Date.parse(existing?.updatedAt ?? '') || 0;
@@ -362,6 +377,24 @@ function buildProjectSpec(
     )
       throw new Error('工程の種類・map・入出力契約を使うにはWorkflow v2を有効にしてください。');
     automation = projectAutomation(raw, existing);
+    if (stages.some((stage) => stage.cache?.enabled)) {
+      if (!graph || !automation.runtime?.revision)
+        throw new Error('キャッシュにはWorkflow v2と実行環境の版が必要です。');
+      if (
+        stages.some(
+          (stage) => stage.cache?.enabled && ['human', 'http'].includes(stage.runner?.kind ?? 'ai'),
+        )
+      )
+        throw new Error('承認・HTTP工程はキャッシュ対象外です。');
+    }
+    if (
+      !graph &&
+      (automation.runtime?.python ||
+        automation.runtime?.revision ||
+        Object.keys(automation.runtime?.expected ?? {}).length ||
+        Object.keys(automation.runtime?.packages ?? {}).length)
+    )
+      throw new Error('実行環境の固定にはWorkflow v2が必要です。');
     if (options.strictTemplates !== false) {
       validateTemplate(automation.prompt ?? '');
       for (const stage of stages) {
@@ -378,7 +411,7 @@ function buildProjectSpec(
   } catch (error) {
     throw new HttpError(400, (error as Error).message);
   }
-  ensureProjectDirs(id);
+  if (options.prepareDirs !== false) ensureProjectDirs(id);
 
   return {
     id,
@@ -404,6 +437,7 @@ function buildProjectSpec(
     updatedAt: now,
     ...automation,
     graph,
+    templateOrigin: existing?.templateOrigin ?? validate(() => templateOrigin(raw.templateOrigin)),
   };
 }
 
@@ -637,6 +671,8 @@ function rebuild(event: WorkflowEvent): void {
   if (step && event.workspace) step.workspace = event.workspace;
   if (step && event.output) step.output = event.output;
   if (step && event.completion) step.completion = event.completion;
+  if (step && event.runtime) step.runtime = event.runtime;
+  if (step && event.cache) step.cache = event.cache;
   if (step && event.failureKind) step.failureKind = event.failureKind;
 
   switch (event.type) {
@@ -653,6 +689,10 @@ function rebuild(event: WorkflowEvent): void {
         step.startedAt = event.at;
         step.endedAt = null;
         step.gates = [];
+        step.runtime = undefined;
+        step.cache = undefined;
+        step.output = undefined;
+        step.completion = undefined;
         step.failureKind = undefined;
         step.retryAt = undefined;
         step.reviewSequence = undefined;
@@ -754,6 +794,10 @@ function rebuild(event: WorkflowEvent): void {
         step.endedAt = event.at;
         step.failureKind = 'interrupted';
         step.gates = [];
+        step.runtime = undefined;
+        step.cache = undefined;
+        step.output = undefined;
+        step.completion = undefined;
         step.reviewSequence = undefined;
         step.deadlineAt = undefined;
         step.workspace = undefined;
@@ -1618,6 +1662,8 @@ interface EventRequestBody {
   deadlineAt?: unknown;
   leaseToken?: unknown;
   requestId?: unknown;
+  runtime?: unknown;
+  usage?: unknown;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -1658,12 +1704,106 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (pathname === '/api/templates' && req.method === 'GET') {
+      const builtins = STARTER_WORKFLOWS.map((raw) =>
+        exportTemplate(
+          buildProjectSpec('template', raw, undefined, { prepareDirs: false }),
+          raw.name,
+          '1',
+        ),
+      );
+      return deliverJSON(res, {
+        builtins,
+        saved: journal.setting<WorkflowTemplate[]>('templates') ?? [],
+      });
+    }
+    if (pathname === '/api/templates/validate' && req.method === 'POST') {
+      const body = await readJSON(req, 4_000_000);
+      const template = validate(() => parseWorkflowTemplate(body.template));
+      const project = buildProjectSpec('preview', { ...template.definition }, undefined, {
+        prepareDirs: false,
+      });
+      return deliverJSON(res, {
+        template,
+        preview: {
+          stages: project.stages.length,
+          graph: project.graph,
+          runtime: project.runtime,
+          kinds: [...new Set(project.stages.map((stage) => stage.runner?.kind ?? 'ai'))],
+        },
+      });
+    }
+    if (pathname === '/api/templates' && req.method === 'POST') {
+      const body = await readJSON(req);
+      const project = projects.get(asString(body.projectId));
+      if (!project) throw new HttpError(404, 'Project not found');
+      const template = validate(() =>
+        exportTemplate(project, asString(body.name) || project.name, asString(body.revision)),
+      );
+      const saved = journal.setting<WorkflowTemplate[]>('templates') ?? [];
+      const existing = saved.find(
+        (entry) =>
+          entry.template.name === template.template.name &&
+          entry.template.revision === template.template.revision,
+      );
+      if (existing && existing.template.hash !== template.template.hash)
+        throw new HttpError(
+          409,
+          '同名・同版のテンプレートがあります。新しい版を指定してください。',
+        );
+      if (!existing) {
+        if (saved.length >= 30) throw new HttpError(400, '保存できるテンプレートは30件です。');
+        saved.push(template);
+        journal.setSetting('templates', saved);
+      }
+      return deliverJSON(res, { template }, existing ? 200 : 201);
+    }
+    if (pathname === '/api/templates' && req.method === 'DELETE') {
+      const body = await readJSON(req);
+      const saved = journal.setting<WorkflowTemplate[]>('templates') ?? [];
+      journal.setSetting(
+        'templates',
+        saved.filter(
+          (entry) =>
+            !(
+              entry.template.name === body.name &&
+              entry.template.revision === body.revision &&
+              entry.template.hash === body.hash
+            ),
+        ),
+      );
+      return deliverJSON(res, { ok: true });
+    }
+    const templateMatch = pathname.match(/^\/api\/projects\/([a-z0-9_-]+)\/template$/);
+    if (templateMatch && req.method === 'GET') {
+      const project = projects.get(templateMatch[1]);
+      if (!project) throw new HttpError(404, 'Project not found');
+      const template = validate(() =>
+        exportTemplate(
+          project,
+          url.searchParams.get('name') || project.name,
+          url.searchParams.get('revision') || '1',
+        ),
+      );
+      res.setHeader('content-disposition', `attachment; filename="${project.id}-workflow.json"`);
+      return deliverJSON(res, template);
+    }
     if (pathname === '/api/projects' && req.method === 'GET') {
       return deliverJSON(res, { projects: [...projects.values()] });
     }
 
     if (pathname === '/api/projects' && req.method === 'POST') {
-      const raw = await readJSON(req, 4_000_000);
+      let raw = await readJSON(req, 4_000_000);
+      if (raw.template !== undefined) {
+        const template = validate(() => parseWorkflowTemplate(raw.template));
+        raw = {
+          ...template.definition,
+          name: raw.name,
+          purpose: raw.purpose ?? template.definition.purpose,
+          id: raw.id,
+          templateOrigin: template.template,
+        };
+      }
       const rawName = asString(raw.name || raw.title).trim();
       if (!rawName) {
         return deliverJSON(res, { error: 'Project name is required' }, 400);
@@ -2011,7 +2151,17 @@ const server = http.createServer(async (req, res) => {
         .filter(
           (item) =>
             item.status === 'queued' &&
-            (item.workflow?.version !== 2 || body.protocol === 2) &&
+            (item.workflow?.version !== 2 || body.protocol === 2 || body.protocol === 3) &&
+            (!item.workflow?.project.runtime?.revision || body.protocol === 3) &&
+            (!item.workflow?.project.stages.some((stage) => stage.cache?.enabled) ||
+              body.protocol === 3) &&
+            (!Object.keys(item.workflow?.project.runtime?.expected ?? {}).length ||
+              body.protocol === 3) &&
+            (!Object.keys(item.workflow?.project.runtime?.packages ?? {}).length ||
+              body.protocol === 3) &&
+            (!item.workflow?.project.runtime?.python || body.protocol === 3) &&
+            (!item.workflow?.project.stages.some((stage) => stage.map?.isolateInput) ||
+              body.protocol === 3) &&
             (!requestedProject || item.projectId === requestedProject) &&
             leases.filter((lease) => jobs.get(lease.jobId)?.projectId === item.projectId).length <
               (projects.get(item.projectId)?.queue?.maxConcurrentJobs ?? 4),
@@ -2075,6 +2225,73 @@ const server = http.createServer(async (req, res) => {
       const job = jobs.get(jobMatch[1]);
       if (!job) throw new HttpError(404, 'Job not found');
       return deliverJSON(res, { job });
+    }
+    const provenanceMatch = pathname.match(/^\/api\/jobs\/(run_[a-f0-9]{8})\/provenance$/);
+    if (provenanceMatch && req.method === 'GET') {
+      const job = jobs.get(provenanceMatch[1]);
+      if (!job) throw new HttpError(404, 'Job not found');
+      res.setHeader('content-disposition', `attachment; filename="${job.id}-provenance.json"`);
+      return deliverJSON(res, {
+        format: 'railflow.provenance',
+        formatVersion: 1,
+        exportedAt: new Date().toISOString(),
+        complete: ['done', 'failed', 'cancelled'].includes(job.status),
+        asOfSequence: job.events.at(-1)?.sequence ?? 0,
+        job,
+        metrics: usageSummary(job),
+      });
+    }
+    const cacheMatch = pathname.match(/^\/api\/jobs\/(run_[a-f0-9]{8})\/cache$/);
+    if (cacheMatch && req.method === 'POST') {
+      const body = await readJSON(req);
+      const job = jobs.get(cacheMatch[1]);
+      if (!job || job.workflow?.version !== 2) throw new HttpError(404, 'v2 job not found');
+      const lease = requireLease(job, body.leaseToken);
+      const task = job.stages.find((task) => task.key === body.task);
+      if (
+        job.status !== 'running' ||
+        !task ||
+        task.status !== 'running' ||
+        task.attempts !== body.attempt ||
+        !task.workspace ||
+        !task.runtime ||
+        !task.gates?.some((gate) => gate.scope === 'input' && gate.result.status === 'pass')
+      )
+        throw new HttpError(409, '入力と環境を確認した実行中の試行が必要です。');
+      const previous = job.events.findLast(
+        (event) =>
+          event.type === 'stage.cache' &&
+          event.stage === task.key &&
+          event.attempt === task.attempts,
+      );
+      if (previous) return deliverJSON(res, { event: previous });
+      const identity = cacheIdentity(job, task);
+      const work = path.join(jobWorkspace(job), task.workspace);
+      if (ownOutputs(work).files.length)
+        throw new HttpError(409, 'キャッシュは処理開始前にだけ検索できます。');
+      const entry = identity.key ? resultCache.restore(job.projectId, identity.key, work) : null;
+      requireLease(job, lease.token);
+      const event = appendEvent({
+        type: 'stage.cache',
+        jobId: job.id,
+        projectId: job.projectId,
+        stage: task.key,
+        attempt: task.attempts,
+        cache: {
+          key: identity.key,
+          hit: !!entry,
+          reason: entry
+            ? '入力・定義・環境が一致する出力を検証して復元'
+            : identity.key
+              ? '一致する検証済みキャッシュがないため実行'
+              : identity.reason,
+        },
+        completion: entry ? { mode: 'cached', ...entry.origin } : undefined,
+        message: entry
+          ? 'キャッシュの出力を復元（受け入れ判定は継続）'
+          : 'キャッシュを使わず実行します。',
+      });
+      return deliverJSON(res, { event });
     }
     const rerunMatch = pathname.match(/^\/api\/jobs\/(run_[a-f0-9]{8})\/rerun$/);
     if (rerunMatch && req.method === 'POST') {
@@ -2339,6 +2556,9 @@ const server = http.createServer(async (req, res) => {
         input.type === 'review.required' ||
         input.type === 'agent.event';
       if (job.status !== 'running') throw new HttpError(409, 'このジョブは実行中ではありません。');
+      if (!job.workflow && step && stageEvent) {
+        extras.attempt = input.type === 'stage.started' ? step.attempts + 1 : step.attempts;
+      }
       if (job.workflow) {
         if (stageEvent && !step) throw new HttpError(400, '工程を指定してください。');
         if (step && stageEvent) {
@@ -2465,6 +2685,47 @@ const server = http.createServer(async (req, res) => {
         if (input.type === 'job.completed' && !job.artifacts.length)
           throw new HttpError(409, '最終成果物がありません。');
       }
+      if (input.type === 'stage.environment') {
+        if (!step || step.runtime)
+          throw new HttpError(409, '環境は試行ごとに一度だけ記録できます。');
+        const snapshot = validate(() => parseRuntimeSnapshot(input.runtime));
+        const runner = spec?.runner ?? { kind: 'ai', engine: 'worker' };
+        const engine =
+          runner.kind === 'ai'
+            ? runner.engine === 'worker'
+              ? job.agent
+              : runner.engine
+            : runner.kind;
+        if (snapshot.engine !== engine)
+          throw new HttpError(400, '実行環境のエンジンが工程と一致しません。');
+        snapshot.revision = job.workflow?.project.runtime?.revision ?? '';
+        snapshot.issues = runtimeIssues(parseRuntime(job.workflow?.project.runtime), snapshot);
+        extras.runtime = snapshot;
+      }
+      if (input.type === 'stage.usage') {
+        if (
+          job.events.some(
+            (event) =>
+              event.type === 'stage.usage' &&
+              event.stage === step?.key &&
+              event.attempt === step?.attempts,
+          )
+        )
+          throw new HttpError(409, 'この試行の使用量は記録済みです。');
+        extras.usage = validate(() => priceUsage(input.usage, job.workflow?.project.pricing ?? []));
+      }
+      if (
+        job.workflow?.version === 2 &&
+        step &&
+        ['stage.executed', 'stage.succeeded'].includes(input.type) &&
+        (((!!job.workflow.project.runtime?.revision ||
+          !!job.workflow.project.runtime?.python ||
+          Object.keys(job.workflow.project.runtime?.expected ?? {}).length > 0 ||
+          Object.keys(job.workflow.project.runtime?.packages ?? {}).length > 0) &&
+          !step.runtime) ||
+          !!step.runtime?.issues.length)
+      )
+        throw new HttpError(409, '実行環境の要件が一致していません。');
       if (input.workspace !== undefined) {
         const relative = asString(input.workspace);
         if (
@@ -2539,6 +2800,7 @@ const server = http.createServer(async (req, res) => {
             if (
               job.workflow.version === 2 &&
               (!verifyTaskInputs(job, step, work) ||
+                (spec?.map?.isolateInput && !verifyMapInput(job, step, work)) ||
                 (job.dataset && !verifyDataset(path.join(DATA, 'inputs', job.id), job.dataset)))
             )
               throw new Error('入力または依存出力が変更されています。');
@@ -2592,7 +2854,8 @@ const server = http.createServer(async (req, res) => {
         if (!step.workspace) throw new HttpError(400, '作業場所がありません。');
         const list = ownOutputs(path.join(jobWorkspace(job), step.workspace));
         extras.output = outputManifest(list);
-        extras.completion = { mode: 'executed' };
+        extras.completion =
+          step.completion?.mode === 'cached' ? step.completion : { mode: 'executed' };
       }
 
       let artifact: ArtifactInfo | undefined;
@@ -2687,6 +2950,13 @@ const server = http.createServer(async (req, res) => {
       ) {
         cleanupPublication(job, lease.token);
       }
+      if (input.type === 'stage.succeeded' && step) {
+        try {
+          resultCache.store(job, step, jobWorkspace(job));
+        } catch (cacheErr) {
+          console.warn('Result cache store failed:', cacheErr);
+        }
+      }
       return deliverJSON(res, { ok: true, event });
     }
 
@@ -2759,6 +3029,13 @@ const server = http.createServer(async (req, res) => {
           ? '人間が失敗内容を確認し、この試行の出力を例外承認'
           : '人間がこの工程・試行のレビューを承認',
       });
+      if (step) {
+        try {
+          resultCache.store(job, step, jobWorkspace(job));
+        } catch (cacheErr) {
+          console.warn('Result cache store failed:', cacheErr);
+        }
+      }
       return deliverJSON(res, { ok: true });
     }
 

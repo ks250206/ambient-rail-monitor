@@ -48,7 +48,12 @@ export async function workflowFixture(existingHome?: string, env: Record<string,
     return job(id);
   }
   function worker(script: string, workerEnv: Record<string, string> = {}) {
-    writeFileSync(path.join(home, 'codex'), '#!/usr/bin/env node\n' + script, { mode: 0o755 });
+    writeFileSync(
+      path.join(home, 'codex'),
+      '#!/usr/bin/env node\nif(process.argv.includes("--version")){console.log("codex-cli 1.2.3");process.exit(0); }\n' +
+        script,
+      { mode: 0o755 },
+    );
     const child = spawn(process.execPath, ['worker.ts', '--mode=codex'], {
       env: {
         ...process.env,

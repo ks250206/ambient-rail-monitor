@@ -26,7 +26,7 @@ export interface GraphSpec {
 export interface StageGraph {
   runner?: StageRunner;
   dependsOn?: string[];
-  map?: { pattern: string; maxItems: number } | null;
+  map?: { pattern: string; maxItems: number; isolateInput?: boolean } | null;
   contracts?: { inputs: FileContract[]; outputs: FileContract[] };
 }
 export interface PlannedTask {
@@ -129,7 +129,9 @@ export function parseStageGraph(raw: Record<string, unknown>): StageGraph {
     if (!validRelativePath(pattern, true)) throw new Error('mapのパターンが不正です。');
     const maxItems = boundedInteger(value.maxItems ?? 100, 'mapの最大件数', 128);
     if (!maxItems) throw new Error('mapの最大件数は1以上です。');
-    map = { pattern, maxItems };
+    if (value.isolateInput !== undefined && typeof value.isolateInput !== 'boolean')
+      throw new Error('入力の分離は真偽値で指定してください。');
+    map = { pattern, maxItems, isolateInput: value.isolateInput === true };
   }
   const contracts = raw.contracts === undefined ? {} : object(raw.contracts);
   return {
