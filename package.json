@@ -3,6 +3,10 @@
   "version": "0.3.0",
   "private": true,
   "description": "Pull-based ambient AI agent workflow monitor with Kanban, railway and traces (Science Tokyo design)",
+  "bin": {
+    "railflow": "./cli.ts",
+    "railflow-mcp": "./mcp.ts"
+  },
   "type": "module",
   "scripts": {
     "dev": "vp dev",
@@ -10,6 +14,8 @@
     "build": "vp build",
     "preview": "vp preview",
     "start": "node server.ts",
+    "cli": "node cli.ts",
+    "mcp": "node mcp.ts",
     "worker:demo": "node worker.ts --mode=demo",
     "worker:codex": "node worker.ts --mode=codex",
     "worker:claude": "node worker.ts --mode=claude",
