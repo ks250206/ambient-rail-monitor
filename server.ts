@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   closeSync,
   constants,
@@ -78,6 +78,7 @@ import type {
   ArtifactInfo,
   InputCandidate,
   EventType,
+  JobStage,
   LlmConfig,
   ProjectSpec,
   ReasoningEffort,
@@ -102,6 +103,7 @@ const PROJECTS_FILE = path.join(DATA, 'projects.json');
 const LEGACY_WORKFLOW_FILE = path.join(DATA, 'workflow-spec.json');
 const MAX_UPLOAD = 20 * 1024 * 1024;
 const DEFAULT_PROJECT_ID = 'default';
+const RECEIPT_KEY = randomBytes(32);
 
 for (const dir of [LEGACY_INBOX, DATA, LEGACY_ARTIFACTS, LEGACY_WORK, PROJECTS_ROOT]) {
   mkdirSync(dir, { recursive: true });
@@ -910,6 +912,57 @@ function appendEvent(
     ...(leaseChange || hadLease ? { queueUpdated: true } : {}),
   });
   return event;
+}
+
+function allowsStageReview(job: WorkflowJob): boolean {
+  // Approving a v2 stage can requeue the job while a sibling still awaits review.
+  return (
+    job.status === 'review' ||
+    job.status === 'running' ||
+    (job.workflow?.version === 2 && job.status === 'queued')
+  );
+}
+
+function reviewReceipt(
+  jobId: string,
+  stageKey: string,
+  attempt: number,
+  reviewSequence: number,
+  failureKind: string | null,
+): string {
+  return createHmac('sha256', RECEIPT_KEY)
+    .update(JSON.stringify([jobId, stageKey, attempt, reviewSequence, failureKind]))
+    .digest('hex');
+}
+
+function approveReview(job: WorkflowJob, step: JobStage | undefined): void {
+  if (
+    job.workflow?.version === 2 &&
+    (!step?.output ||
+      !step.workspace ||
+      !verifyOutput(path.join(jobWorkspace(job), step.workspace), step.output, {
+        excludeInternal: true,
+      }))
+  )
+    throw new HttpError(409, 'レビュー中の出力が変更されています。');
+  appendEvent({
+    type: 'review.approved',
+    jobId: job.id,
+    projectId: job.projectId,
+    stage: step?.key ?? null,
+    attempt: step?.attempts,
+    reviewSequence: step?.reviewSequence,
+    message: step?.failureKind
+      ? '人間が失敗内容を確認し、この試行の出力を例外承認'
+      : '人間がこの工程・試行のレビューを承認',
+  });
+  if (step) {
+    try {
+      resultCache.store(job, step, jobWorkspace(job));
+    } catch (cacheErr) {
+      console.warn('Result cache store failed:', cacheErr);
+    }
+  }
 }
 
 function queueState() {
@@ -2968,12 +3021,32 @@ const server = http.createServer(async (req, res) => {
           item.status === 'review' &&
           (!url.searchParams.get('task') || item.key === url.searchParams.get('task')),
       );
-      if (!job || !stage?.workspace || !['review', 'running'].includes(job.status))
+      if (!job || !stage?.workspace || !allowsStageReview(job))
         throw new HttpError(404, 'レビュー中の出力がありません。');
       const root = path.join(jobWorkspace(job), stage.workspace);
       const list = validate(() => inventory(root, undefined, true));
-      if (!previewMatch[2])
-        return deliverJSON(res, { files: list.files, reviewSequence: stage.reviewSequence });
+      if (!previewMatch[2]) {
+        const { key: stageKey, attempts: attempt, reviewSequence } = stage;
+        const failureKind = stage.failureKind ?? null;
+        const receipt =
+          job.workflow &&
+          Number.isSafeInteger(attempt) &&
+          attempt > 0 &&
+          reviewSequence !== undefined &&
+          Number.isSafeInteger(reviewSequence) &&
+          reviewSequence > 0
+            ? reviewReceipt(job.id, stageKey, attempt, reviewSequence, failureKind)
+            : null;
+        return deliverJSON(res, {
+          files: list.files,
+          reviewSequence,
+          stageKey,
+          attempt,
+          failureKind,
+          summary: stage.summary ?? null,
+          receipt,
+        });
+      }
       if (Number(url.searchParams.get('sequence')) !== stage.reviewSequence)
         throw new HttpError(409, 'レビュー対象が更新されています。');
       const relative = url.searchParams.get('path') ?? '';
@@ -2986,6 +3059,56 @@ const server = http.createServer(async (req, res) => {
         'GET',
         true,
       );
+    }
+
+    const exactReviewMatch = pathname.match(/^\/api\/jobs\/(run_[a-f0-9]{8})\/approve-exact$/);
+    if (exactReviewMatch && req.method === 'POST') {
+      const { stage, attempt, reviewSequence, receipt, exception } = await readJSON(req, 10_000);
+      if (
+        typeof stage !== 'string' ||
+        !stage.trim() ||
+        typeof attempt !== 'number' ||
+        !Number.isSafeInteger(attempt) ||
+        attempt <= 0 ||
+        typeof reviewSequence !== 'number' ||
+        !Number.isSafeInteger(reviewSequence) ||
+        reviewSequence <= 0 ||
+        typeof receipt !== 'string' ||
+        !receipt.trim() ||
+        typeof exception !== 'boolean'
+      )
+        throw new HttpError(400, 'Expected stage, attempt, reviewSequence, receipt and exception.');
+
+      const job = jobs.get(exactReviewMatch[1]);
+      if (!job) throw new HttpError(404, 'Job not found');
+      const step = job.stages.find((item) => item.key === stage);
+      if (!job.workflow || !allowsStageReview(job) || step?.status !== 'review')
+        throw new HttpError(409, 'The stage is not awaiting exact review.');
+      if (step.attempts !== attempt || step.reviewSequence !== reviewSequence)
+        throw new HttpError(409, 'The review target has changed.');
+      if (exception !== Boolean(step.failureKind))
+        throw new HttpError(
+          409,
+          step.failureKind
+            ? 'A failed stage requires exception approval.'
+            : 'A normal review requires approval without an exception.',
+        );
+      const expected = Buffer.from(
+        reviewReceipt(job.id, step.key, attempt, reviewSequence, step.failureKind ?? null),
+      );
+      const supplied = Buffer.from(receipt);
+      if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
+        throw new HttpError(409, 'The review receipt is invalid or stale.');
+
+      approveReview(job, step);
+      return deliverJSON(res, {
+        ok: true,
+        job,
+        stageKey: step.key,
+        attempt,
+        reviewSequence,
+        exception,
+      });
     }
 
     const reviewMatch = pathname.match(/^\/api\/jobs\/(run_[a-f0-9]{8})\/approve$/);
@@ -3009,33 +3132,7 @@ const server = http.createServer(async (req, res) => {
           409,
           'レビュー対象が更新されています。画面を更新して再確認してください。',
         );
-      if (
-        job.workflow?.version === 2 &&
-        (!step?.output ||
-          !step.workspace ||
-          !verifyOutput(path.join(jobWorkspace(job), step.workspace), step.output, {
-            excludeInternal: true,
-          }))
-      )
-        throw new HttpError(409, 'レビュー中の出力が変更されています。');
-      appendEvent({
-        type: 'review.approved',
-        jobId: job.id,
-        projectId: job.projectId,
-        stage: step?.key ?? null,
-        attempt: step?.attempts,
-        reviewSequence: step?.reviewSequence,
-        message: step?.failureKind
-          ? '人間が失敗内容を確認し、この試行の出力を例外承認'
-          : '人間がこの工程・試行のレビューを承認',
-      });
-      if (step) {
-        try {
-          resultCache.store(job, step, jobWorkspace(job));
-        } catch (cacheErr) {
-          console.warn('Result cache store failed:', cacheErr);
-        }
-      }
+      approveReview(job, step);
       return deliverJSON(res, { ok: true });
     }
 
