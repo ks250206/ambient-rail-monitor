@@ -18,5 +18,18 @@
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true
   },
-  "include": ["src", "shared", "tests", "server.ts", "worker.ts", "start-demo.ts", "vite.config.ts"]
+  "include": [
+    "src",
+    "shared",
+    "client",
+    "cli",
+    "mcp",
+    "tests",
+    "server.ts",
+    "worker.ts",
+    "start-demo.ts",
+    "cli.ts",
+    "mcp.ts",
+    "vite.config.ts"
+  ]
 }
