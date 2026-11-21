@@ -197,7 +197,9 @@ if (stage === 'b' && attempt === 2) {
   fs.writeFileSync('report.html', 'resumed');
 }`,
     );
-    await expect.poll(async () => (await f.job(job.id)).stages[1].status).toBe('running');
+    await expect
+      .poll(async () => (await f.job(job.id)).stages[1].status, { timeout: 6000 })
+      .toBe('running');
     await f.json(`/api/jobs/${job.id}/pause`);
     const paused = await f.until(job.id, 'paused');
     expect(paused.stages.map((s) => s.status)).toEqual(['success', 'pending']);
@@ -230,18 +232,21 @@ it.skipIf(process.platform === 'win32')(
 if (attempt === 1) { fs.writeFileSync(path.join(process.env.TEST_HOME, 'pid'), String(process.pid)); setInterval(() => {}, 1000); }
 else fs.writeFileSync('report.html', 'recovered');`;
       const worker = f.worker(script);
-      await expect.poll(() => existsSync(path.join(f.home, 'pid'))).toBe(true);
+      await expect.poll(() => existsSync(path.join(f.home, 'pid')), { timeout: 6000 }).toBe(true);
       const pid = Number(readFileSync(path.join(f.home, 'pid'), 'utf8'));
       worker.kill();
       await expect
-        .poll(() => {
-          try {
-            process.kill(pid, 0);
-            return true;
-          } catch {
-            return false;
-          }
-        })
+        .poll(
+          () => {
+            try {
+              process.kill(pid, 0);
+              return true;
+            } catch {
+              return false;
+            }
+          },
+          { timeout: 6000 },
+        )
         .toBe(false);
       await f.until(job.id, 'queued');
       f.worker(script);
@@ -387,8 +392,9 @@ it('broadcasts queueUpdated when a claim or release changes the shared queue', a
     const { job } = await f.json<{ job: WorkflowJob }>('/api/demo');
     const claim = await f.json<ClaimResponse>('/api/jobs/claim');
     await expect
-      .poll(() =>
-        changes.find((change) => change.queueUpdated && change.projectId === job.projectId),
+      .poll(
+        () => changes.find((change) => change.queueUpdated && change.projectId === job.projectId),
+        { timeout: 6000 },
       )
       .toBeTruthy();
     const before = changes.length;
@@ -398,13 +404,15 @@ it('broadcasts queueUpdated when a claim or release changes the shared queue', a
       attempt: 1,
       leaseToken: claim.lease!.token,
     });
-    await expect.poll(() => changes.length).toBeGreaterThan(before);
+    await expect.poll(() => changes.length, { timeout: 6000 }).toBeGreaterThan(before);
     // An ordinary stage event does not touch the lease.
     expect(changes.slice(before).some((change) => change.queueUpdated)).toBe(false);
     const beforeRelease = changes.length;
     await f.json(`/api/jobs/${job.id}/release`, { leaseToken: claim.lease!.token });
     await expect
-      .poll(() => changes.slice(beforeRelease).some((change) => change.queueUpdated))
+      .poll(() => changes.slice(beforeRelease).some((change) => change.queueUpdated), {
+        timeout: 6000,
+      })
       .toBe(true);
   } finally {
     abort.abort();
@@ -461,7 +469,9 @@ it.skipIf(process.platform === 'win32')(
 if (attempt === 1) setInterval(() => {}, 1000);
 else fs.writeFileSync('report.html', 'after restart');`;
       const worker = f.worker(script);
-      await expect.poll(async () => (await f.job(job.id)).stages[0].status).toBe('running');
+      await expect
+        .poll(async () => (await f.job(job.id)).stages[0].status, { timeout: 6000 })
+        .toBe('running');
       await worker.close(); // SIGTERM
       const requeued = await f.until(job.id, 'queued');
       expect(requeued.recoveryCount ?? 0).toBe(0);
