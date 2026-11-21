@@ -3,6 +3,15 @@ import type { WorkflowJob, JobStage } from '../../shared/types.ts';
 import { useState } from 'react';
 import { useProjectJobs } from '../api.ts';
 
+function outputComparison(current?: JobStage, other?: JobStage) {
+  if (!current) return '対象タスクなし（今回）';
+  if (!other) return '対象タスクなし（比較先）';
+  if (!current.output && !other.output) return '両方未確定';
+  if (!current.output) return '今回のみ未確定';
+  if (!other.output) return '比較先のみ未確定';
+  return current.output.hash === other.output.hash ? '一致' : '異なる';
+}
+
 function RunComparison({ job }: { job: WorkflowJob }) {
   const jobs = useProjectJobs(job.projectId).data?.jobs ?? [];
   const [selected, setSelected] = useState('');
@@ -13,12 +22,9 @@ function RunComparison({ job }: { job: WorkflowJob }) {
       ? '推定額なし'
       : `$${metrics.estimatedCostUsd.toFixed(6)}（料金不明 ${metrics.unpricedAttempts} 試行${metrics.partialAttempts ? ` / 一部のみ ${metrics.partialAttempts} 試行` : ''}）`;
   };
-  const keys = [
-    ...new Set([
-      ...job.stages.map((task) => task.key),
-      ...(other?.stages.map((task) => task.key) ?? []),
-    ]),
-  ];
+  const currentTasks = new Map(job.stages.map((task) => [task.key, task]));
+  const otherTasks = new Map(other?.stages.map((task) => [task.key, task]));
+  const keys = new Set([...currentTasks.keys(), ...otherTasks.keys()]);
   return (
     <details className="run-comparison">
       <summary>同じプロジェクトの実行結果と比較</summary>
@@ -91,19 +97,25 @@ function RunComparison({ job }: { job: WorkflowJob }) {
                 </tr>
               </thead>
               <tbody>
-                {keys.map((key) => {
-                  const a = job.stages.find((task) => task.key === key)?.output;
-                  const b = other.stages.find((task) => task.key === key)?.output;
+                {[...keys].map((key) => {
+                  const current = currentTasks.get(key);
+                  const previous = otherTasks.get(key);
+                  const task = current ?? previous!;
+                  const path = task.item?.path;
+                  const label =
+                    path && !task.label.endsWith(` / ${path}`)
+                      ? `${task.label} / ${path}`
+                      : task.label;
                   return (
                     <tr key={key}>
-                      <td>{key}</td>
-                      <td>
-                        {!a || !b
-                          ? '片方が未確定 / 対象なし'
-                          : a.hash === b.hash
-                            ? '一致'
-                            : '異なる'}
-                      </td>
+                      <th scope="row">
+                        {label}
+                        <details>
+                          <summary>タスクキー</summary>
+                          <code>{key}</code>
+                        </details>
+                      </th>
+                      <td>{outputComparison(current, previous)}</td>
                     </tr>
                   );
                 })}

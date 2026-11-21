@@ -1,4 +1,5 @@
 import type { GraphSpec, StageRunner } from '../../shared/graph.ts';
+import type { RuntimeProfile } from '../../shared/reuse.ts';
 import type { WorkflowStageSpec } from '../../shared/types.ts';
 
 export interface StageDraft extends WorkflowStageSpec {
@@ -16,12 +17,18 @@ export function currentRunner(stage: StageDraft) {
   return { ...runner, args: lines ? lines.split('\n') : [] };
 }
 
+export function supportsCache(mode: GraphSpec['mode'] | undefined, runner?: StageRunner) {
+  return Boolean(mode) && runner?.kind !== 'human' && runner?.kind !== 'http';
+}
+
 export function stageForSave(
   stage: StageDraft,
   mode: GraphSpec['mode'] | undefined,
   converting: boolean,
 ): WorkflowStageSpec {
   const { rowId: _id, otherRunners: _runners, argumentText: _text, ...spec } = stage;
+  if (!supportsCache(mode, spec.runner) && (spec.cache?.enabled || spec.cache?.revision))
+    spec.cache = { enabled: false, revision: '' };
   if (!mode && converting)
     return { ...spec, runner: undefined, dependsOn: undefined, map: null, contracts: undefined };
   return {
@@ -53,6 +60,7 @@ export function settingsLostOnSave(
   stages: StageDraft[],
   graph: GraphSpec | undefined,
   otherGraphs: Partial<Record<GraphSpec['mode'], GraphSpec>>,
+  runtime: RuntimeProfile,
 ) {
   const losses: string[] = [];
   const converting = Object.keys(otherGraphs).length > 0;
@@ -69,6 +77,13 @@ export function settingsLostOnSave(
         fields.push('入出力契約');
     }
     if (converting && graph?.mode !== 'dag' && stage.dependsOn?.length) fields.push('DAG依存関係');
+    if (
+      !supportsCache(graph?.mode, stage.runner) &&
+      (stage.cache?.enabled || stage.cache?.revision)
+    )
+      fields.push(
+        stage.cache.revision ? `結果キャッシュ（版 ${stage.cache.revision}）` : '結果キャッシュ',
+      );
     if (fields.length) losses.push(`${stage.label || stage.key}：${fields.join('、')}`);
   }
   const graphLosses = Object.values(otherGraphs)
@@ -82,6 +97,15 @@ export function settingsLostOnSave(
       (other) =>
         `${other.mode === 'dag' ? 'DAG' : '順次接続'}の公開工程（${other.publishStage}）・並列数（${other.maxParallelTasks}）`,
     );
+  if (!graph) {
+    const fields = [
+      runtime.revision && '環境の版',
+      runtime.python && 'Python実行ファイル',
+      Object.values(runtime.expected).some(Boolean) && '要求バージョン',
+      Object.keys(runtime.packages).length > 0 && '固定パッケージ',
+    ].filter(Boolean);
+    if (fields.length) graphLosses.push(`プロジェクトの実行環境：${fields.join('、')}`);
+  }
   if (!losses.length && !graphLosses.length) return '';
   return [`保存時に破棄する設定（対象 ${losses.length} 工程）`, ...losses, ...graphLosses].join(
     '\n',

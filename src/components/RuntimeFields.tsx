@@ -1,14 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import {
   DEFAULT_RUNTIME,
-  packageRecord,
-  packageRowsError,
+  nextPackageName,
   type PriceRate,
   type RuntimeProfile,
 } from '../../shared/reuse.ts';
 
-interface PackageRow {
+export interface PackageRow {
   id: number;
   name: string;
   version: string;
@@ -19,143 +17,122 @@ export function RuntimeFields({
   pricing = [],
   onRuntime,
   onPricing,
-  onPackageError,
+  enabled,
+  rows,
+  onRows,
+  packageError,
 }: {
   value?: RuntimeProfile;
   pricing?: PriceRate[];
   onRuntime: (value: RuntimeProfile) => void;
   onPricing: (value: PriceRate[]) => void;
-  /** Rows that cannot be represented as a package map block saving in the parent. */
-  onPackageError?: (message: string) => void;
+  enabled: boolean;
+  rows: PackageRow[];
+  onRows: (rows: PackageRow[]) => void;
+  packageError: string;
 }) {
-  const nextRowId = useRef(0);
-  const [rows, setRows] = useState<PackageRow[]>(() =>
-    Object.entries(value.packages).map(([name, version]) => ({
-      id: nextRowId.current++,
-      name,
-      version,
-    })),
-  );
-  // null: the emitted map dropped duplicate rows, so any new value must replace the rows.
-  const lastEmitted = useRef<string | null>(JSON.stringify(value.packages));
-  useEffect(() => {
-    const serialized = JSON.stringify(value.packages);
-    if (serialized === lastEmitted.current) return;
-    lastEmitted.current = serialized;
-    setRows(
-      Object.entries(value.packages).map(([name, version]) => ({
-        id: nextRowId.current++,
-        name,
-        version,
-      })),
-    );
-  }, [value.packages]);
-
-  const packageError = packageRowsError(rows);
-  useEffect(() => {
-    onPackageError?.(packageError);
-  }, [packageError, onPackageError]);
-  useEffect(() => () => onPackageError?.(''), [onPackageError]);
-
-  const commitRows = (nextRows: PackageRow[]) => {
-    setRows(nextRows);
-    const nextPackages = packageRecord(nextRows);
-    lastEmitted.current = packageRowsError(nextRows) ? null : JSON.stringify(nextPackages);
-    onRuntime({ ...value, packages: nextPackages });
-  };
   return (
     <details className="wf-runtime">
       <summary>実行環境・LLM料金の設定</summary>
-      <h3>実行環境の要件（Workflow v2）</h3>
-      <p className="wf-help">
-        指定したバージョンと一致しない場合は処理前に停止します。仮想環境は事前に用意し、そのPythonを指定してください。パッケージの自動インストールは行いません。
-      </p>
-      <div className="wf-fields">
-        <label>
-          環境の版
-          <input
-            value={value.revision}
-            maxLength={120}
-            placeholder="例: analysis-env-v1（キャッシュ利用時に必要）"
-            onChange={(e) => onRuntime({ ...value, revision: e.target.value })}
-          />
-        </label>
-        <label>
-          Python実行ファイル
-          <input
-            value={value.python}
-            maxLength={512}
-            placeholder="例: /path/to/venv/bin/python（空欄はworker既定）"
-            onChange={(e) => onRuntime({ ...value, python: e.target.value })}
-          />
-        </label>
-        {(['node', 'python', 'codex', 'claude'] as const).map((key) => (
-          <label key={key}>
-            {key} の要求バージョン
-            <input
-              value={value.expected[key] ?? ''}
-              placeholder="完全一致・空欄は指定なし"
-              maxLength={80}
-              onChange={(e) =>
-                onRuntime({ ...value, expected: { ...value.expected, [key]: e.target.value } })
-              }
-            />
-          </label>
-        ))}
-      </div>
-      <h4>Pythonパッケージの固定</h4>
-      {packageError && (
-        <p role="alert" className="condition-error">
-          {packageError} 重複を解消するまで保存できません。
-        </p>
-      )}
-      {rows.map((row, index) => (
-        <div className="wf-package" key={row.id}>
-          <input
-            aria-label={`パッケージ名 ${index + 1}`}
-            value={row.name}
-            placeholder="numpy"
-            onChange={(e) =>
-              commitRows(
-                rows.map((item) => (item.id === row.id ? { ...item, name: e.target.value } : item)),
-              )
-            }
-          />
-          <input
-            aria-label={`固定バージョン ${index + 1}`}
-            value={row.version}
-            placeholder="完全一致"
-            onChange={(e) =>
-              commitRows(
-                rows.map((item) =>
-                  item.id === row.id ? { ...item, version: e.target.value } : item,
-                ),
-              )
-            }
-          />
-          <button
-            type="button"
-            className="wf-icon-button"
-            aria-label={`パッケージ ${index + 1} を削除`}
-            onClick={() => commitRows(rows.filter((item) => item.id !== row.id))}
-          >
-            <Trash2 size={15} />
-          </button>
+      {enabled ? (
+        <div>
+          <h3>実行環境の要件（Workflow v2）</h3>
+          <p className="wf-help">
+            指定したバージョンと一致しない場合は処理前に停止します。仮想環境は事前に用意し、そのPythonを指定してください。パッケージの自動インストールは行いません。
+          </p>
+          <div className="wf-fields">
+            <label>
+              環境の版
+              <input
+                value={value.revision}
+                maxLength={120}
+                placeholder="例: analysis-env-v1（キャッシュ利用時に必要）"
+                onChange={(e) => onRuntime({ ...value, revision: e.target.value })}
+              />
+            </label>
+            <label>
+              Python実行ファイル
+              <input
+                value={value.python}
+                maxLength={512}
+                placeholder="例: /path/to/venv/bin/python（空欄はworker既定）"
+                onChange={(e) => onRuntime({ ...value, python: e.target.value })}
+              />
+            </label>
+            {(['node', 'python', 'codex', 'claude'] as const).map((key) => (
+              <label key={key}>
+                {key} の要求バージョン
+                <input
+                  value={value.expected[key] ?? ''}
+                  placeholder="完全一致・空欄は指定なし"
+                  maxLength={80}
+                  onChange={(e) =>
+                    onRuntime({ ...value, expected: { ...value.expected, [key]: e.target.value } })
+                  }
+                />
+              </label>
+            ))}
+          </div>
+          <h4>Pythonパッケージの固定</h4>
+          {packageError && (
+            <p role="alert" className="condition-error">
+              {packageError} 重複を解消するまで保存できません。
+            </p>
+          )}
+          <div id="runtime-packages">
+            {rows.map((row, index) => (
+              <div className="wf-package" key={row.id}>
+                <input
+                  aria-label={`パッケージ名 ${index + 1}`}
+                  value={row.name}
+                  placeholder="numpy"
+                  onChange={(e) =>
+                    onRows(
+                      rows.map((item) =>
+                        item.id === row.id ? { ...item, name: e.target.value } : item,
+                      ),
+                    )
+                  }
+                />
+                <input
+                  aria-label={`固定バージョン ${index + 1}`}
+                  value={row.version}
+                  placeholder="完全一致"
+                  onChange={(e) =>
+                    onRows(
+                      rows.map((item) =>
+                        item.id === row.id ? { ...item, version: e.target.value } : item,
+                      ),
+                    )
+                  }
+                />
+                <button
+                  type="button"
+                  className="wf-icon-button"
+                  aria-label={`パッケージ ${index + 1} を削除`}
+                  onClick={() => onRows(rows.filter((item) => item.id !== row.id))}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="wf-secondary"
+              disabled={rows.length >= 50 || Boolean(packageError)}
+              onClick={() => {
+                const id = Math.max(-1, ...rows.map((row) => row.id)) + 1;
+                onRows([...rows, { id, name: nextPackageName(rows), version: '' }]);
+              }}
+            >
+              <Plus size={15} />
+              パッケージを追加
+            </button>
+          </div>
         </div>
-      ))}
-      <button
-        type="button"
-        className="wf-secondary"
-        disabled={rows.length >= 50}
-        onClick={() => {
-          let i = 1;
-          while (packageRowsError([...rows, { name: `package-${i}` }])) i++;
-          commitRows([...rows, { id: nextRowId.current++, name: `package-${i}`, version: '' }]);
-        }}
-      >
-        <Plus size={15} />
-        パッケージを追加
-      </button>
+      ) : (
+        <p className="wf-help">実行環境の要件は Workflow v2 で設定できます。</p>
+      )}
       <h3>LLMの推定料金</h3>
       <p className="wf-help">
         USD /

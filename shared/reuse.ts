@@ -61,6 +61,13 @@ export function packageRowsError(rows: ReadonlyArray<{ name: string }>): string 
   }
   return '';
 }
+export function nextPackageName(rows: ReadonlyArray<{ name: string }>): string {
+  const used = new Set(rows.map((row) => normalizePackageName(row.name.trim())));
+  let index = 1;
+  while (used.has(`package-${index}`)) index++;
+  return `package-${index}`;
+}
+
 export function packageRecord(
   rows: ReadonlyArray<{ name: string; version: string }>,
 ): Record<string, string> {

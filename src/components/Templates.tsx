@@ -39,6 +39,7 @@ export function TemplatePicker({
   const [isExternal, setIsExternal] = useState(false);
   const [confirmedExec, setConfirmedExec] = useState(false);
   const [error, setError] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState('');
   const [deletingKey, setDeletingKey] = useState('');
   const generation = useRef(0);
   const select = async (value: unknown, external = false) => {
@@ -100,11 +101,15 @@ export function TemplatePicker({
   };
   const removeSaved = async (item: WorkflowTemplate) => {
     const key = `${item.template.name}:${item.template.revision}:${item.template.hash}`;
+    if (confirmDelete !== key || deletingKey) return;
+    const selectionTicket = generation.current;
     setDeletingKey(key);
     setError('');
     try {
       await request('/api/templates', jsonRequest('DELETE', item.template));
-      if (selected && sameTemplate(selected, item)) void select(null);
+      setConfirmDelete('');
+      if (generation.current === selectionTicket && selected && sameTemplate(selected, item))
+        void select(null);
       await queryClient.invalidateQueries({ queryKey: ['templates'] });
     } catch (err) {
       setError((err as Error).message);
@@ -175,14 +180,29 @@ export function TemplatePicker({
                     {item.template.name} · 版 {item.template.revision} (
                     {item.template.hash.slice(0, 8)})
                   </span>
+                  {confirmDelete === key && (
+                    <span role="status">
+                      「{item.template.name}」（版 {item.template.revision}）を削除しますか？
+                    </span>
+                  )}
                   <button
                     type="button"
                     className="wf-secondary"
-                    disabled={deletingKey === key}
-                    onClick={() => void removeSaved(item)}
+                    disabled={Boolean(deletingKey)}
+                    onClick={() => setConfirmDelete(confirmDelete === key ? '' : key)}
                   >
-                    削除
+                    {confirmDelete === key ? '取り消す' : '削除'}
                   </button>
+                  {confirmDelete === key && (
+                    <button
+                      type="button"
+                      className="wf-secondary"
+                      disabled={Boolean(deletingKey)}
+                      onClick={() => void removeSaved(item)}
+                    >
+                      {deletingKey === key ? '削除中…' : '削除を確定'}
+                    </button>
+                  )}
                 </li>
               );
             })}
