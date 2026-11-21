@@ -230,6 +230,8 @@ it('records an exhausted stage budget on the server instead of spinning', async 
       },
       runAI: async () => '',
       runDemo: async () => {},
+      // The budget is exhausted before any stage reaches the cache lookup.
+      cache: async () => ({}) as never,
     });
     expect(emitted).toEqual([
       { type: 'stage.failed', failureKind: 'stage_timeout' },
@@ -261,6 +263,8 @@ it('fails the job when the budget failure cannot be recorded', async () => {
       },
       runAI: async () => '',
       runDemo: async () => {},
+      // The budget is exhausted before any stage reaches the cache lookup.
+      cache: async () => ({}) as never,
     });
     expect(emitted).toEqual(['stage.failed', 'job.failed']);
     expect(reloads).toBeLessThan(5);

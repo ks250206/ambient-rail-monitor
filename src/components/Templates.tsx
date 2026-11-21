@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useRef, useState } from 'react';
 import type { ProjectSpec } from '../../shared/types.ts';
 import type { WorkflowTemplate } from '../../shared/templates.ts';
+import { executionDetails } from '../../shared/template-preview.ts';
 import { jsonRequest, queryClient, request } from '../api.ts';
 
 type Catalog = { builtins: WorkflowTemplate[]; saved: WorkflowTemplate[] };
@@ -211,34 +212,25 @@ export function TemplatePicker({
           </p>
           {hasExecutableSteps(selected) && (
             <details open={isExternal} className="wf-disclosure">
-              <summary>実行コマンド・Pythonコード・HTTP接続先の詳細</summary>
+              <summary>実行コマンド・Pythonコード・HTTP接続先と送信内容の詳細</summary>
               {selected.definition.runtime?.python && (
                 <p className="wf-help">
                   環境プローブ・実行用 Python: <code>{selected.definition.runtime.python}</code>
                 </p>
               )}
-              {selected.definition.stages
-                .filter((stage) => ['command', 'python', 'http'].includes(stage.runner?.kind ?? ''))
-                .map((stage) => (
-                  <div key={stage.key}>
-                    <strong>
-                      {stage.label} ({stage.key}) · {stage.runner!.kind}
-                    </strong>
-                    {stage.runner?.kind === 'command' && (
-                      <pre className="prompt-preview">
-                        {[stage.runner.program, ...stage.runner.args].join(' ')}
-                      </pre>
-                    )}
-                    {stage.runner?.kind === 'python' && (
-                      <pre className="prompt-preview">{stage.runner.code}</pre>
-                    )}
-                    {stage.runner?.kind === 'http' && (
-                      <pre className="prompt-preview">
-                        {stage.runner.method} {stage.runner.url}
-                      </pre>
-                    )}
-                  </div>
-                ))}
+              {executionDetails(selected.definition.stages).map((detail) => (
+                <div key={detail.key}>
+                  <strong>
+                    {detail.label} ({detail.key}) · {detail.kind}
+                  </strong>
+                  {detail.fields.map((field) => (
+                    <div key={field.label}>
+                      <span className="wf-help">{field.label}</span>
+                      <pre className="prompt-preview">{field.value}</pre>
+                    </div>
+                  ))}
+                </div>
+              ))}
             </details>
           )}
           {needsExecConfirm && (

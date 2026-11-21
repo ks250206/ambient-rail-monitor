@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -373,7 +374,8 @@ it.skipIf(process.platform === 'win32')(
       });
       f.worker('process.exit(99)', { PATH: [a, b, process.env.PATH].join(path.delimiter) });
       const first = await f.until((await upload(f, 'cache')).id, 'done');
-      expect(first.stages[0].runtime?.program).toBe(executable);
+      // The snapshot records the resolved file (macOS tmpdir is /var -> /private/var).
+      expect(first.stages[0].runtime?.program).toBe(realpathSync(executable));
       writeFileSync(executable, code('second'));
       const second = await f.until((await upload(f, 'cache')).id, 'done');
       expect(second.stages[0].completion?.mode).toBe('executed');
@@ -542,4 +544,144 @@ it('handles malformed cache metadata during prune, PEP 503 package normalization
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+it('reports duplicate package rows after trim and PEP 503 normalization instead of dropping them', async () => {
+  const { packageRecord, packageRowsError, parseRuntime } = await import('../shared/reuse.ts');
+  expect(packageRowsError([{ name: 'numpy' }, { name: 'pandas' }])).toBe('');
+  expect(packageRowsError([{ name: 'numpy' }, { name: 'numpy' }])).toMatch(/重複/);
+  expect(packageRowsError([{ name: 'NumPy' }, { name: ' numpy ' }])).toMatch(/重複/);
+  expect(packageRowsError([{ name: 'foo_bar' }, { name: 'Foo.Bar' }])).toMatch(/重複/);
+  // Blank rows are left to the server-side name validation.
+  expect(packageRowsError([{ name: '' }, { name: '  ' }])).toBe('');
+  const record = packageRecord([
+    { name: ' numpy ', version: '2.0.0' },
+    { name: '__proto__', version: '1' },
+  ]);
+  expect(Object.keys(record)).toEqual(['numpy', '__proto__']);
+  expect(parseRuntime({ packages: { numpy: '2.0.0' } }).packages).toEqual({ numpy: '2.0.0' });
+});
+
+it('keeps Codex usage incomplete once any turn failed or reported unusable usage', () => {
+  const failedFirst = new UsageAccumulator('codex', 'gpt-5');
+  failedFirst.accept({ type: 'turn.failed' });
+  failedFirst.accept({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } });
+  expect(failedFirst.record.complete).toBe(false);
+  expect(failedFirst.record.models[0]).toMatchObject({ input: 10, output: 2 });
+
+  const malformedFirst = new UsageAccumulator('codex', 'gpt-5');
+  malformedFirst.accept({ type: 'turn.completed', usage: { input_tokens: -1, output_tokens: 2 } });
+  malformedFirst.accept({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } });
+  expect(malformedFirst.record.complete).toBe(false);
+
+  const missingUsage = new UsageAccumulator('codex', 'gpt-5');
+  missingUsage.accept({ type: 'turn.completed' });
+  missingUsage.accept({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } });
+  expect(missingUsage.record.complete).toBe(false);
+
+  const clean = new UsageAccumulator('codex', 'gpt-5');
+  clean.accept({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } });
+  clean.accept({ type: 'turn.completed', usage: { input_tokens: 5, output_tokens: 1 } });
+  expect(clean.record.complete).toBe(true);
+  expect(clean.record.models[0]).toMatchObject({ input: 15, output: 3 });
+});
+
+it('explains a demo-mode skip of the configured Python instead of reporting it as missing', async () => {
+  const { inspectRuntime, parseRuntimeSnapshot } = await import('../shared/runtime-environment.ts');
+  const { DEMO_PYTHON_SKIPPED, parseRuntime, runtimeIssues } = await import('../shared/reuse.ts');
+  const work = mkdtempSync(path.join(os.tmpdir(), 'railflow-demo-python-'));
+  const previous = process.env.RAILFLOW_ALLOW_LOCAL_EXEC;
+  delete process.env.RAILFLOW_ALLOW_LOCAL_EXEC;
+  try {
+    const marker = path.join(work, 'executed');
+    const python = path.join(work, 'python');
+    writeFileSync(python, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`, { mode: 0o700 });
+    const runtime = parseRuntime({
+      revision: 'env-1',
+      python,
+      expected: { python: '3.12.0' },
+      packages: { numpy: '2.0.0' },
+    });
+    const project = { runtime } as unknown as ProjectSpec;
+    const stage = { key: 'a', runner: { kind: 'ai', engine: 'worker' } } as never;
+    const snapshot = await inspectRuntime(
+      project,
+      stage,
+      'demo',
+      work,
+      new AbortController().signal,
+      10_000,
+    );
+    expect(existsSync(marker)).toBe(false);
+    expect(snapshot.pythonProbe).toBe('skipped_demo');
+    expect(snapshot.issues).toEqual([DEMO_PYTHON_SKIPPED]);
+    // The server recomputes issues from the worker's snapshot; the reason must survive.
+    const parsed = parseRuntimeSnapshot(JSON.parse(JSON.stringify(snapshot)));
+    expect(runtimeIssues(runtime, parsed)).toEqual([DEMO_PYTHON_SKIPPED]);
+    expect(() => parseRuntimeSnapshot({ ...snapshot, pythonProbe: 'other' })).toThrow();
+    // A configured interpreter without version or package pins is not an error in demo mode.
+    expect(runtimeIssues(parseRuntime({ python }), parsed)).toEqual([]);
+    // Outside the demo skip, a missing probe still reports per-requirement mismatches.
+    const { pythonProbe: _skip, ...probed } = parsed;
+    expect(runtimeIssues(runtime, probed)).toEqual([
+      'python: 要求 3.12.0 / 実際 未取得',
+      'numpy: 要求 2.0.0 / 実際 未導入',
+    ]);
+  } finally {
+    if (previous === undefined) delete process.env.RAILFLOW_ALLOW_LOCAL_EXEC;
+    else process.env.RAILFLOW_ALLOW_LOCAL_EXEC = previous;
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+it('shows every executed or sent value of external template stages with explicit argument boundaries', async () => {
+  const { executionDetails } = await import('../shared/template-preview.ts');
+  const details = executionDetails([
+    { key: 'a', label: 'AI', short: 'AI', instruction: '', llm: { model: '', effort: '' } },
+    {
+      key: 'cmd',
+      label: 'Command',
+      short: 'C',
+      instruction: '',
+      llm: { model: '', effort: '' },
+      runner: { kind: 'command', program: 'tool', args: ['a b', 'c'] },
+    },
+    {
+      key: 'py',
+      label: 'Python',
+      short: 'P',
+      instruction: '',
+      llm: { model: '', effort: '' },
+      runner: { kind: 'python', code: 'print(1)', args: ['--name', 'x y'] },
+    },
+    {
+      key: 'web',
+      label: 'HTTP',
+      short: 'H',
+      instruction: '',
+      llm: { model: '', effort: '' },
+      runner: {
+        kind: 'http',
+        method: 'POST',
+        url: 'https://example.test/hook',
+        body: '{"files": {{input.files}}}',
+        output: 'response.json',
+        successStatus: 200,
+        idempotencyKey: true,
+      },
+    },
+  ] as never);
+  expect(details.map((detail) => detail.key)).toEqual(['cmd', 'py', 'web']);
+  const values = (key: string) =>
+    Object.fromEntries(details.find((d) => d.key === key)!.fields.map((f) => [f.label, f.value]));
+  expect(values('cmd')).toEqual({ 実行ファイル: 'tool', '引数（JSON配列）': '["a b","c"]' });
+  expect(values('py')).toEqual({
+    Pythonコード: 'print(1)',
+    '引数（JSON配列）': '["--name","x y"]',
+  });
+  expect(values('web')).toEqual({
+    接続先: 'POST https://example.test/hook',
+    送信本文: '{"files": {{input.files}}}',
+    応答の保存先: 'response.json',
+  });
 });

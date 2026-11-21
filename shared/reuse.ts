@@ -32,7 +32,12 @@ export interface RuntimeSnapshot {
   packages: Record<string, string>;
   revision: string;
   issues: string[];
+  /** Set when demo mode deliberately did not execute the configured Python. */
+  pythonProbe?: 'skipped_demo';
 }
+
+export const DEMO_PYTHON_SKIPPED =
+  'demo モードでは指定 Python を検査しません（RAILFLOW_ALLOW_LOCAL_EXEC=1 で許可）';
 
 export const DEFAULT_RUNTIME: RuntimeProfile = {
   revision: '',
@@ -42,6 +47,35 @@ export const DEFAULT_RUNTIME: RuntimeProfile = {
 };
 export function normalizePackageName(name: string): string {
   return name.toLowerCase().replace(/[-_.]+/g, '-');
+}
+
+/** Editor rows must not silently collapse: report names equal after trim + PEP 503. */
+export function packageRowsError(rows: ReadonlyArray<{ name: string }>): string {
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const name = normalizePackageName(row.name.trim());
+    if (!name) continue;
+    if (seen.has(name))
+      return `Pythonパッケージ「${row.name.trim()}」が重複しています。名前を変えるか、重複行を削除してください。`;
+    seen.add(name);
+  }
+  return '';
+}
+export function packageRecord(
+  rows: ReadonlyArray<{ name: string; version: string }>,
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const row of rows) {
+    const name = row.name.trim();
+    if (!Object.hasOwn(result, name))
+      Object.defineProperty(result, name, {
+        value: row.version,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+  }
+  return result;
 }
 
 const string = (value: unknown, max = 200) => {
@@ -115,6 +149,10 @@ export function parsePricing(value: unknown): PriceRate[] {
 
 export function runtimeIssues(profile: RuntimeProfile, snapshot: RuntimeSnapshot): string[] {
   const issues: string[] = [];
+  const pythonSkipped =
+    snapshot.pythonProbe === 'skipped_demo' &&
+    (!!profile.expected.python || Object.keys(profile.packages).length > 0);
+  if (pythonSkipped) issues.push(DEMO_PYTHON_SKIPPED);
   const actual = {
     node: snapshot.node,
     python: snapshot.python,
@@ -124,13 +162,14 @@ export function runtimeIssues(profile: RuntimeProfile, snapshot: RuntimeSnapshot
   for (const [key, expected] of Object.entries(profile.expected)) {
     // Engine requirements apply to attempts using that engine, not unrelated scripts.
     if ((key === 'codex' || key === 'claude') && snapshot.engine !== key) continue;
+    if (key === 'python' && pythonSkipped) continue;
     if (actual[key as keyof typeof actual] !== expected)
       issues.push(
         `${key}: 要求 ${expected} / 実際 ${actual[key as keyof typeof actual] ?? '未取得'}`,
       );
   }
   for (const [name, expected] of Object.entries(profile.packages))
-    if (snapshot.packages[name] !== expected)
+    if (!pythonSkipped && snapshot.packages[name] !== expected)
       issues.push(`${name}: 要求 ${expected} / 実際 ${snapshot.packages[name] ?? '未導入'}`);
   return issues;
 }

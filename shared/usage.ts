@@ -30,6 +30,8 @@ const object = (value: unknown): Record<string, unknown> | null =>
 export class UsageAccumulator {
   record: UsageRecord;
   private model: string;
+  /** Once any turn fails or reports unusable usage, the run total can never be complete. */
+  private incomplete = false;
   constructor(engine: 'codex' | 'claude', model: string) {
     this.model = model;
     this.record = {
@@ -48,12 +50,14 @@ export class UsageAccumulator {
       this.record.engine === 'codex' &&
       (event.type === 'turn.failed' || event.type === 'error')
     ) {
+      this.incomplete = true;
       this.record = { ...this.record, complete: false };
       return;
     }
     if (this.record.engine === 'codex' && event.type === 'turn.completed') {
       const raw = object(event.usage);
       if (!raw) {
+        this.incomplete = true;
         this.record = { ...this.record, complete: false };
         return;
       }
@@ -68,6 +72,7 @@ export class UsageAccumulator {
         cacheWrite === null ||
         input < cacheRead + cacheWrite
       ) {
+        this.incomplete = true;
         this.record = { ...this.record, complete: false };
         return;
       }
@@ -76,7 +81,7 @@ export class UsageAccumulator {
         engine: 'codex',
         source: 'codex.turn',
         scope: 'run',
-        complete: true,
+        complete: !this.incomplete,
         reportedCostUsd: null,
         models: [
           {

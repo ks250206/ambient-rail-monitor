@@ -102,6 +102,7 @@ export function WorkflowSpecSection({
   const [graph, setGraph] = useState(project.graph);
   const [otherGraphs, setOtherGraphs] = useState<Partial<Record<GraphSpec['mode'], GraphSpec>>>({});
   const [automation, setAutomation] = useState(() => projectAutomation({}, project));
+  const [packageError, setPackageError] = useState('');
   const monitor = useProjectJobs(project.id);
   const [candidate, setCandidate] = useState('');
   const [testResult, setTestResult] = useState<ConditionResult | null>(null);
@@ -157,6 +158,7 @@ export function WorkflowSpecSection({
   let fieldName = 'プロジェクト設定';
   let promptPreview = '';
   try {
+    if (packageError) throw new Error(packageError);
     const parsedAutomation = projectAutomation(payload);
     target = 'workflow-prompt';
     fieldName = '共通プロンプト';
@@ -573,6 +575,7 @@ export function WorkflowSpecSection({
           pricing={automation.pricing}
           onRuntime={(runtime) => setAutomation({ ...automation, runtime })}
           onPricing={(pricing) => setAutomation({ ...automation, pricing })}
+          onPackageError={setPackageError}
         />
         <details className="wf-disclosure">
           <summary>

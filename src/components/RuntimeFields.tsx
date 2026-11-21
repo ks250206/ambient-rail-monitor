@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import {
   DEFAULT_RUNTIME,
-  normalizePackageName,
+  packageRecord,
+  packageRowsError,
   type PriceRate,
   type RuntimeProfile,
 } from '../../shared/reuse.ts';
@@ -13,24 +14,19 @@ interface PackageRow {
   version: string;
 }
 
-function toPackageRecord(rows: PackageRow[]): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const row of rows) {
-    if (!Object.hasOwn(result, row.name)) result[row.name] = row.version;
-  }
-  return result;
-}
-
 export function RuntimeFields({
   value = DEFAULT_RUNTIME,
   pricing = [],
   onRuntime,
   onPricing,
+  onPackageError,
 }: {
   value?: RuntimeProfile;
   pricing?: PriceRate[];
   onRuntime: (value: RuntimeProfile) => void;
   onPricing: (value: PriceRate[]) => void;
+  /** Rows that cannot be represented as a package map block saving in the parent. */
+  onPackageError?: (message: string) => void;
 }) {
   const nextRowId = useRef(0);
   const [rows, setRows] = useState<PackageRow[]>(() =>
@@ -40,7 +36,8 @@ export function RuntimeFields({
       version,
     })),
   );
-  const lastEmitted = useRef(JSON.stringify(value.packages));
+  // null: the emitted map dropped duplicate rows, so any new value must replace the rows.
+  const lastEmitted = useRef<string | null>(JSON.stringify(value.packages));
   useEffect(() => {
     const serialized = JSON.stringify(value.packages);
     if (serialized === lastEmitted.current) return;
@@ -54,24 +51,16 @@ export function RuntimeFields({
     );
   }, [value.packages]);
 
-  const seenNames = new Set<string>();
-  let duplicate = false;
-  for (const row of rows) {
-    const norm = normalizePackageName(row.name.trim());
-    if (norm && seenNames.has(norm)) {
-      duplicate = true;
-      break;
-    }
-    if (norm) seenNames.add(norm);
-  }
-  const packageError = duplicate
-    ? '同じ名前のパッケージがあります。名前を変えるか、重複行を削除してください。'
-    : '';
+  const packageError = packageRowsError(rows);
+  useEffect(() => {
+    onPackageError?.(packageError);
+  }, [packageError, onPackageError]);
+  useEffect(() => () => onPackageError?.(''), [onPackageError]);
 
   const commitRows = (nextRows: PackageRow[]) => {
     setRows(nextRows);
-    const nextPackages = toPackageRecord(nextRows);
-    lastEmitted.current = JSON.stringify(nextPackages);
+    const nextPackages = packageRecord(nextRows);
+    lastEmitted.current = packageRowsError(nextRows) ? null : JSON.stringify(nextPackages);
     onRuntime({ ...value, packages: nextPackages });
   };
   return (
@@ -117,7 +106,7 @@ export function RuntimeFields({
       <h4>Pythonパッケージの固定</h4>
       {packageError && (
         <p role="alert" className="condition-error">
-          {packageError}
+          {packageError} 重複を解消するまで保存できません。
         </p>
       )}
       {rows.map((row, index) => (
@@ -160,7 +149,7 @@ export function RuntimeFields({
         disabled={rows.length >= 50}
         onClick={() => {
           let i = 1;
-          while (rows.some((item) => item.name === `package-${i}`)) i++;
+          while (packageRowsError([...rows, { name: `package-${i}` }])) i++;
           commitRows([...rows, { id: nextRowId.current++, name: `package-${i}`, version: '' }]);
         }}
       >

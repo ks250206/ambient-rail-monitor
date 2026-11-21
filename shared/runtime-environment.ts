@@ -115,13 +115,15 @@ export async function inspectRuntime(
     }
   }
   const allowDemoExec = process.env.RAILFLOW_ALLOW_LOCAL_EXEC === '1';
-  const shouldProbePython =
-    (runner.kind === 'python' ||
-      profile.python ||
-      profile.expected.python ||
-      Object.keys(profile.packages).length > 0) &&
-    !(mode === 'demo' && profile.python && !allowDemoExec);
-  if (shouldProbePython) {
+  const wantsPython =
+    runner.kind === 'python' ||
+    !!profile.python ||
+    !!profile.expected.python ||
+    Object.keys(profile.packages).length > 0;
+  // A project-supplied interpreter is local code execution, which demo mode forbids.
+  const skipDemoPython = wantsPython && mode === 'demo' && !!profile.python && !allowDemoExec;
+  if (skipDemoPython) result.pythonProbe = 'skipped_demo';
+  if (wantsPython && !skipDemoPython) {
     try {
       const marker = 'RAILFLOW_RUNTIME_JSON:';
       const script = [
@@ -191,6 +193,9 @@ export function parseRuntimeSnapshot(value: unknown): RuntimeSnapshot {
   const executableHash = nullable('executableHash', 64);
   if (executableHash !== null && !/^[a-f0-9]{64}$/.test(executableHash))
     throw new Error('実行ファイルhashが不正です。');
+  if (raw.pythonProbe !== undefined && raw.pythonProbe !== 'skipped_demo')
+    throw new Error('Python検査の状態が不正です。');
+  const pythonProbe = raw.pythonProbe as RuntimeSnapshot['pythonProbe'];
   const recordedAt = text('recordedAt', 40);
   if (!Number.isFinite(Date.parse(recordedAt))) throw new Error('環境の記録日時が不正です。');
   return {
@@ -207,5 +212,6 @@ export function parseRuntimeSnapshot(value: unknown): RuntimeSnapshot {
     packages,
     revision: text('revision', 120),
     issues: [],
+    ...(pythonProbe ? { pythonProbe } : {}),
   };
 }
