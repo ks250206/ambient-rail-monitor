@@ -1,3 +1,6 @@
+import type { Condition, ConditionResult } from './conditions.ts';
+import type { ExecutionPolicy, FailureKind } from './execution-policy.ts';
+
 export type StageKey = string;
 
 export type StageStatus = 'pending' | 'running' | 'success' | 'failed' | 'retry' | 'review';
@@ -15,10 +18,13 @@ export type EventType =
   | 'job.created'
   | 'job.claimed'
   | 'stage.started'
+  | 'stage.executed'
+  | 'gate.evaluated'
   | 'stage.progress'
   | 'stage.succeeded'
   | 'stage.failed'
   | 'stage.retry'
+  | 'stage.retry.ready'
   | 'review.required'
   | 'review.approved'
   | 'artifact.created'
@@ -37,6 +43,58 @@ export interface StageDefinition {
 export interface WorkflowStageSpec extends StageDefinition {
   instruction: string;
   llm: LlmConfig;
+  acceptanceCriteria?: string;
+  gate?: GateSpec;
+  execution?: Partial<ExecutionPolicy>;
+}
+
+export interface GateSpec {
+  condition: Condition | null;
+  requireReview: boolean;
+}
+
+export interface InputSpec {
+  mode: 'auto' | 'file' | 'directory';
+  settleMs: number;
+  condition: Condition | null;
+}
+
+export interface DatasetFile {
+  path: string;
+  bytes: number;
+  hash: string;
+}
+
+export interface DatasetManifest {
+  version: 1;
+  name: string;
+  kind: 'file' | 'directory';
+  files: DatasetFile[];
+  hash: string;
+  bytes: number;
+  source: string;
+}
+
+export interface WorkflowSnapshot {
+  version: 1;
+  hash: string;
+  project: ProjectSpec;
+}
+
+export interface GateEvaluation {
+  scope: 'stage' | 'final';
+  result: ConditionResult;
+}
+
+export interface InputCandidate {
+  origin: 'project' | 'legacy';
+  name: string;
+  kind: 'file' | 'directory';
+  fileCount: number;
+  bytes: number;
+  status: 'waiting' | 'registered' | 'error';
+  message: string;
+  result?: ConditionResult;
 }
 
 export interface ProjectSpec {
@@ -50,6 +108,11 @@ export interface ProjectSpec {
   artifactsDir: string;
   createdAt: string;
   updatedAt: string;
+  input?: InputSpec;
+  execution?: ExecutionPolicy;
+  jobTimeoutMs?: number;
+  finalGate?: GateSpec;
+  prompt?: string;
 }
 
 export interface JobStage extends StageDefinition {
@@ -58,6 +121,14 @@ export interface JobStage extends StageDefinition {
   startedAt: string | null;
   endedAt: string | null;
   summary: string | null;
+  activeMs?: number;
+  workspace?: string;
+  gates?: GateEvaluation[];
+  approvedAttempt?: number;
+  reviewSequence?: number;
+  failureKind?: FailureKind;
+  retryAt?: string;
+  deadlineAt?: string;
 }
 
 export interface ArtifactInfo {
@@ -76,7 +147,14 @@ export interface WorkflowEvent {
   message?: string;
   summary?: string;
   details?: string;
-  stageConfig?: { instruction: string; llm: LlmConfig };
+  stageConfig?: {
+    instruction: string;
+    llm: LlmConfig;
+    acceptanceCriteria?: string;
+    execution?: ExecutionPolicy;
+    gate?: GateSpec;
+    prompt?: string;
+  };
   artifact?: ArtifactInfo;
   file?: string;
   bytes?: number;
@@ -86,6 +164,16 @@ export interface WorkflowEvent {
   stages?: StageDefinition[];
   agent?: string;
   worker?: string;
+  dataset?: DatasetManifest;
+  workflow?: WorkflowSnapshot;
+  attempt?: number;
+  elapsedMs?: number;
+  workspace?: string;
+  gate?: GateEvaluation;
+  failureKind?: FailureKind;
+  retryAt?: string;
+  deadlineAt?: string;
+  reviewSequence?: number;
 }
 
 export interface WorkflowJob {
@@ -107,6 +195,8 @@ export interface WorkflowJob {
   events: WorkflowEvent[];
   reviewApproved: boolean;
   lastMessage: string;
+  dataset?: DatasetManifest;
+  workflow?: WorkflowSnapshot;
 }
 
 export interface AppStateResponse {
@@ -116,12 +206,15 @@ export interface AppStateResponse {
   events: WorkflowEvent[];
   stages: StageDefinition[];
   updatedAt: string;
+  candidates?: InputCandidate[];
 }
 
 export interface ClaimPaths {
   input: string;
   work: string;
   artifacts: string;
+  inputDir?: string;
+  manifest?: string;
 }
 
 export interface ClaimResponse {

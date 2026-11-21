@@ -152,7 +152,12 @@ if(stage==='${keys.at(-1)}' && prompt.includes('Create a self-contained report.h
       await expect.poll(async () => (await current()).status, { timeout: 8000 }).toBe('review');
       expect((await current()).artifacts).toEqual([]);
       expect((await fetch(url)).status).toBe(404);
-      await server.post('/api/jobs/' + job.id + '/approve');
+      const review = (await current()).stages.find((stage) => stage.status === 'review')!;
+      await server.post('/api/jobs/' + job.id + '/approve', {
+        stage: review.key,
+        attempt: review.attempts,
+        reviewSequence: review.reviewSequence,
+      });
       await expect.poll(async () => (await current()).status, { timeout: 8000 }).toBe('done');
       expect(await (await fetch(url)).text()).toBe('reviewed final report');
       expect((await current()).stages.map((s) => s.attempts)).toEqual(keys.map(() => 1));

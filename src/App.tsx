@@ -113,7 +113,18 @@ function Monitor({ project }: { project: ProjectSpec }) {
     window.dispatchEvent(new Event('popstate'));
   };
   const approve = useMutation({
-    mutationFn: (jobId: string) => request(`/api/jobs/${jobId}/approve`, jsonRequest('POST', {})),
+    mutationFn: (jobId: string) => {
+      const job = state.jobs.find((item) => item.id === jobId);
+      const stage = job?.stages.find((item) => item.status === 'review');
+      return request(
+        `/api/jobs/${jobId}/approve`,
+        jsonRequest('POST', {
+          stage: stage?.key,
+          attempt: stage?.attempts,
+          reviewSequence: stage?.reviewSequence,
+        }),
+      );
+    },
     onSuccess: () => {
       showToast('レビューを承認しました。');
       return queryClient.invalidateQueries({ queryKey: ['monitor', project.id] });
@@ -176,9 +187,12 @@ function Monitor({ project }: { project: ProjectSpec }) {
               showAllLogs={showAllLogs}
               project={state.project}
               nowMs={nowMs}
+              approving={approve.isPending}
               onSelectStage={handleSelectStage}
               onShowAllLogs={() => setShowAllLogs(true)}
-              onApproveReview={(jobId) => approve.mutate(jobId)}
+              onApproveReview={(jobId) => {
+                if (!approve.isPending) approve.mutate(jobId);
+              }}
             />
 
             <TraceSection job={selectedJob} nowMs={nowMs} onSelectStage={handleSelectStage} />

@@ -2,12 +2,24 @@ import { QueryClient, useQuery } from '@tanstack/react-query';
 import { useState, useRef, useSyncExternalStore } from 'react';
 
 import type { AppStateResponse, ProjectSpec } from '../shared/types.ts';
+import type { ConditionResult } from '../shared/conditions.ts';
+
+export class ApiError extends Error {
+  status: number;
+  result?: ConditionResult;
+  constructor(message: string, status: number, result?: ConditionResult) {
+    super(message);
+    this.status = status;
+    this.result = result;
+  }
+}
 
 export const queryClient = new QueryClient();
 export async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+  if (!response.ok)
+    throw new ApiError(result.error || `HTTP ${response.status}`, response.status, result.result);
   return result as T;
 }
 
@@ -42,7 +54,8 @@ function subscribeStream(notify: () => void) {
   };
   source.onmessage = (event) => {
     const change = JSON.parse(event.data);
-    if (!change.sequence) void queryClient.invalidateQueries({ queryKey: ['projects'] });
+    if (!change.sequence && !change.inputsUpdated)
+      void queryClient.invalidateQueries({ queryKey: ['projects'] });
     // A removed project may have been the one currently selected.
     void queryClient.invalidateQueries({
       queryKey: ['monitor', change.projectId ?? change.deletedProjectId],

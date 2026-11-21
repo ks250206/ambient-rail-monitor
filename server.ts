@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   appendFileSync,
+  copyFileSync,
   createReadStream,
   existsSync,
   type FSWatcher,
   mkdirSync,
+  lstatSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -18,8 +20,32 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { DEFAULT_INPUT, projectAutomation, stageAutomation } from './shared/automation.ts';
+import { failedEvidence, parseCondition, validRelativePath } from './shared/conditions.ts';
+import type { ConditionResult } from './shared/conditions.ts';
+import {
+  checkCondition,
+  INPUT_LIMITS,
+  inventory,
+  safeFile,
+  snapshotDataset,
+  verifyDataset,
+} from './shared/datasets.ts';
+import type { Inventory } from './shared/datasets.ts';
+import {
+  boundedInteger,
+  canRetry,
+  MAX_BUDGET_MS,
+  resolveExecution,
+} from './shared/execution-policy.ts';
+import type { FailureKind } from './shared/execution-policy.ts';
+import { findRegisteredOnce, observeInput } from './shared/inbox-observation.ts';
+import type { InboxObservation } from './shared/inbox-observation.ts';
+import { validateTemplate } from './shared/prompts.ts';
+
 import type {
   ArtifactInfo,
+  InputCandidate,
   EventType,
   LlmConfig,
   ProjectSpec,
@@ -29,6 +55,7 @@ import type {
   WorkflowEvent,
   WorkflowJob,
   WorkflowStageSpec,
+  WorkflowSnapshot,
 } from './shared/types.ts';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -115,10 +142,13 @@ const DEFAULT_ACCEPTANCE = [
 
 const WORKER_EVENT_TYPES = new Set<WorkerEventType>([
   'stage.started',
+  'stage.executed',
+  'gate.evaluated',
   'stage.progress',
   'stage.succeeded',
   'stage.failed',
   'stage.retry',
+  'stage.retry.ready',
   'review.required',
   'artifact.created',
   'job.completed',
@@ -126,19 +156,49 @@ const WORKER_EVENT_TYPES = new Set<WorkerEventType>([
   'agent.event',
 ]);
 
-interface ObservedFile {
-  signature: string;
-  seenAt: number;
-  ingested: boolean;
-}
-
 const projects = new Map<string, ProjectSpec>();
 const inboxWatchers = new Map<string, FSWatcher>();
 const jobs = new Map<string, WorkflowJob>();
 const allEvents: WorkflowEvent[] = [];
 const subscribers = new Set<ServerResponse>();
-const observed = new Map<string, ObservedFile>();
+const observed = new Map<string, InboxObservation>();
+const inputCandidates = new Map<string, InputCandidate[]>();
+interface UploadSession {
+  id: string;
+  projectId: string;
+  name: string;
+  kind: 'file' | 'directory';
+  files: Array<{ path: string; bytes: number }>;
+  received: Set<string>;
+  busy: Set<string>;
+  expiresAt: number;
+  jobId?: string;
+}
+const uploads = new Map<string, UploadSession>();
+const UPLOADS = path.join(DATA, 'uploads');
+mkdirSync(UPLOADS, { recursive: true });
+// Uncommitted transfers never enter a watched inbox and can be discarded on restart.
+for (const name of readdirSync(UPLOADS))
+  rmSync(path.join(UPLOADS, name), { recursive: true, force: true });
+setInterval(() => {
+  for (const [id, upload] of uploads) {
+    if (upload.expiresAt < Date.now() && upload.busy.size === 0) {
+      rmSync(path.join(UPLOADS, id), { recursive: true, force: true });
+      uploads.delete(id);
+    }
+  }
+}, 60_000).unref();
 let eventSerial = 0;
+
+class HttpError extends Error {
+  status: number;
+  result?: ConditionResult;
+  constructor(status: number, message: string, result?: ConditionResult) {
+    super(message);
+    this.status = status;
+    this.result = result;
+  }
+}
 
 function asString(value: unknown): string {
   if (typeof value === 'string') return value;
@@ -168,15 +228,18 @@ function normalizeLlmConfig(raw: unknown): LlmConfig {
 }
 
 function normalizeStages(raw: unknown, fallback: WorkflowStageSpec[]): WorkflowStageSpec[] {
-  if (!Array.isArray(raw) || raw.length === 0) {
+  if (raw === undefined) {
     return fallback.map((stage) => ({ ...stage, llm: { ...stage.llm } }));
   }
 
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 20)
+    throw new Error('工程は1〜20件で指定してください。');
   const seen = new Set<string>();
   const normalized: WorkflowStageSpec[] = [];
 
   for (const [index, entry] of raw.slice(0, 20).entries()) {
-    if (!entry || typeof entry !== 'object') continue;
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+      throw new Error('工程の形式が不正です。');
     const item = entry as Record<string, unknown>;
     const label =
       typeof item.label === 'string' && item.label.trim()
@@ -202,8 +265,9 @@ function normalizeStages(raw: unknown, fallback: WorkflowStageSpec[]): WorkflowS
       key,
       label,
       short,
-      instruction: typeof item.instruction === 'string' ? item.instruction.slice(0, 2000) : '',
+      instruction: typeof item.instruction === 'string' ? item.instruction.slice(0, 8000) : '',
       llm: normalizeLlmConfig(item.llm),
+      ...stageAutomation(item),
     });
   }
 
@@ -242,10 +306,27 @@ function buildProjectSpec(
   id: string,
   raw: Record<string, unknown>,
   existing?: ProjectSpec,
+  options: { strictTemplates?: boolean } = {},
 ): ProjectSpec {
-  const now = new Date().toISOString();
+  // A project timestamp also identifies its revision, including back-to-back saves.
+  const previousTime = Date.parse(existing?.updatedAt ?? '') || 0;
+  const now = new Date(Math.max(Date.now(), previousTime + 1)).toISOString();
   const baseStages = existing?.stages ?? defaultStages();
-  const stages = normalizeStages(raw.stages, baseStages);
+  let stages: WorkflowStageSpec[];
+  let automation: ReturnType<typeof projectAutomation>;
+  try {
+    stages = normalizeStages(raw.stages, baseStages);
+    automation = projectAutomation(raw, existing);
+    if (options.strictTemplates !== false) {
+      validateTemplate(automation.prompt ?? '');
+      for (const stage of stages) {
+        validateTemplate(stage.instruction);
+        validateTemplate(stage.acceptanceCriteria ?? '');
+      }
+    }
+  } catch (error) {
+    throw new HttpError(400, (error as Error).message);
+  }
   ensureProjectDirs(id);
 
   return {
@@ -270,28 +351,51 @@ function buildProjectSpec(
     artifactsDir: toDisplayRelative(projectArtifactsPath(id)),
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : existing?.createdAt || now,
     updatedAt: now,
+    ...automation,
   };
 }
 
+/**
+ * Entries that could not be loaded are written back verbatim so that a later save
+ * never silently drops them; their ids stay reserved until the entry is repaired.
+ */
+let unreadableProjectEntries: unknown[] = [];
+const reservedProjectIds = new Set<string>();
+
 function saveProjects(): void {
-  writeFileSync(PROJECTS_FILE, `${JSON.stringify([...projects.values()], null, 2)}\n`, 'utf8');
+  writeFileSync(
+    PROJECTS_FILE,
+    `${JSON.stringify([...projects.values(), ...unreadableProjectEntries], null, 2)}\n`,
+    'utf8',
+  );
 }
 
 function loadProjects(): void {
   projects.clear();
+  unreadableProjectEntries = [];
+  reservedProjectIds.clear();
+  const unreadable: unknown[] = [];
+  const hadProjectsFile = existsSync(PROJECTS_FILE);
 
-  if (existsSync(PROJECTS_FILE)) {
+  if (hadProjectsFile) {
     try {
       const parsed = JSON.parse(readFileSync(PROJECTS_FILE, 'utf8')) as unknown;
       if (Array.isArray(parsed)) {
         for (const entry of parsed) {
-          if (!entry || typeof entry !== 'object') continue;
-          const item = entry as Record<string, unknown>;
-          const id = slugifyId(asString(item.id), DEFAULT_PROJECT_ID);
-          if (projects.has(id)) continue;
-          const spec = buildProjectSpec(id, item);
-          if (typeof item.updatedAt === 'string') spec.updatedAt = item.updatedAt;
-          projects.set(id, spec);
+          try {
+            if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+              throw new Error('工程の形式が不正です。');
+            const item = entry as Record<string, unknown>;
+            const id = slugifyId(asString(item.id), DEFAULT_PROJECT_ID);
+            if (projects.has(id)) throw new Error(`プロジェクトIDが重複しています: ${id}`);
+            const spec = buildProjectSpec(id, item, undefined, { strictTemplates: false });
+            if (typeof item.updatedAt === 'string') spec.updatedAt = item.updatedAt;
+            projects.set(id, spec);
+          } catch (entryErr) {
+            const message = entryErr instanceof Error ? entryErr.message : String(entryErr);
+            console.error('Failed to load project entry from projects.json:', message);
+            unreadable.push(entry);
+          }
         }
       }
     } catch (err) {
@@ -322,10 +426,15 @@ function loadProjects(): void {
             : stage.instruction,
         llm: normalizeLlmConfig(rawStageLlm[stage.key]),
       }));
-      const spec = buildProjectSpec(DEFAULT_PROJECT_ID, {
-        ...legacy,
-        stages: migratedStages,
-      });
+      const spec = buildProjectSpec(
+        DEFAULT_PROJECT_ID,
+        {
+          ...legacy,
+          stages: migratedStages,
+        },
+        undefined,
+        { strictTemplates: false },
+      );
       projects.set(DEFAULT_PROJECT_ID, spec);
       saveProjects();
     } catch (err) {
@@ -334,7 +443,30 @@ function loadProjects(): void {
     }
   }
 
+  if (projects.size > 0 && unreadable.length > 0) {
+    // Keep an untouched copy for manual repair before any later save rewrites the file.
+    try {
+      copyFileSync(PROJECTS_FILE, `${PROJECTS_FILE}.corrupt-${Date.now()}`);
+    } catch (backupErr) {
+      console.error('Failed to back up partially unreadable projects.json:', backupErr);
+    }
+    unreadableProjectEntries = unreadable;
+    for (const entry of unreadable) {
+      if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+        const rawId = asString((entry as Record<string, unknown>).id);
+        if (rawId.trim()) reservedProjectIds.add(slugifyId(rawId, DEFAULT_PROJECT_ID));
+      }
+    }
+  }
+
   if (projects.size === 0) {
+    if (hadProjectsFile && existsSync(PROJECTS_FILE)) {
+      try {
+        renameSync(PROJECTS_FILE, `${PROJECTS_FILE}.corrupt-${Date.now()}`);
+      } catch (backupErr) {
+        console.error('Failed to back up unreadable projects.json:', backupErr);
+      }
+    }
     const spec = buildProjectSpec(DEFAULT_PROJECT_ID, {
       name: '科学データ解析ワークフロー',
     });
@@ -370,6 +502,14 @@ function broadcastUpdate(payloadObject: Record<string, unknown>): void {
     } catch {
       subscribers.delete(subscriber);
     }
+  }
+}
+
+function validate<T>(read: () => T): T {
+  try {
+    return read();
+  } catch (error) {
+    throw new HttpError(400, (error as Error).message);
   }
 }
 
@@ -420,7 +560,11 @@ function rebuild(event: WorkflowEvent): void {
       artifacts: [],
       events: [event],
       reviewApproved: false,
-      lastMessage: '新しいファイルを検出',
+      lastMessage: event.dataset
+        ? `${event.dataset.files.length} ファイルを登録`
+        : '新しいファイルを検出',
+      dataset: event.dataset,
+      workflow: event.workflow,
     });
     return;
   }
@@ -430,6 +574,9 @@ function rebuild(event: WorkflowEvent): void {
   job.events.push(event);
   if (event.message) job.lastMessage = event.message;
   const step = job.stages.find((stage) => stage.key === event.stage);
+  if (step && event.elapsedMs !== undefined) step.activeMs = (step.activeMs ?? 0) + event.elapsedMs;
+  if (step && event.workspace) step.workspace = event.workspace;
+  if (step && event.failureKind) step.failureKind = event.failureKind;
 
   switch (event.type) {
     case 'job.claimed':
@@ -444,7 +591,19 @@ function rebuild(event: WorkflowEvent): void {
         step.attempts += 1;
         step.startedAt = event.at;
         step.endedAt = null;
+        step.gates = [];
+        step.failureKind = undefined;
+        step.retryAt = undefined;
+        step.reviewSequence = undefined;
+        step.deadlineAt = event.deadlineAt;
       }
+      break;
+    case 'gate.evaluated':
+      if (step && event.gate)
+        step.gates = [
+          ...(step.gates ?? []).filter((gate) => gate.scope !== event.gate!.scope),
+          event.gate,
+        ];
       break;
     case 'stage.progress':
       if (step && event.summary) {
@@ -476,12 +635,18 @@ function rebuild(event: WorkflowEvent): void {
     case 'stage.retry':
       if (step) {
         step.status = 'retry';
+        step.retryAt = event.retryAt;
       }
+      break;
+    case 'stage.retry.ready':
+      if (step) step.retryAt = undefined;
       break;
     case 'review.required':
       job.status = 'review';
       if (step) {
         step.status = 'review';
+        step.endedAt ||= event.at;
+        step.reviewSequence = event.sequence;
         if (event.summary) {
           step.summary = event.summary;
         } else if (event.message && !step.summary) {
@@ -494,6 +659,9 @@ function rebuild(event: WorkflowEvent): void {
       job.status = 'queued';
       if (step) {
         step.status = 'success';
+        step.approvedAttempt = step.attempts;
+        step.reviewSequence = undefined;
+        step.endedAt ||= event.at;
         if (event.summary) step.summary = event.summary;
       } else {
         const reviewStage = job.stages.find((stage) => stage.status === 'review');
@@ -512,6 +680,13 @@ function rebuild(event: WorkflowEvent): void {
     case 'job.failed':
       job.status = 'failed';
       job.finishedAt = event.at;
+      for (const active of job.stages) {
+        if (active.status === 'running' || active.status === 'retry') {
+          active.status = 'failed';
+          active.endedAt = event.at;
+          active.failureKind = event.failureKind ?? active.failureKind;
+        }
+      }
       break;
     default:
       break;
@@ -565,19 +740,30 @@ function deliverJSON(res: ServerResponse, data: unknown, code = 200): void {
 function readBody(req: IncomingMessage, limit = 100_000): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let rejected = false;
     const parts: Buffer[] = [];
     req.on('data', (chunk: Buffer) => {
+      if (rejected) return;
       size += chunk.length;
       if (size > limit) {
-        reject(new Error('Payload too large'));
-        req.destroy();
+        rejected = true;
+        parts.length = 0;
+        reject(new HttpError(413, 'Payload too large'));
       } else {
         parts.push(chunk);
       }
     });
     req.on('end', () => resolve(Buffer.concat(parts)));
     req.on('error', reject);
+    req.on('aborted', () => reject(new HttpError(400, '転送が中断されました。')));
   });
+}
+
+async function readJSON(req: IncomingMessage, limit = 100_000): Promise<Record<string, unknown>> {
+  const value: unknown = JSON.parse((await readBody(req, limit)).toString('utf8') || '{}');
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new HttpError(400, 'JSON オブジェクトを指定してください。');
+  return value as Record<string, unknown>;
 }
 
 function jobWorkspace(job: WorkflowJob): string {
@@ -604,6 +790,10 @@ function saveInput(id: string, file: string, bytes: Buffer): string {
 }
 
 function findJobInputFile(job: WorkflowJob): string | null {
+  if (job.dataset) {
+    const root = path.join(DATA, 'inputs', job.id);
+    return verifyDataset(root, job.dataset) ? path.join(root, job.dataset.files[0].path) : null;
+  }
   const snapshot = inputSnapshot(job.id, job.file);
   if (existsSync(snapshot)) return snapshot;
   // Older events have no snapshot. Only recover bytes matching the original input.
@@ -625,39 +815,84 @@ function findJobArtifactFile(job: WorkflowJob, artifactName: string): string {
   return path.join(LEGACY_ARTIFACTS, job.id, artifactName);
 }
 
-function enqueue(
-  file: string,
-  options: { projectId?: string; inboxRoot?: string; demo?: boolean; needsReview?: boolean } = {},
+function enqueueInventory(
+  project: ProjectSpec,
+  list: Inventory,
+  name: string,
+  kind: 'file' | 'directory',
+  source: string,
+  options: {
+    single?: string;
+    demo?: boolean;
+    needsReview?: boolean;
+    quietMs: number;
+    bypassTrigger?: boolean;
+  },
 ): WorkflowJob {
-  const project = getProjectOrDefault(options.projectId);
-  const basename = cleanName(file);
-  const inboxDir = options.inboxRoot || projectInboxPath(project.id);
-  const absolute = path.join(inboxDir, basename);
-  const bytes = readFileSync(absolute);
-  const hash = createHash('sha256').update(bytes).digest('hex');
-
-  const existing = Array.from(jobs.values()).find(
-    (job) => job.projectId === project.id && job.file === basename && job.hash === hash,
-  );
-  if (existing) return existing;
-
   let id: string;
   do {
     id = `run_${randomUUID().slice(0, 8)}`;
   } while (jobs.has(id));
+  const inputDir = path.join(DATA, 'inputs', id);
+  mkdirSync(path.dirname(inputDir), { recursive: true });
+  const dataset = snapshotDataset(list, inputDir, name, kind, source, options.single);
+  try {
+    if (!options.bypassTrigger) {
+      const result = checkCondition(
+        inventory(inputDir),
+        name,
+        options.quietMs,
+        project.input?.condition ?? null,
+      );
+      if (result.status !== 'pass')
+        throw new HttpError(
+          422,
+          '起動条件を満たしていません。投入内容または条件を確認してください。',
+          result,
+        );
+    }
+    const manual = source.startsWith('upload:') || source.startsWith('demo:');
+    const existing = manual
+      ? undefined
+      : [...jobs.values()].find(
+          (job) =>
+            job.projectId === project.id &&
+            (job.dataset ? job.dataset.source === source : job.file === name) &&
+            job.hash === dataset.hash,
+        );
+    if (existing) {
+      rmSync(inputDir, { recursive: true, force: true });
+      return existing;
+    }
+  } catch (error) {
+    rmSync(inputDir, { recursive: true, force: true });
+    throw error;
+  }
+  const definition = structuredClone(project);
+  const workflow: WorkflowSnapshot = {
+    version: 1,
+    hash: createHash('sha256').update(JSON.stringify(definition)).digest('hex'),
+    project: definition,
+  };
   const stageDefs: StageDefinition[] = project.stages.map(({ key, label, short }) => ({
     key,
     label,
     short,
   }));
-  saveInput(id, basename, bytes);
+  mkdirSync(path.join(DATA, 'manifests'), { recursive: true });
+  writeFileSync(
+    path.join(DATA, 'manifests', `${id}.json`),
+    JSON.stringify(dataset, null, 2) + '\n',
+  );
   appendEvent({
     type: 'job.created',
     jobId: id,
     projectId: project.id,
-    file: basename,
-    bytes: bytes.length,
-    hash,
+    file: name,
+    bytes: dataset.bytes,
+    hash: dataset.hash,
+    dataset,
+    workflow,
     demo: Boolean(options.demo),
     needsReview: Boolean(options.needsReview),
     stages: stageDefs,
@@ -669,45 +904,126 @@ function enqueue(
   return created;
 }
 
-function scanInboxDir(dir: string, projectId: string): void {
+function scanInboxDir(dir: string, project: ProjectSpec): InputCandidate[] {
+  const candidates: InputCandidate[] = [];
+  const config = project.input ?? DEFAULT_INPUT;
   let names: string[] = [];
   try {
     names = readdirSync(dir);
   } catch {
-    return;
+    return candidates;
   }
-
+  const currentKeys = new Set<string>();
   for (const name of names) {
-    if (!/\.(csv|tsv|json|txt|dat)$/i.test(name)) continue;
+    const obsKey = `${dir}::${name}`;
+    currentKeys.add(obsKey);
+    let kind: 'file' | 'directory' = 'file';
     try {
-      const st = statSync(path.join(dir, name));
-      if (!st.isFile() || st.size > MAX_UPLOAD) continue;
-      const obsKey = `${dir}::${name}`;
-      const signature = `${st.size}:${st.mtimeMs}`;
-      const previous = observed.get(obsKey);
-      if (previous?.signature === signature) {
-        if (
-          !previous.ingested &&
-          Date.now() - previous.seenAt > 1200 &&
-          Date.now() - st.mtimeMs > 700
-        ) {
-          observed.set(obsKey, { signature, seenAt: previous.seenAt, ingested: true });
-          enqueue(name, { projectId, inboxRoot: dir });
-        }
-      } else {
-        observed.set(obsKey, { signature, seenAt: Date.now(), ingested: false });
+      const st = lstatSync(path.join(dir, name));
+      kind = st.isDirectory() ? 'directory' : 'file';
+      if (config.mode === 'file' && kind !== 'file') continue;
+      if (config.mode === 'directory' && kind !== 'directory') continue;
+      if (kind === 'file' && !/\.(csv|tsv|json|txt|dat)$/i.test(name)) continue;
+      if (st.isSymbolicLink()) throw new Error('シンボリックリンクは取り込めません。');
+      const list = kind === 'file' ? inventory(dir, name) : inventory(path.join(dir, name));
+      const observation = observeInput(observed, obsKey, list.signature);
+      const candidate: InputCandidate = {
+        name,
+        kind,
+        origin: dir === LEGACY_INBOX ? 'legacy' : 'project',
+        fileCount: list.files.length,
+        bytes: list.bytes,
+        status: 'waiting',
+        message: '転送完了を待っています。',
+      };
+      candidates.push(candidate);
+      if (observation.ingested) {
+        candidate.status = 'registered';
+        candidate.message = 'この内容は登録済みです。';
+        continue;
       }
-    } catch {
-      // File may still be written or removed concurrently.
+      const quietMs = Math.max(
+        0,
+        Math.min(
+          Date.now() - observation.seenAt,
+          ...list.files.map((file) => Date.now() - file.mtimeMs),
+        ),
+      );
+      if (list.files.length === 0) {
+        candidate.message = 'ファイルの追加を待っています。';
+        continue;
+      }
+      if (quietMs < config.settleMs) {
+        candidate.message = `変更が止まってから ${Math.ceil(config.settleMs / 1000)} 秒待ちます。`;
+        continue;
+      }
+      const source = `${dir === LEGACY_INBOX ? 'legacy' : 'project'}:${kind}:${name}`;
+      // verifyDataset re-hashes up to 200 MB synchronously; do it once per signature,
+      // not on every 1 s scan of an unchanged directory that keeps failing its trigger.
+      const existingMatch =
+        kind === 'directory'
+          ? findRegisteredOnce(observation, () =>
+              [...jobs.values()].find(
+                (job) =>
+                  job.projectId === project.id &&
+                  job.dataset?.source === source &&
+                  job.dataset.bytes === list.bytes &&
+                  job.dataset.files.length === list.files.length &&
+                  verifyDataset(list.root, job.dataset),
+              ),
+            )
+          : undefined;
+      if (existingMatch) {
+        observation.ingested = true;
+        candidate.status = 'registered';
+        candidate.message = 'この内容は登録済みです。';
+        continue;
+      }
+      candidate.result = checkCondition(list, name, quietMs, config.condition);
+      if (candidate.result.status !== 'pass') {
+        candidate.message = failedEvidence(candidate.result);
+        if (candidate.result.status === 'error') candidate.status = 'error';
+        continue;
+      }
+      enqueueInventory(project, list, name, kind, source, {
+        single: kind === 'file' ? name : undefined,
+        quietMs,
+      });
+      observation.ingested = true;
+      candidate.status = 'registered';
+      candidate.message = 'この内容をジョブとして登録しました。';
+    } catch (error) {
+      const candidate = candidates.find((item) => item.name === name);
+      if (candidate) {
+        candidate.status = 'error';
+        candidate.message = (error as Error).message;
+      } else
+        candidates.push({
+          name,
+          kind,
+          origin: dir === LEGACY_INBOX ? 'legacy' : 'project',
+          fileCount: 0,
+          bytes: 0,
+          status: 'error',
+          message: (error as Error).message,
+        });
     }
   }
+  for (const key of observed.keys())
+    if (key.startsWith(`${dir}::`) && !currentKeys.has(key)) observed.delete(key);
+  return candidates;
 }
 
 function scanAllInboxes(): void {
   for (const project of projects.values()) {
-    scanInboxDir(projectInboxPath(project.id), project.id);
+    const candidates = scanInboxDir(projectInboxPath(project.id), project);
+    if (project.id === getDefaultProject().id)
+      candidates.push(...scanInboxDir(LEGACY_INBOX, project));
+    if (JSON.stringify(inputCandidates.get(project.id)) !== JSON.stringify(candidates)) {
+      inputCandidates.set(project.id, candidates);
+      broadcastUpdate({ projectId: project.id, inputsUpdated: true });
+    }
   }
-  scanInboxDir(LEGACY_INBOX, getDefaultProject().id);
 }
 
 function ensureInboxWatcher(dir: string): void {
@@ -752,14 +1068,20 @@ function makeSample(projectId?: string, review = false): WorkflowJob {
       Math.sin(i * 1.7) * 9;
     rows.push(`${x.toFixed(3)},${y.toFixed(2)}`);
   }
-  const inboxDir = projectInboxPath(project.id);
-  writeFileSync(path.join(inboxDir, name), rows.join('\n'));
-  return enqueue(name, {
-    projectId: project.id,
-    inboxRoot: inboxDir,
-    demo: true,
-    needsReview: review,
-  });
+  const staging = path.join(UPLOADS, randomUUID());
+  mkdirSync(staging, { recursive: true });
+  try {
+    writeFileSync(path.join(staging, name), rows.join('\n'), { flag: 'wx' });
+    return enqueueInventory(project, inventory(staging), name, 'file', `demo:${randomUUID()}`, {
+      single: name,
+      demo: true,
+      needsReview: review,
+      quietMs: Infinity,
+      bypassTrigger: true,
+    });
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
 }
 
 function serveFile(
@@ -830,8 +1152,15 @@ interface EventRequestBody {
   message?: unknown;
   summary?: unknown;
   details?: unknown;
-  stageConfig?: { instruction?: unknown; llm?: unknown };
+  stageConfig?: WorkflowEvent['stageConfig'];
   artifact?: { name?: unknown };
+  attempt?: unknown;
+  elapsedMs?: unknown;
+  workspace?: unknown;
+  gate?: { scope?: unknown };
+  failureKind?: unknown;
+  retryAt?: unknown;
+  deadlineAt?: unknown;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -866,6 +1195,7 @@ const server = http.createServer(async (req, res) => {
         events: filteredEvents,
         stages: activeProject.stages.map(({ key, label, short }) => ({ key, label, short })),
         updatedAt: new Date().toISOString(),
+        candidates: inputCandidates.get(activeProject.id) ?? [],
       });
     }
 
@@ -874,10 +1204,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/projects' && req.method === 'POST') {
-      const raw = JSON.parse((await readBody(req, 100_000)).toString('utf8') || '{}') as Record<
-        string,
-        unknown
-      >;
+      const raw = await readJSON(req, 4_000_000);
       const rawName = asString(raw.name || raw.title).trim();
       if (!rawName) {
         return deliverJSON(res, { error: 'Project name is required' }, 400);
@@ -886,7 +1213,7 @@ const server = http.createServer(async (req, res) => {
       const baseId = slugifyId(requestedId || rawName, `project-${randomUUID().slice(0, 6)}`);
       let id = baseId;
       let suffix = 2;
-      while (projects.has(id)) {
+      while (projects.has(id) || reservedProjectIds.has(id)) {
         id = `${baseId}-${suffix}`;
         suffix += 1;
       }
@@ -907,12 +1234,14 @@ const server = http.createServer(async (req, res) => {
 
     if (projectMatch && req.method === 'PUT') {
       const projectId = projectMatch[1];
-      const raw = JSON.parse((await readBody(req, 100_000)).toString('utf8') || '{}') as Record<
-        string,
-        unknown
-      >;
+      const raw = await readJSON(req, 4_000_000);
       const existing = projects.get(projectId);
       if (!existing) return deliverJSON(res, { error: 'Project not found' }, 404);
+      if (raw.expectedUpdatedAt !== undefined && raw.expectedUpdatedAt !== existing.updatedAt)
+        throw new HttpError(
+          409,
+          '保存前にプロジェクトが更新されました。最新版を確認してください。',
+        );
       const updated = buildProjectSpec(projectId, raw, existing);
       projects.set(projectId, updated);
       saveProjects();
@@ -940,6 +1269,10 @@ const server = http.createServer(async (req, res) => {
       const dir = projectInboxPath(projectId);
       inboxWatchers.get(dir)?.close();
       inboxWatchers.delete(dir);
+      inputCandidates.delete(projectId);
+      for (const key of observed.keys()) {
+        if (key.startsWith(`${dir}::`)) observed.delete(key);
+      }
       projects.delete(projectId);
       saveProjects();
       broadcastUpdate({ deletedProjectId: projectId });
@@ -953,11 +1286,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/workflow' && req.method === 'PUT') {
+      const raw = await readJSON(req, 4_000_000);
       const target = getProjectOrDefault(url.searchParams.get('project'));
-      const raw = JSON.parse((await readBody(req, 100_000)).toString('utf8') || '{}') as Record<
-        string,
-        unknown
-      >;
       const updated = buildProjectSpec(target.id, raw, target);
       projects.set(target.id, updated);
       saveProjects();
@@ -989,10 +1319,161 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/demo' && req.method === 'POST') {
-      const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as DemoRequestBody;
+      const body = (await readJSON(req)) as DemoRequestBody;
       if (body.projectId && !projects.has(body.projectId))
         return deliverJSON(res, { error: 'Project not found' }, 404);
       return deliverJSON(res, { job: makeSample(body.projectId, Boolean(body.review)) }, 201);
+    }
+
+    if (pathname === '/api/uploads' && req.method === 'POST') {
+      const raw = await readJSON(req, 2_000_000);
+      const projectId = asString(raw.projectId);
+      if (!projects.has(projectId)) throw new HttpError(404, 'Project not found');
+      if ([...uploads.values()].filter((item) => !item.jobId).length >= 16)
+        throw new HttpError(429, '同時転送の上限です。転送中の入力を完了・取消してください。');
+      if (typeof raw.name !== 'string' || !raw.name.trim() || raw.name.length > 120)
+        throw new HttpError(400, 'データセット名を120文字以内で指定してください。');
+      if (raw.kind !== 'file' && raw.kind !== 'directory')
+        throw new HttpError(400, '入力単位が不正です。');
+      if (
+        !Array.isArray(raw.files) ||
+        raw.files.length < 1 ||
+        raw.files.length > INPUT_LIMITS.files
+      )
+        throw new HttpError(400, '1〜1000ファイルを選択してください。');
+      const seen = new Set<string>();
+      let bytes = 0;
+      const files = raw.files.map((item: unknown) => {
+        if (!item || typeof item !== 'object') throw new HttpError(400, 'ファイル一覧が不正です。');
+        const file = item as Record<string, unknown>;
+        if (
+          typeof file.path !== 'string' ||
+          !validRelativePath(file.path) ||
+          file.path.split('/').length > INPUT_LIMITS.depth
+        )
+          throw new HttpError(400, '安全な相対パスを指定してください。');
+        const portable = file.path.normalize('NFC').toLowerCase();
+        if (seen.has(portable))
+          throw new HttpError(400, `同じ相対パスが複数あります: ${file.path}`);
+        seen.add(portable);
+        const size = validate(() =>
+          boundedInteger(file.bytes, 'ファイルサイズ', INPUT_LIMITS.fileBytes),
+        );
+        bytes += size;
+        return { path: file.path, bytes: size };
+      });
+      for (const file of seen) {
+        const parts = file.split('/');
+        for (let n = 1; n < parts.length; n++)
+          if (seen.has(parts.slice(0, n).join('/')))
+            throw new HttpError(400, 'ファイルとフォルダのパスが重複しています。');
+      }
+      if (bytes > INPUT_LIMITS.totalBytes || (raw.kind === 'file' && files.length !== 1))
+        throw new HttpError(400, '入力の合計は200MB以内、単一ファイル入力は1件までです。');
+      const id = randomUUID();
+      uploads.set(id, {
+        id,
+        projectId,
+        name: raw.name.trim(),
+        kind: raw.kind,
+        files,
+        received: new Set(),
+        busy: new Set(),
+        expiresAt: Date.now() + 30 * 60_000,
+      });
+      mkdirSync(path.join(UPLOADS, id));
+      return deliverJSON(res, { id, files: files.length }, 201);
+    }
+
+    const uploadMatch = pathname.match(/^\/api\/uploads\/([a-f0-9-]{36})(?:\/(files|commit))?$/);
+    if (uploadMatch) {
+      const upload = uploads.get(uploadMatch[1]);
+      if (!upload) throw new HttpError(404, '転送が見つかりません。再度投入してください。');
+      const root = path.join(UPLOADS, upload.id);
+      upload.expiresAt = Date.now() + 30 * 60_000;
+      if (req.method === 'DELETE' && !uploadMatch[2]) {
+        if (upload.busy.size) throw new HttpError(409, '転送中です。');
+        rmSync(root, { recursive: true, force: true });
+        uploads.delete(upload.id);
+        return deliverJSON(res, { ok: true });
+      }
+      if (req.method === 'PUT' && uploadMatch[2] === 'files') {
+        const relative = url.searchParams.get('path');
+        const file = upload.files.find((item) => item.path === relative);
+        if (!file) throw new HttpError(400, '宣言されていないファイルです。');
+        if (upload.jobId || upload.busy.has(file.path))
+          throw new HttpError(409, 'このファイルの転送は処理中または確定済みです。');
+        upload.busy.add(file.path);
+        try {
+          const body = await readBody(req, Math.max(1, file.bytes));
+          if (body.length !== file.bytes)
+            throw new HttpError(400, '宣言されたサイズと一致しません。');
+          mkdirSync(path.dirname(path.join(root, file.path)), { recursive: true });
+          writeFileSync(path.join(root, file.path), body);
+          upload.received.add(file.path);
+          return deliverJSON(res, { received: upload.received.size, total: upload.files.length });
+        } finally {
+          upload.busy.delete(file.path);
+        }
+      }
+      if (req.method === 'POST' && uploadMatch[2] === 'commit') {
+        if (upload.jobId) return deliverJSON(res, { job: jobs.get(upload.jobId) });
+        if (upload.busy.size || upload.received.size !== upload.files.length)
+          throw new HttpError(409, 'すべてのファイルの転送完了後に確定してください。');
+        const project = projects.get(upload.projectId);
+        if (!project) throw new HttpError(404, 'Project not found');
+        const job = enqueueInventory(
+          project,
+          inventory(root),
+          upload.name,
+          upload.kind,
+          `upload:${upload.id}`,
+          { quietMs: Infinity },
+        );
+        upload.jobId = job.id;
+        rmSync(root, { recursive: true, force: true });
+        return deliverJSON(res, { job }, 201);
+      }
+      throw new HttpError(405, 'Method not allowed');
+    }
+
+    const checkMatch = pathname.match(/^\/api\/projects\/([a-z0-9_-]+)\/check-input$/);
+    if (checkMatch && req.method === 'POST') {
+      const project = projects.get(checkMatch[1]);
+      if (!project) throw new HttpError(404, 'Project not found');
+      const raw = await readJSON(req, 200_000);
+      const condition = validate(() => parseCondition(raw.condition, 'trigger'));
+      const name = asString(raw.name);
+      if (!validRelativePath(name) || name.includes('/'))
+        throw new HttpError(400, '監視フォルダ内の入力を選択してください。');
+      if (raw.origin !== undefined && raw.origin !== 'project' && raw.origin !== 'legacy')
+        throw new HttpError(400, '監視入力の場所が不正です。');
+      if (raw.origin === 'legacy' && project.id !== getDefaultProject().id)
+        throw new HttpError(400, '旧入力は既定プロジェクトでのみ利用できます。');
+      const dir = raw.origin === 'legacy' ? LEGACY_INBOX : projectInboxPath(project.id);
+      const target = path.join(dir, name);
+      if (!existsSync(target) || lstatSync(target).isSymbolicLink())
+        throw new HttpError(404, '入力が見つかりません。');
+      let list: Inventory;
+      try {
+        list = lstatSync(target).isDirectory() ? inventory(target) : inventory(dir, name);
+      } catch (error) {
+        return deliverJSON(res, {
+          result: {
+            status: 'error',
+            label: '入力ファイルの検証',
+            message: (error as Error).message,
+          } satisfies ConditionResult,
+        });
+      }
+      const quiet = Math.max(
+        0,
+        Math.min(
+          Date.now() - (observed.get(`${dir}::${name}`)?.seenAt ?? Date.now()),
+          ...list.files.map((file) => Date.now() - file.mtimeMs),
+        ),
+      );
+      return deliverJSON(res, { result: checkCondition(list, name, quiet, condition) });
     }
 
     if (pathname === '/api/upload' && req.method === 'POST') {
@@ -1008,18 +1489,27 @@ const server = http.createServer(async (req, res) => {
       if (!body.length) {
         return deliverJSON(res, { error: 'Empty file' }, 400);
       }
-      const safe = `${path.parse(name).name.slice(0, 70)}_${randomUUID().slice(0, 5)}${path.extname(name)}`;
-      const inboxDir = projectInboxPath(project.id);
-      writeFileSync(path.join(inboxDir, safe), body, { flag: 'wx' });
-      return deliverJSON(
-        res,
-        { job: enqueue(safe, { projectId: project.id, inboxRoot: inboxDir }) },
-        201,
-      );
+      const source = `upload:${randomUUID()}`;
+      const staging = path.join(UPLOADS, randomUUID());
+      mkdirSync(staging);
+      try {
+        writeFileSync(path.join(staging, name), body, { flag: 'wx' });
+        return deliverJSON(
+          res,
+          {
+            job: enqueueInventory(project, inventory(staging), name, 'file', source, {
+              quietMs: Infinity,
+            }),
+          },
+          201,
+        );
+      } finally {
+        rmSync(staging, { recursive: true, force: true });
+      }
     }
 
     if (pathname === '/api/jobs/claim' && req.method === 'POST') {
-      const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as ClaimRequestBody;
+      const body = (await readJSON(req)) as ClaimRequestBody;
       const requestedProject =
         typeof body.projectId === 'string' && body.projectId.trim() ? body.projectId.trim() : null;
       const job = [...jobs.values()]
@@ -1030,7 +1520,7 @@ const server = http.createServer(async (req, res) => {
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
       if (!job) return deliverJSON(res, { job: null });
 
-      const project = projects.get(job.projectId);
+      const project = job.workflow?.project ?? projects.get(job.projectId);
       const input = project && findJobInputFile(job);
       if (!project || !input) {
         const message = project
@@ -1051,6 +1541,8 @@ const server = http.createServer(async (req, res) => {
         job: jobs.get(job.id),
         paths: {
           input,
+          inputDir: job.dataset ? path.join(DATA, 'inputs', job.id) : path.dirname(input),
+          manifest: job.dataset ? path.join(DATA, 'manifests', `${job.id}.json`) : undefined,
           work: jobWorkspace(job),
           artifacts: path.join(projectArtifactsPath(job.projectId), job.id),
         },
@@ -1069,12 +1561,14 @@ const server = http.createServer(async (req, res) => {
         `Status: ${job.status}`,
         `Agent: ${job.agent || 'unassigned'}`,
         `Created: ${job.createdAt}`,
+        `Input files: ${job.dataset?.files.length ?? 1}`,
+        `Workflow revision: ${job.workflow?.hash ?? 'legacy'}`,
         '',
         ...job.events.map(
           (event) =>
             `[${event.at}] ${event.type}${event.stage ? ` [${event.stage}]` : ''} ${event.message || ''}${
               event.summary ? `\n  Summary: ${event.summary}` : ''
-            }${event.details ? `\n  ${event.details.replace(/\n/g, '\n  ')}` : ''}`,
+            }${event.details ? `\n  ${event.details.replace(/\n/g, '\n  ')}` : ''}${event.gate ? `\n  Gate: ${JSON.stringify(event.gate)}` : ''}${event.failureKind ? `\n  Failure: ${event.failureKind}` : ''}${event.elapsedMs !== undefined ? `\n  Active: ${event.elapsedMs} ms` : ''}`,
         ),
       ].join('\n')}\n`;
       res.writeHead(200, {
@@ -1091,15 +1585,183 @@ const server = http.createServer(async (req, res) => {
     if (eventMatch && req.method === 'POST') {
       const job = jobs.get(eventMatch[1]);
       if (!job) return deliverJSON(res, { error: 'Job not found' }, 404);
-      const input = JSON.parse(
-        (await readBody(req, 100_000)).toString('utf8') || '{}',
-      ) as EventRequestBody;
+      const input = (await readJSON(req, 512_000)) as EventRequestBody;
       if (!isWorkerEventType(input.type)) {
         return deliverJSON(res, { error: 'Unsupported event' }, 400);
       }
       const stageKey = typeof input.stage === 'string' && input.stage.trim() ? input.stage : null;
       if (stageKey && !job.stages.some((stage) => stage.key === stageKey)) {
         return deliverJSON(res, { error: 'Unsupported stage' }, 400);
+      }
+
+      const step = job.stages.find((stage) => stage.key === stageKey);
+      const spec = job.workflow?.project.stages.find((stage) => stage.key === stageKey);
+      const policy = resolveExecution(job.workflow?.project.execution, spec?.execution);
+      const extras: Partial<WorkflowEvent> = {};
+      const stageEvent =
+        input.type.startsWith('stage.') ||
+        input.type === 'gate.evaluated' ||
+        input.type === 'review.required' ||
+        input.type === 'agent.event';
+      if (job.workflow) {
+        if (job.status !== 'running')
+          throw new HttpError(409, 'このジョブは実行中ではありません。');
+        if (stageEvent && !step) throw new HttpError(400, '工程を指定してください。');
+        if (step && stageEvent) {
+          const attempt = input.type === 'stage.started' ? step.attempts + 1 : step.attempts;
+          if (input.attempt !== attempt) throw new HttpError(409, '試行番号が一致しません。');
+          extras.attempt = attempt;
+          if (input.type === 'stage.started') {
+            const previous = job.stages.slice(0, job.stages.indexOf(step));
+            if (
+              !['pending', 'retry'].includes(step.status) ||
+              previous.some((item) => item.status !== 'success') ||
+              attempt > policy.maxRetries + 1
+            )
+              throw new HttpError(409, '工程の順序またはリトライ上限が不正です。');
+          } else if (input.type === 'stage.retry') {
+            if (
+              step.status !== 'failed' ||
+              !step.failureKind ||
+              !canRetry(policy, step.failureKind, step.attempts)
+            )
+              throw new HttpError(409, 'この失敗は再試行できません。');
+          } else if (input.type === 'stage.retry.ready') {
+            if (step.status !== 'retry' || !step.retryAt)
+              throw new HttpError(409, 'リトライ待機中ではありません。');
+          } else if (input.type === 'review.required') {
+            if (!['running', 'failed'].includes(step.status))
+              throw new HttpError(409, 'レビューを開始できません。');
+            if (
+              step.status === 'failed' &&
+              (policy.onFailure !== 'review' ||
+                !['execution_error', 'timeout', 'acceptance_failed'].includes(
+                  step.failureKind ?? '',
+                ))
+            )
+              throw new HttpError(409, 'この失敗は例外承認の対象ではありません。');
+          } else if (step.status !== 'running')
+            throw new HttpError(409, 'この工程は実行中ではありません。');
+        }
+        if (
+          step &&
+          (input.type === 'gate.evaluated' ||
+            input.type === 'stage.succeeded' ||
+            (input.type === 'review.required' && step.status === 'running'))
+        ) {
+          if (
+            !job.events.some(
+              (event) =>
+                event.type === 'stage.executed' &&
+                event.stage === step.key &&
+                event.attempt === step.attempts,
+            )
+          )
+            throw new HttpError(409, 'エージェント実行の終了が記録されていません。');
+        }
+        if (
+          (input.type === 'stage.succeeded' ||
+            (input.type === 'review.required' && step?.status === 'running')) &&
+          step
+        ) {
+          const gates = [
+            spec?.gate,
+            ...(step === job.stages.at(-1) ? [job.workflow.project.finalGate] : []),
+          ];
+          if (input.type === 'stage.succeeded' && gates.some((gate) => gate?.requireReview))
+            throw new HttpError(409, '人間の承認が必要です。');
+          if (
+            gates.some(
+              (gate, index) =>
+                gate?.condition &&
+                !step.gates?.some(
+                  (item) =>
+                    item.scope === (index === 0 ? 'stage' : 'final') &&
+                    item.result.status === 'pass',
+                ),
+            )
+          )
+            throw new HttpError(409, '受け入れ条件が合格していません。');
+        }
+        if (
+          (input.type === 'artifact.created' || input.type === 'job.completed') &&
+          job.stages.some((stage) => stage.status !== 'success')
+        )
+          throw new HttpError(409, '全工程の合格・承認後に公開してください。');
+        if (input.type === 'job.completed' && !job.artifacts.length)
+          throw new HttpError(409, '最終成果物がありません。');
+      }
+      if (input.workspace !== undefined) {
+        const relative = asString(input.workspace);
+        if (
+          !step ||
+          relative !==
+            `.attempts/${step.key}/${input.type === 'stage.started' ? step.attempts + 1 : step.attempts}`
+        )
+          throw new HttpError(400, '試行の作業パスが不正です。');
+        extras.workspace = relative;
+      }
+      if (input.elapsedMs !== undefined) {
+        if (
+          !['stage.succeeded', 'stage.failed', 'stage.retry.ready', 'review.required'].includes(
+            input.type,
+          )
+        )
+          throw new HttpError(400, '実行時間を記録できないイベントです。');
+        extras.elapsedMs = validate(() =>
+          boundedInteger(input.elapsedMs, '実行時間', MAX_BUDGET_MS + 60_000),
+        );
+      }
+      if (input.failureKind !== undefined) {
+        if (
+          ![
+            'execution_error',
+            'timeout',
+            'acceptance_failed',
+            'stage_timeout',
+            'job_timeout',
+            'interrupted',
+          ].includes(asString(input.failureKind))
+        )
+          throw new HttpError(400, '失敗の種類が不正です。');
+        extras.failureKind = input.failureKind as FailureKind;
+      }
+      for (const key of ['retryAt', 'deadlineAt'] as const) {
+        if (input[key] !== undefined) {
+          if (typeof input[key] !== 'string' || !Number.isFinite(Date.parse(input[key])))
+            throw new HttpError(400, '期限が不正です。');
+          extras[key] = input[key];
+        }
+      }
+      if (input.type === 'gate.evaluated') {
+        const scope = input.gate?.scope;
+        if (
+          !step ||
+          (scope !== 'stage' && scope !== 'final') ||
+          (scope === 'final' && step !== job.stages.at(-1))
+        )
+          throw new HttpError(400, '判定対象が不正です。');
+        if (job.workflow) {
+          if (!step.workspace) throw new HttpError(400, '判定する作業場所がありません。');
+          const condition =
+            (scope === 'stage' ? spec?.gate : job.workflow.project.finalGate)?.condition ?? null;
+          let result: ConditionResult;
+          try {
+            result = checkCondition(
+              inventory(path.join(jobWorkspace(job), step.workspace), undefined, true),
+              job.file,
+              0,
+              condition,
+            );
+          } catch (error) {
+            result = {
+              status: 'error',
+              label: '出力ファイルの検証',
+              message: (error as Error).message,
+            };
+          }
+          extras.gate = { scope, result };
+        }
       }
 
       let artifact: ArtifactInfo | undefined;
@@ -1122,7 +1784,7 @@ const server = http.createServer(async (req, res) => {
 
       const rawSummary = asString(input.summary).trim();
       const rawDetails = asString(input.details);
-      appendEvent({
+      const event = appendEvent({
         type: input.type,
         jobId: job.id,
         projectId: job.projectId,
@@ -1133,13 +1795,42 @@ const server = http.createServer(async (req, res) => {
         stageConfig:
           input.type === 'stage.started' && input.stageConfig
             ? {
-                instruction: asString(input.stageConfig.instruction).slice(0, 2000),
+                instruction: asString(input.stageConfig.instruction).slice(0, 8000),
                 llm: normalizeLlmConfig(input.stageConfig.llm),
+                acceptanceCriteria: spec?.acceptanceCriteria,
+                execution: policy,
+                gate: spec?.gate,
+                prompt: asString(input.stageConfig.prompt).slice(0, 100_000),
               }
             : undefined,
         details: rawDetails ? rawDetails.slice(0, 1300) : undefined,
+        ...extras,
       });
-      return deliverJSON(res, { ok: true });
+      return deliverJSON(res, { ok: true, event });
+    }
+
+    const previewMatch = pathname.match(/^\/api\/jobs\/(run_[a-f0-9]{8})\/review(?:\/(file))?$/);
+    if (previewMatch && req.method === 'GET') {
+      const job = jobs.get(previewMatch[1]);
+      const stage = job?.stages.find((item) => item.status === 'review');
+      if (!job || !stage?.workspace || job.status !== 'review')
+        throw new HttpError(404, 'レビュー中の出力がありません。');
+      const root = path.join(jobWorkspace(job), stage.workspace);
+      const list = validate(() => inventory(root, undefined, true));
+      if (!previewMatch[2])
+        return deliverJSON(res, { files: list.files, reviewSequence: stage.reviewSequence });
+      if (Number(url.searchParams.get('sequence')) !== stage.reviewSequence)
+        throw new HttpError(409, 'レビュー対象が更新されています。');
+      const relative = url.searchParams.get('path') ?? '';
+      if (!list.files.some((file) => file.path === relative))
+        throw new HttpError(404, '出力が見つかりません。');
+      return serveFile(
+        res,
+        safeFile(root, relative),
+        MIME_TYPES[path.extname(relative).toLowerCase()] ?? 'application/octet-stream',
+        'GET',
+        true,
+      );
     }
 
     const reviewMatch = pathname.match(/^\/api\/jobs\/(run_[a-f0-9]{8})\/approve$/);
@@ -1147,13 +1838,29 @@ const server = http.createServer(async (req, res) => {
       const job = jobs.get(reviewMatch[1]);
       if (!job) return deliverJSON(res, { error: 'Job not found' }, 404);
       if (job.status !== 'review') return deliverJSON(res, { error: 'Not in review' }, 409);
-      const reviewStage = job.stages.find((stage) => stage.status === 'review')?.key ?? null;
+      const step = job.stages.find((stage) => stage.status === 'review');
+      const body = await readJSON(req, 10_000);
+      if (
+        job.workflow &&
+        (!step ||
+          body.stage !== step.key ||
+          body.attempt !== step.attempts ||
+          body.reviewSequence !== step.reviewSequence)
+      )
+        throw new HttpError(
+          409,
+          'レビュー対象が更新されています。画面を更新して再確認してください。',
+        );
       appendEvent({
         type: 'review.approved',
         jobId: job.id,
         projectId: job.projectId,
-        stage: reviewStage,
-        message: '人間がレビューを承認',
+        stage: step?.key ?? null,
+        attempt: step?.attempts,
+        reviewSequence: step?.reviewSequence,
+        message: step?.failureKind
+          ? '人間が失敗内容を確認し、この試行の出力を例外承認'
+          : '人間がこの工程・試行のレビューを承認',
       });
       return deliverJSON(res, { ok: true });
     }
@@ -1179,11 +1886,13 @@ const server = http.createServer(async (req, res) => {
       if (artifact !== path.basename(artifact)) {
         return deliverJSON(res, { error: 'Invalid path' }, 400);
       }
+      if (job.workflow && !job.artifacts.some((item) => item.name === artifact))
+        return deliverJSON(res, { error: 'Not published' }, 404);
       const file = findJobArtifactFile(job, artifact);
       return serveFile(
         res,
         file,
-        MIME_TYPES[path.extname(file)] || 'application/octet-stream',
+        MIME_TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream',
         req.method,
         true,
       );
@@ -1215,7 +1924,7 @@ const server = http.createServer(async (req, res) => {
       return serveFile(
         res,
         file,
-        MIME_TYPES[path.extname(file)] || 'application/octet-stream',
+        MIME_TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream',
         req.method,
         false,
       );
@@ -1223,10 +1932,18 @@ const server = http.createServer(async (req, res) => {
 
     deliverJSON(res, { error: 'Unknown route' }, 404);
   } catch (err) {
-    console.error('Request error:', err);
+    if (!(err instanceof HttpError) && !(err instanceof SyntaxError))
+      console.error('Request error:', err);
     if (!res.headersSent) {
       const message = err instanceof Error ? err.message : 'Unexpected error';
-      deliverJSON(res, { error: message }, 500);
+      deliverJSON(
+        res,
+        {
+          error: message,
+          ...(err instanceof HttpError && err.result ? { result: err.result } : {}),
+        },
+        err instanceof HttpError ? err.status : err instanceof SyntaxError ? 400 : 500,
+      );
     }
   }
 });

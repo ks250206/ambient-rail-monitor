@@ -196,14 +196,28 @@ describe('API integration', () => {
       });
       expect(second.body.job).toBeNull();
 
+      const attempts: Record<string, number> = {};
       const send = async (
         type: string,
         stage: string | null,
         message = '',
         extra: Record<string, unknown> = {},
-      ) => post(`/api/jobs/${id}/events`, { type, stage, message, ...extra });
+      ) => {
+        if (type === 'stage.started' && stage) attempts[stage] = (attempts[stage] ?? 0) + 1;
+        const response = await post(`/api/jobs/${id}/events`, {
+          type,
+          stage,
+          message,
+          attempt: stage ? attempts[stage] : undefined,
+          ...(type === 'stage.failed' ? { failureKind: 'execution_error' } : {}),
+          ...extra,
+        });
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+        return response;
+      };
 
       await send('stage.started', 'load');
+      await send('stage.executed', 'load');
       await send('stage.succeeded', 'load', 'load: 完了', {
         summary: '141行・2列のXRDデータを確認',
       });
@@ -211,9 +225,10 @@ describe('API integration', () => {
       await send('stage.failed', 'fit', 'failed once');
       await send('stage.retry', 'fit');
       await send('stage.started', 'fit');
-      await send('stage.succeeded', 'fit', 'fit: 完了', {
+      await send('stage.progress', 'fit', 'fit: 完了', {
         summary: '2回目の試行でピーク強度 790 を算出',
       });
+      await send('stage.executed', 'fit');
       await send('review.required', 'fit', 'please inspect');
 
       let state = (await (
@@ -226,12 +241,20 @@ describe('API integration', () => {
       expect(state.jobs[0].stages[1].attempts).toBe(2);
       expect(state.jobs[0].stages[1].summary).toBe('2回目の試行でピーク強度 790 を算出');
 
-      const approval = await post(`/api/jobs/${id}/approve`);
+      const review = state.jobs[0].stages[1];
+      const approval = await post(`/api/jobs/${id}/approve`, {
+        stage: review.key,
+        attempt: review.attempts,
+        reviewSequence: review.reviewSequence,
+      });
       expect(approval.status).toBe(200);
 
       const resumed = await post<ClaimResponse>('/api/jobs/claim', { agent: 'demo' });
       expect(resumed.body.job?.id).toBe(id);
 
+      await send('stage.started', 'report');
+      await send('stage.executed', 'report');
+      await send('stage.succeeded', 'report', 'report: 完了');
       const out = path.join(temp, 'projects', 'xrd-lab', 'artifacts', id, 'report 100%.html');
       mkdirSync(path.dirname(out), { recursive: true });
       writeFileSync(out, '<h1>Hello</h1>');
@@ -253,8 +276,8 @@ describe('API integration', () => {
         '<svg xmlns="http://www.w3.org/2000/svg"/>',
       );
       const chart = await fetch(`${api}/artifacts/xrd-lab/${id}/chart.svg`);
-      expect(chart.status).toBe(200);
-      expect(chart.headers.get('content-security-policy')).toMatch(/sandbox/);
+      // Unregistered files cannot be published by guessing their URL.
+      expect(chart.status).toBe(404);
 
       // Wrong project prefix must return 404.
       const wrongProjectArtifact = await fetch(`${api}/artifacts/default/${id}/chart.svg`);

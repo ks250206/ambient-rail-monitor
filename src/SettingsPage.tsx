@@ -1,9 +1,17 @@
 import { useMutation } from '@tanstack/react-query';
 import { ArrowRight, Plus } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import type { ProjectSpec } from '../shared/types.ts';
-import { jsonRequest, queryClient, request, useProjects, useToast } from './api.ts';
+import {
+  ApiError,
+  jsonRequest,
+  queryClient,
+  request,
+  useConnection,
+  useProjects,
+  useToast,
+} from './api.ts';
 import { ProjectCreate, ProjectManagement } from './components/ProjectManagement.tsx';
 import { ProjectList } from './components/ProjectList.tsx';
 import { AppHeader } from './components/AppHeader.tsx';
@@ -28,6 +36,7 @@ export const settingsTitles = {
 };
 
 export function SettingsPage({ view }: { view: keyof typeof settingsTitles }) {
+  const connection = useConnection();
   const [requestedId, setRequestedId] = useState(readInitialProjectId);
   const projectsQuery = useProjects();
   const projects = projectsQuery.data?.projects ?? [];
@@ -37,12 +46,28 @@ export function SettingsPage({ view }: { view: keyof typeof settingsTitles }) {
       ? projects[0]
       : undefined);
   const { toast, showToast } = useToast();
+  const [workflowDirty, setWorkflowDirty] = useState(false);
+  useEffect(() => {
+    if (!workflowDirty) return;
+    const guard = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = true;
+    };
+    window.addEventListener('beforeunload', guard);
+    return () => window.removeEventListener('beforeunload', guard);
+  }, [workflowDirty]);
   const select = (value: string) => {
     if (view === 'list') {
       rememberProjectId(value);
       window.location.assign(pageHref('/projects', value));
       return;
     }
+    if (
+      workflowDirty &&
+      value !== project?.id &&
+      !window.confirm('未保存のワークフロー定義を破棄してプロジェクトを切り替えますか？')
+    )
+      return;
     setRequestedId(value);
     persistProjectId(value);
   };
@@ -53,9 +78,7 @@ export function SettingsPage({ view }: { view: keyof typeof settingsTitles }) {
         projects={projects}
         selectedProjectId={project?.id ?? requestedId}
         onSelectProject={select}
-        connection={
-          projectsQuery.isError ? 'reconnecting' : projectsQuery.isPending ? 'connecting' : 'online'
-        }
+        connection={connection}
       />
       <main className="workflow-page page-width">
         <div className="workflow-title">
@@ -95,7 +118,12 @@ export function SettingsPage({ view }: { view: keyof typeof settingsTitles }) {
           />
         )}
         {view === 'workflow' && project && (
-          <WorkflowEditor key={project.id} project={project} showToast={showToast} />
+          <WorkflowEditor
+            key={project.id}
+            project={project}
+            showToast={showToast}
+            onDirtyChange={setWorkflowDirty}
+          />
         )}
         {(view === 'projects' || view === 'workflow') && !project && projectsQuery.isSuccess && (
           <p role="status">
@@ -127,34 +155,49 @@ export function SettingsPage({ view }: { view: keyof typeof settingsTitles }) {
 
 function WorkflowEditor({
   project,
+  onDirtyChange,
   showToast,
 }: {
   project: ProjectSpec;
+  onDirtyChange: (dirty: boolean) => void;
   showToast: (text: string, error?: boolean) => void;
 }) {
-  const [revision, setRevision] = useState(0);
   const save = useMutation({
-    mutationFn: (payload: WorkflowUpdatePayload) =>
+    mutationFn: (payload: WorkflowUpdatePayload & { expectedUpdatedAt: string }) =>
       request<ProjectResponse>(
         `/api/projects/${encodeURIComponent(project.id)}`,
         jsonRequest('PUT', payload),
       ),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['projects'] }),
+    onSuccess: ({ projects }) => {
+      queryClient.setQueryData(['projects'], { projects });
+      void queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
   });
-  function saveWorkflow(payload: WorkflowUpdatePayload) {
-    save.mutate(payload, {
-      onSuccess: ({ project: saved }) => {
-        setRevision((prev) => prev + 1);
-        showToast(`「${saved.name}」の定義を保存しました。`);
+  function saveWorkflow(
+    payload: WorkflowUpdatePayload,
+    expectedUpdatedAt: string,
+    onSaved: (saved: ProjectSpec) => void,
+  ) {
+    save.mutate(
+      { ...payload, expectedUpdatedAt },
+      {
+        onSuccess: ({ project: saved }) => {
+          onSaved(saved);
+          showToast(`「${saved.name}」の定義を保存しました。`);
+        },
+        onError: (err) => {
+          if (err instanceof ApiError && err.status === 409)
+            void queryClient.invalidateQueries({ queryKey: ['projects'] });
+          showToast(err.message, true);
+        },
       },
-      onError: (err) => showToast(err.message, true),
-    });
+    );
   }
   return (
     <WorkflowSpecSection
-      key={revision}
       project={project}
       saving={save.isPending}
+      onDirtyChange={onDirtyChange}
       onSave={saveWorkflow}
     />
   );
