@@ -146,6 +146,83 @@ pnpm start
 
 「使用量・実行記録」にはリトライを含む取得済みトークン数、料金表に基づく推定額と取得範囲、キャッシュおよびチェックポイントの再利用件数が表示されます。未取得の使用量や未設定の料金は 0 として扱いません。別ジョブとの比較表ではタスクごとの出力ハッシュ・所要時間・料金の取得範囲を工程名と相対パスで確認できます。
 
+## CLI と MCP サーバー
+
+Web UI に加えて、端末やスクリプトから操作する CLI（`cli.ts`）と、AI エージェントから操作する MCP サーバー（`mcp.ts`）を備えています。どちらも Node.js 26 以上の標準モジュールだけで動作し、追加パッケージは不要です。
+
+### CLI（railflow）
+
+`node cli.ts`、`./cli.ts`、または `pnpm run cli <command> [options]` で実行します。既定の接続先は `http://127.0.0.1:4173` です。別ポート（例: `PORT=4310`）でサーバーを動かしている場合は、`--server URL` または環境変数 `RAILFLOW_SERVER` を指定します。
+
+```sh
+# 既定のサーバー（http://127.0.0.1:4173）を確認する
+node cli.ts health
+node cli.ts projects list
+
+# 別ポートで起動しているサーバーへ接続し、フォルダを投入して待機する
+RAILFLOW_SERVER=http://127.0.0.1:4310 node cli.ts submit ./samples/run1 --project xps --watch
+
+# レビュー待ちの工程を確認し、取得したレシートで厳密承認する
+node cli.ts review list JOB_ID --stage analysis
+node cli.ts review read JOB_ID --stage analysis --attempt 1 --sequence 1 --path summary.json
+node cli.ts review approve JOB_ID --stage analysis --attempt 1 --sequence 1 --receipt TOKEN --yes
+
+# 成果物と実行記録を保存する（既存ファイルは上書きしない）
+node cli.ts artifacts get JOB_ID --name report.html --out ./report.html
+node cli.ts jobs provenance JOB_ID --out ./provenance.json
+```
+
+全コマンドの一覧は `node cli.ts --help` で確認できます。主な安全仕様は次のとおりです。
+
+- `RAILFLOW_PROJECT` は参照系コマンド（`projects get`、`jobs list` など）の既定プロジェクトとして使えます。既存プロジェクトの更新・削除・データ投入では位置引数または `--project` を明示します。
+- `projects update` と `workflow set` は `--expected-updated-at` による楽観ロックを要求し、別経路の更新と競合した場合は終了コード `5`（HTTP 409）を返します。
+- `review approve` は `review list` が返した試行番号・レビュー番号・レシートと `--yes` を必須とします。失敗した工程を例外承認する場合は `--exception` も明示します。
+- 端末への直接出力ではバイナリ応答を検出し、`--out FILE` を要求します。ファイル保存時は既存ファイルを上書きしません。
+- `jobs wait` や `--watch` に `SIGINT` を送ると CLI だけが終了コード `130` で終了し、サーバー側のジョブとワーカーは継続します。
+
+| 終了コード | 意味                                                             |
+| ---------- | ---------------------------------------------------------------- |
+| `0`        | 成功（`jobs wait` / `--watch` ではジョブ完了 `done`）            |
+| `1`        | 想定外の内部エラー                                               |
+| `2`        | 引数・入力・ローカルファイル検証エラー                           |
+| `3`        | サーバーへの接続エラー・通信切断                                 |
+| `4`        | HTTP エラー（409・422 以外）、プロトコル不整合、サイズ上限超過   |
+| `5`        | 競合エラー（HTTP 409: 楽観ロック不一致や状態遷移の衝突）         |
+| `6`        | 検証エラー（HTTP 422、または `inputs check` の不合格・判定不能） |
+| `7`        | ジョブが `failed` または `cancelled` で終了                      |
+| `8`        | ジョブが一時停止中、または工程がレビュー待ち                     |
+| `9`        | タイムアウト（リクエストまたは `jobs wait --timeout-ms`）        |
+| `10`       | 変更送信後の通信断などで結果が未確定（`outcome_unknown`）        |
+| `130`      | `SIGINT` による中断                                              |
+
+### MCP サーバー（railflow-mcp）
+
+MCP プロトコル `2025-11-25`（stdio・改行区切り JSON-RPC 2.0）に対応しています。MCP ホストの設定には `node /abs/path/to/mcp.ts` または `node /abs/path/to/cli.ts mcp` を直接指定してください。`pnpm mcp` はパッケージマネージャの標準出力が JSON-RPC ストリームを壊すおそれがあるため、開発時の手動確認専用です。
+
+```json
+{
+  "mcpServers": {
+    "railflow": {
+      "command": "node",
+      "args": [
+        "/abs/path/to/ambient-rail-monitor/mcp.ts",
+        "--upload-root",
+        "/abs/path/to/datasets"
+      ],
+      "env": {
+        "RAILFLOW_SERVER": "http://127.0.0.1:4173"
+      }
+    }
+  }
+}
+```
+
+- `railflow_job_wait` は待機期限に達すると、最後に取得したジョブの状態と `reached:false` を返します。一度も状態を取得できなかった場合はタイムアウトエラーを返します。
+- API サーバーが未起動でも、`initialize`・`tools/list`・`resources/list`・`resources/templates/list` の探索には応答します。
+- 既定では読み取り・実行制御・レビュー・テンプレート・キュー管理の 32 ツールを公開します。`--upload-root DIR` に投入用ディレクトリの絶対パスを指定した場合のみ、ローカル投入用の `railflow_dataset_submit` と同一セッション内の再コミット用 `railflow_upload_commit` を加えた 34 ツールになります。投入用ディレクトリには、運用者だけが配下のディレクトリを移動・置換できる場所を使います。許可ディレクトリ外のパス、シンボリックリンク、ハードリンクは拒否します。
+- ツール応答は 32 KiB を上限とし、ログや成果物はページングやオフセット読み取りに対応します。全文取得が必要な場合は CLI コマンドを案内します。あわせて読み取り専用の静的リソース 3 種（`railflow://projects`、`railflow://queue`、`railflow://templates`）と URI テンプレート 6 種（`railflow://projects/{projectId}`、`/jobs`、`railflow://jobs/{jobId}`、`/logs`、`/provenance`、`/artifacts`）を提供します。
+- `railflow_review_approve` は `railflow_review_list` が発行したレシートに一致する試行だけを承認します。ホスト側では `jobId`・`stageKey`・`attempt`・`failureKind`・`exception` を人間へ提示し、確認を得てから実行してください。
+
 ## データの保存先
 
 基準ディレクトリはリポジトリのルートです。別の場所に保存するときは、サーバー起動時に `RAILFLOW_HOME` を指定します。
@@ -181,6 +258,8 @@ pnpm run check   # フォーマット・lint・型チェック（vp check）
 pnpm run test    # Vitest テスト実行（vp test run）
 pnpm run build   # 本番ビルド（dist/ へ出力）
 pnpm run start   # dist/ と API を配信する本番サーバー起動
+pnpm run cli health  # CLI の実行（直接実行は node cli.ts）
+pnpm run mcp            # MCP サーバーの手動確認（ホスト設定は node mcp.ts を使用）
 ```
 
 ### 環境変数とセキュリティ上の注意
@@ -191,7 +270,8 @@ pnpm run start   # dist/ と API を配信する本番サーバー起動
 | `RAILFLOW_ALLOWED_HOSTS`    | `HOST=0.0.0.0` などで別ホストから接続する際に許可する Host 名（カンマ区切り、ワイルドカード不可）     |
 | `RAILFLOW_HOME`             | データとプロジェクトディレクトリの保存先。既定はリポジトリルート                                      |
 | `RAILFLOW_URL`              | ワーカーと開発サーバーが接続する API URL。既定は `http://127.0.0.1:4173`                              |
-| `RAILFLOW_PROJECT`          | ワーカーが担当するプロジェクト ID。未指定時は全プロジェクトが対象                                     |
+| `RAILFLOW_SERVER`           | CLI と MCP サーバーが接続する API URL。既定は `http://127.0.0.1:4173`                                 |
+| `RAILFLOW_PROJECT`          | ワーカーの担当プロジェクト ID、および CLI 参照系コマンドの既定プロジェクト                            |
 | `RAILFLOW_AGENT_TIMEOUT_MS` | 追加の実行上限（ミリ秒）。設定画面の上限と小さい方を適用                                              |
 | `RAILFLOW_PYTHON`           | デモレポート生成や Python 工程で使う既定の Python。既定は `python3`                                   |
 | `RAILFLOW_ALLOW_LOCAL_EXEC` | `1` を指定すると `--mode=demo` でもコマンド・Python・HTTP・外部 AI 工程の実行を許可（既定はブロック） |
