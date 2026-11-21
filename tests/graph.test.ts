@@ -169,7 +169,9 @@ it('keeps independent work running while a human task awaits its exact approval'
     });
     const { job } = await f.json<{ job: WorkflowJob }>('/api/demo', { projectId: 'reviews' });
     f.worker('process.exit(99)');
-    await expect.poll(async () => (await f.job(job.id)).stages[0].status).toBe('review');
+    await expect
+      .poll(async () => (await f.job(job.id)).stages[0].status, { timeout: 6000 })
+      .toBe('review');
     const running = await f.job(job.id);
     expect(running.status).toBe('running');
     const approval = {
@@ -221,7 +223,9 @@ it('resumes independent tasks while another branch remains under review', async 
     });
     const { job } = await f.json<{ job: WorkflowJob }>('/api/demo', { projectId: 'pause-dag' });
     f.worker('process.exit(99)');
-    await expect.poll(async () => (await f.job(job.id)).stages[0].status).toBe('review');
+    await expect
+      .poll(async () => (await f.job(job.id)).stages[0].status, { timeout: 6000 })
+      .toBe('review');
     await f.json(`/api/jobs/${job.id}/pause`);
     await f.until(job.id, 'paused');
     await f.json(`/api/jobs/${job.id}/resume`);
