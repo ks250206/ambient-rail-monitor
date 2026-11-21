@@ -628,3 +628,22 @@ it('keeps HTTP routes out of CLI command modules', async () => {
     expect(source).not.toMatch(/\/api\/|\.openBytes\(|\.json\s*(?:<|\()/);
   }
 });
+
+it('rejects conflicting project flags before mutation and returns 130 on MCP interruption', async () => {
+  const { client, calls } = mockClient();
+  expect(
+    await cli(['projects', 'delete', '--project', 'first', '--project', 'second', '--yes'], {
+      client,
+    }),
+  ).toMatchObject({ code: 2 });
+  expect(calls).toEqual([]);
+  const controller = new AbortController();
+  expect(
+    await cli(['mcp'], {
+      signal: controller.signal,
+      runMcp: async () => {
+        controller.abort();
+      },
+    }),
+  ).toMatchObject({ code: 130, out: '' });
+});

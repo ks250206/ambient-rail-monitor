@@ -128,7 +128,13 @@ function jobOf(value: unknown, expectedId?: string): WorkflowJob & { lastSequenc
   if (expectedId !== undefined && job.id !== expectedId) protocol('Unexpected job ID');
   for (const value of array(job.stages, 'stages')) {
     const stage = record(value, 'stage');
-    if (typeof stage.key !== 'string') protocol('Invalid stage key');
+    if (
+      typeof stage.key !== 'string' ||
+      typeof stage.label !== 'string' ||
+      !count(stage.attempts) ||
+      !['pending', 'running', 'success', 'failed', 'retry', 'review'].includes(String(stage.status))
+    )
+      protocol('Invalid job stage');
   }
   array(job.artifacts, 'artifacts').forEach(artifactOf);
   const events = array(job.events, 'events');
@@ -138,6 +144,10 @@ function jobOf(value: unknown, expectedId?: string): WorkflowJob & { lastSequenc
   )
     protocol('Invalid last job sequence');
   return job as unknown as WorkflowJob & { lastSequence?: number };
+}
+
+export function jobFromResponse(value: unknown, expectedId?: string) {
+  return jobOf(record(value, 'response').job, expectedId);
 }
 
 function templateOf(value: unknown): WorkflowTemplate {
@@ -218,9 +228,10 @@ export function createOperations(
   const updateProject = (
     projectId: string,
     definition: ProjectDefinition,
-    expectedUpdatedAt?: string,
-  ) =>
-    client.json(
+    expectedUpdatedAt: string,
+  ) => {
+    if (!expectedUpdatedAt?.trim()) usage('An expected project revision is required');
+    return client.json(
       'PUT',
       projectRoute(projectId),
       { ...definition, expectedUpdatedAt },
@@ -229,13 +240,14 @@ export function createOperations(
         validate: (value) => projectOf(record(value, 'response').project, projectId),
       },
     );
+  };
 
   const readJob = (jobId: string, operation: string) =>
     client.json('GET', jobRoute(jobId), undefined, {
       operation,
       jobId,
       validate(value): SequencedJob {
-        const job = jobOf(record(value, 'response').job, jobId);
+        const job = jobFromResponse(value, jobId);
         return { ...job, lastSequence: sequenceOf(job) };
       },
     });
@@ -249,7 +261,7 @@ export function createOperations(
     return client.json('POST', `${jobRoute(jobId)}/${action}`, body, {
       operation: `jobs.${action}`,
       jobId,
-      validate: (value) => jobOf(record(value, 'response').job, jobId),
+      validate: (value) => jobFromResponse(value, jobId),
     });
   }
 
@@ -425,7 +437,7 @@ export function createOperations(
         {
           operation: 'demo.create',
           validate(value) {
-            const job = jobOf(record(value, 'response').job);
+            const job = jobFromResponse(value);
             if (job.projectId !== projectId) protocol('Unexpected demo project ID');
             return job;
           },
@@ -492,7 +504,7 @@ export function createOperations(
           jobId,
           mutating: true,
           validate(value) {
-            const job = jobOf(record(value, 'response').job);
+            const job = jobFromResponse(value);
             const plan: RerunPlan = { rerun: [], reuse: [] };
             // The server returns only the new job. Its stage completion records identify reuse.
             for (const stage of job.stages) {

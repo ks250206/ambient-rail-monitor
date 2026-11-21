@@ -214,8 +214,20 @@ function limit(message: string): never {
   throw new RailflowError({ kind: 'limit', message });
 }
 
+function toolResult(outcome: ToolOutcome) {
+  return {
+    ...(outcome.ok ? {} : { isError: true }),
+    structuredContent: outcome,
+    content: [{ type: 'text', text: outcome.ok ? JSON.stringify(outcome) : outcome.error.message }],
+  };
+}
+
+function fitsOutcome(outcome: ToolOutcome) {
+  return Buffer.byteLength(JSON.stringify(toolResult(outcome))) <= MAX_TOOL_RESULT_BYTES;
+}
+
 function fits(data: unknown) {
-  return Buffer.byteLength(JSON.stringify({ ok: true, data })) <= MAX_TOOL_RESULT_BYTES;
+  return fitsOutcome({ ok: true, data });
 }
 
 function boundedPage<T, R = ListPage<T>>(
@@ -276,9 +288,8 @@ async function boundedWindow<T>(
     const count = Math.floor((low + high) / 2);
     const text = characters.slice(0, count).join('');
     const nextOffsetBytes = preview.offsetBytes + Buffer.byteLength(text);
-    // A replacement character could represent an invalid byte sequence of a different length.
     const candidate = project({ ...preview, text, nextOffsetBytes, truncated: true });
-    if (text.includes('\ufffd') || !fits(candidate)) {
+    if (!fits(candidate)) {
       high = count - 1;
     } else {
       best = candidate;
@@ -310,7 +321,7 @@ function errorOutcome(error: unknown, name: ToolName): ToolOutcome {
     data = { ...data, message: `${data.message} Use \`${cli}\` for the full result.` };
 
   const outcome = { ok: false, error: data } as const;
-  if (Buffer.byteLength(JSON.stringify(outcome)) <= MAX_TOOL_RESULT_BYTES) return outcome;
+  if (fitsOutcome(outcome)) return outcome;
   return {
     ok: false,
     error: {
@@ -382,11 +393,7 @@ export function createMcpHandlers({
     async callTool({ name, arguments: args = {} }, ctx) {
       if (!names.has(name)) throw new McpProtocolError(INVALID_PARAMS, 'Unknown tool');
       const outcome = await execute(name as ToolName, args, ctx);
-      return {
-        ...(outcome.ok ? {} : { isError: true }),
-        structuredContent: outcome,
-        content: [{ type: 'text', text: JSON.stringify(outcome) }],
-      };
+      return toolResult(outcome);
     },
     ...createResourceHandlers(async (name, args, ctx) => {
       const result = await execute(name, args, ctx);

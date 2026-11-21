@@ -14,6 +14,7 @@ type UploadBody = Buffer | AsyncIterable<Buffer>;
 type RequestContext = Pick<RailflowErrorData, 'operation' | 'uploadId' | 'jobId'>;
 
 interface RequestOptions extends RequestContext {
+  independentSignal?: boolean;
   signal?: AbortSignal;
   timeoutMs?: number;
 }
@@ -128,10 +129,13 @@ async function readJson<T>(
     });
   }
   try {
-    const parsed: unknown = JSON.parse(body.toString('utf8'));
+    const parsed: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body));
     return validate ? validate(parsed) : (parsed as T);
   } catch (error) {
-    if (error instanceof RailflowError) throw error;
+    if (error instanceof RailflowError) {
+      Object.assign(error.data, { ...context, status, ...error.data });
+      throw error;
+    }
     const detail = error instanceof Error ? error.message : String(error);
     throw new RailflowError({
       ...context,
@@ -170,7 +174,7 @@ export function createClient(options: ClientOptions): RailflowHttpClient {
     const timeoutMs = opts.timeoutMs ?? requestTimeoutMs;
     validateRequestTimeout(timeoutMs, context);
 
-    const signals = new Set([options.signal, opts.signal]);
+    const signals = new Set([opts.independentSignal ? undefined : options.signal, opts.signal]);
     let connected = false;
     let finished = false;
     let stopped: RailflowError | undefined;
@@ -180,6 +184,14 @@ export function createClient(options: ClientOptions): RailflowHttpClient {
     const start = performance.now();
 
     function failure(kind: 'transport' | 'timeout' | 'interrupted', message: string) {
+      if (kind !== 'interrupted' && response?.statusCode && response.statusCode >= 400) {
+        return new RailflowError({
+          ...context,
+          kind: 'http',
+          status: response.statusCode,
+          message: `HTTP ${response.statusCode} (error body unavailable: ${message})`,
+        });
+      }
       if (kind !== 'interrupted' && mutating && connected && finished) {
         return new RailflowError({
           ...context,

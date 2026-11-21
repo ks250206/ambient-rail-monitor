@@ -67,7 +67,7 @@ async function waitingReview(f: Fixture) {
   return { job, review: await operations(f).inspectReview(id, 'first') };
 }
 
-it('keeps the second exact review accessible after approving the first requeues the job', async () => {
+it.each(['exact', 'UI'])('keeps the queued sibling available for %s approval', async (mode) => {
   const f = await workflowFixture();
   try {
     await reviewProject(f, 'normal');
@@ -113,9 +113,17 @@ it('keeps the second exact review accessible after approving the first requeues 
     } finally {
       file.close();
     }
-    await expect(
-      client.approveExact(queuedReview.ref, receiptFor(queuedReview), false),
-    ).resolves.toEqual({ ok: true, ref: second.ref, exception: false });
+    if (mode === 'exact') {
+      await expect(
+        client.approveExact(queuedReview.ref, receiptFor(queuedReview), false),
+      ).resolves.toEqual({ ok: true, ref: second.ref, exception: false });
+    } else {
+      const { stageKey, attempt, reviewSequence } = queuedReview.ref;
+      await expect(
+        f.json(`/api/jobs/${id}/approve`, { stage: stageKey, attempt, reviewSequence }),
+      ).resolves.toEqual({ ok: true });
+    }
+    expect(approvals(await f.job(id))).toHaveLength(2);
     expect((await f.job(id)).stages.map((stage) => stage.status)).toEqual([
       'success',
       'success',

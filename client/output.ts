@@ -134,14 +134,21 @@ export async function readTextWindow(
       }
     }
     const truncated = collected > maxBytes;
-    const prefix = completePrefix(window.subarray(0, Math.min(collected, maxBytes)));
+    const bytes = window.subarray(0, Math.min(collected, maxBytes));
+    const prefix = truncated ? completePrefix(bytes) : bytes;
     if (truncated && prefix.length === 0)
       throw new RailflowError({
         kind: 'limit',
         message: 'maxBytes is too small to fit the next UTF-8 character',
       });
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(prefix);
+    } catch {
+      return binary;
+    }
     return {
-      text: prefix.toString('utf8'),
+      text,
       offsetBytes: start,
       nextOffsetBytes: truncated ? start + prefix.length : null,
       truncated,

@@ -1,4 +1,5 @@
 import { realpath, stat } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { parseArgs } from 'node:util';
 import { resolveConfig } from '../client/config.ts';
@@ -32,14 +33,14 @@ function parseOptions(args: string[]) {
 
 async function resolveUploadRoot(input: string) {
   try {
-    if (input) {
+    if (isAbsolute(input)) {
       const root = await realpath(input);
       if ((await stat(root)).isDirectory()) return root;
     }
   } catch {
     // A missing or inaccessible path is reported as a startup usage error.
   }
-  return usage('The upload root must be an existing directory');
+  return usage('The upload root must be an existing absolute directory');
 }
 
 export async function runMcp({

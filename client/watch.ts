@@ -1,6 +1,7 @@
 import type { Readable } from 'node:stream';
 import type { WorkflowJob } from '../shared/types.ts';
 import type { BytesResponse, RailflowHttpClient } from './http.ts';
+import { jobFromResponse } from './operations.ts';
 import { RailflowError } from './types.ts';
 
 export type WatchUntil = 'terminal' | 'attention';
@@ -209,10 +210,11 @@ export async function* watchJob(
         pendingSource = undefined;
         let job: WorkflowJob;
         try {
-          ({ job } = await client.json<{ job: WorkflowJob }>('GET', route, undefined, {
+          job = await client.json('GET', route, undefined, {
             jobId,
             signal: stopped,
-          }));
+            validate: (value) => jobFromResponse(value, jobId),
+          });
         } catch (error) {
           if (stopped.aborted) return;
           if (
@@ -311,7 +313,10 @@ export async function* watchJob(
 
   async function connect(initial: boolean) {
     const handshake = new AbortController();
-    heartbeatTimer = setTimeout(() => handshake.abort(), handshakeTimeoutMs);
+    heartbeatTimer = setTimeout(
+      () => handshake.abort(),
+      Math.min(handshakeTimeoutMs, pollIntervalMs, (timeoutMs ?? Infinity) / 2),
+    );
     let response: BytesResponse;
     try {
       response = await client.openBytes('/api/stream', {

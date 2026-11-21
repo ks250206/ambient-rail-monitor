@@ -1,5 +1,4 @@
 import { toJobHead } from '../../client/operations.ts';
-import { RailflowError } from '../../client/types.ts';
 import { collectSelection, retryCommit, submitDataset } from '../../client/upload.ts';
 import type { ToolHandlerContext } from '../catalog.ts';
 import { usage, type ToolArgs } from '../schemas.ts';
@@ -22,16 +21,16 @@ export const inputHandlers = {
     { uploadRoot, sessionUploadIds, client, signal }: ToolHandlerContext,
   ) {
     if (uploadRoot === undefined) usage('An upload root is required');
-    const selection = await collectSelection(paths, { allowedRoot: uploadRoot, name });
-    try {
-      const { uploadId, job } = await submitDataset(client, projectId, selection, { signal });
-      sessionUploadIds.add(uploadId);
-      return { uploadId, job: toJobHead(job) };
-    } catch (error) {
-      if (error instanceof RailflowError && error.kind === 'outcome_unknown' && error.uploadId)
-        sessionUploadIds.add(error.uploadId);
-      throw error;
-    }
+    const selection = await collectSelection(paths, {
+      allowedRoot: { canonicalPath: uploadRoot },
+      name,
+      signal,
+    });
+    const { uploadId, job } = await submitDataset(client, projectId, selection, {
+      signal,
+      onCommitStart: (id) => sessionUploadIds.add(id),
+    });
+    return { uploadId, job: toJobHead(job) };
   },
   async railflow_upload_commit(
     { uploadId }: ToolArgs<'railflow_upload_commit'>,

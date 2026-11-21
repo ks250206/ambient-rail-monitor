@@ -487,3 +487,34 @@ it('throws a watch timeout if no snapshot has been obtained', async () => {
     await fixture.close();
   }
 });
+
+it('rejects a terminal snapshot for a different job', async () => {
+  const fixture = await serve({
+    getJob: (res) => sendJob(res, { ...snapshot(2, 'done'), id: 'run_87654321' }),
+  });
+  try {
+    await expect(waitJob(fixture.client, jobId, timings)).rejects.toMatchObject({
+      kind: 'protocol',
+      jobId,
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+it('rejects a snapshot with incomplete stage state', async () => {
+  const job = snapshot();
+  const fixture = await serve({
+    getJob: (res) =>
+      res
+        .writeHead(200, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ job: { ...job, stages: [{ key: 'analyze' }] } })),
+  });
+  try {
+    await expect(waitJob(fixture.client, jobId, timings)).rejects.toMatchObject({
+      kind: 'protocol',
+    });
+  } finally {
+    await fixture.close();
+  }
+});

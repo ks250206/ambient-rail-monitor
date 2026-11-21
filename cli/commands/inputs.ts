@@ -38,7 +38,10 @@ export const inputCommands = {
     'paths',
     async (ctx) => {
       const project = ctx.explicitProject();
-      const selection = await collectSelection(ctx.args, { name: ctx.option('name') });
+      const selection = await collectSelection(ctx.args, {
+        name: ctx.option('name'),
+        signal: ctx.signal,
+      });
       const result = await submitDataset(ctx.client, project, selection, {
         signal: ctx.signal,
         onProgress:

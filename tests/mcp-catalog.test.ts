@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -103,9 +103,14 @@ function fixture(options: Partial<Parameters<typeof createMcpHandlers>[0]> = {})
       content: [{ type: string; text: string }];
     }>('tools/call', { name: 'railflow_' + name, arguments: args });
     expect(response.content).toEqual([
-      { type: 'text', text: JSON.stringify(response.structuredContent) },
+      {
+        type: 'text',
+        text: response.isError
+          ? response.structuredContent.error?.message
+          : JSON.stringify(response.structuredContent),
+      },
     ]);
-    expect(Buffer.byteLength(response.content[0].text)).toBeLessThanOrEqual(MAX_TOOL_RESULT_BYTES);
+    expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThanOrEqual(MAX_TOOL_RESULT_BYTES);
     return response;
   }
   return { rpc, result, ready, tool };
@@ -167,7 +172,7 @@ async function api(
 }
 
 it('lists all tools and expanded schemas in fixed pages of eight', async () => {
-  const mcp = fixture({ uploadRoot: tmpdir() });
+  const mcp = fixture({ uploadRoot: await realpath(tmpdir()) });
   await mcp.ready();
   const { tools, pageSizes } = await toolsOf(mcp);
   expect(pageSizes).toEqual([8, 8, 8, 8, 2]);
@@ -234,8 +239,8 @@ it('retries an uncertain commit only in the MCP session that created the upload'
     }
     json(res, { error: 'Unexpected request' }, 404);
   });
-  const mcp = fixture({ origin: server, uploadRoot: root });
-  const other = fixture({ origin: server, uploadRoot: root });
+  const mcp = fixture({ origin: server, uploadRoot: await realpath(root) });
+  const other = fixture({ origin: server, uploadRoot: await realpath(root) });
   await mcp.ready();
   await other.ready();
   expect((await mcp.tool('upload_commit', { uploadId })).structuredContent.error?.kind).toBe(
@@ -252,6 +257,38 @@ it('retries an uncertain commit only in the MCP session that created the upload'
     data: { uploadId, job: { id: jobId } },
   });
   expect(commits).toBe(2);
+});
+
+it('keeps a failed PUT ineligible for a session commit', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'railflow-mcp-'));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  await writeFile(join(root, 'a.txt'), 'data');
+  const routes: string[] = [];
+  const server = await api(async (req, res) => {
+    for await (const _ of req) {
+      /* Drain request. */
+    }
+    routes.push(req.method + ' ' + req.url);
+    if (req.method === 'PUT') {
+      req.socket.destroy();
+      return;
+    }
+    json(res, req.method === 'POST' ? { id: uploadId } : { ok: true });
+  });
+  const mcp = fixture({ origin: server, uploadRoot: await realpath(root) });
+  await mcp.ready();
+  expect(
+    (await mcp.tool('dataset_submit', { projectId: project.id, paths: ['a.txt'] }))
+      .structuredContent.error?.kind,
+  ).toBe('outcome_unknown');
+  expect((await mcp.tool('upload_commit', { uploadId })).structuredContent.error?.kind).toBe(
+    'usage',
+  );
+  expect(routes).toEqual([
+    'POST /api/uploads',
+    'PUT /api/uploads/' + uploadId + '/files?path=a.txt',
+    'DELETE /api/uploads/' + uploadId,
+  ]);
 });
 
 it('fits project pages to the byte budget with the actual next offset', async () => {
@@ -524,10 +561,11 @@ it('rejects a missing upload root before starting the stdio server', async () =>
       output: new PassThrough(),
     }),
   ).rejects.toMatchObject({ kind: 'usage', message: expect.stringContaining('upload root') });
+  await expect(runMcp({ argv: ['--upload-root', '.'] })).rejects.toMatchObject({ kind: 'usage' });
 });
 
 it('preserves byte offsets when an escaped log window reaches the result budget', async () => {
-  const body = '\0'.repeat(8192) + 'end';
+  const body = '\ufffd' + '\0'.repeat(8192) + 'end';
   const mcp = fixture({
     origin: await api((_, res) => {
       res.writeHead(200, { 'content-type': 'text/plain' }).end(body);
@@ -540,17 +578,19 @@ it('preserves byte offsets when an escaped log window reaches the result budget'
     nextOffsetBytes: number;
   };
   expect(first.truncated).toBe(true);
-  expect(first.nextOffsetBytes).toBe(first.text.length);
+  expect(first.nextOffsetBytes).toBe(Buffer.byteLength(first.text));
   expect(first.text.length).toBeLessThan(8192);
-  const second = (await mcp.tool('job_logs', { jobId, offsetBytes: first.nextOffsetBytes }))
-    .structuredContent.data as {
-    text: string;
-    truncated: boolean;
-    offsetBytes: number;
-  };
-  expect(second.offsetBytes).toBe(first.nextOffsetBytes);
-  expect(first.text + second.text).toEqual(body);
-  expect(second.truncated).toBe(false);
+  let reconstructed = first.text;
+  let offset: number | null = first.nextOffsetBytes;
+  while (offset !== null) {
+    const next = (await mcp.tool('job_logs', { jobId, offsetBytes: offset })).structuredContent
+      .data as { text: string; offsetBytes: number; nextOffsetBytes: number | null };
+    expect(next.offsetBytes).toBe(offset);
+    expect(next.text.length).toBeGreaterThan(0);
+    reconstructed += next.text;
+    offset = next.nextOffsetBytes;
+  }
+  expect(reconstructed).toEqual(body);
 });
 
 it('includes the job when shrinking its nested page of stages', async () => {
@@ -700,8 +740,24 @@ it('returns a job snapshot even when the deadline expires during the SSE handsha
     }),
   });
   await mcp.ready();
-  expect((await mcp.tool('job_wait', { jobId, timeoutMs: 1 })).structuredContent).toMatchObject({
+  expect((await mcp.tool('job_wait', { jobId, timeoutMs: 160 })).structuredContent).toMatchObject({
     ok: true,
     data: { job: { id: jobId }, reached: false, reason: 'timeout' },
   });
+});
+
+it('ends a wait without starting another GET when the first snapshot stalls', async () => {
+  let reads = 0;
+  const mcp = fixture({
+    origin: await api((req, res) => {
+      if (req.url === '/api/stream')
+        res.writeHead(200, { 'content-type': 'text/event-stream' }).flushHeaders();
+      else reads++;
+    }),
+  });
+  await mcp.ready();
+  expect(
+    (await mcp.tool('job_wait', { jobId, timeoutMs: 100 })).structuredContent.error?.kind,
+  ).toBe('timeout');
+  expect(reads).toBe(1);
 });

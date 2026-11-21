@@ -37,17 +37,10 @@ export const jobHandlers = {
   },
   async railflow_job_wait(
     { jobId, until, timeoutMs = 10_000 }: ToolArgs<'railflow_job_wait'>,
-    { client, ops, signal }: ToolHandlerContext,
+    { client, signal }: ToolHandlerContext,
   ) {
-    try {
-      const { job, reached, reason } = await waitJob(client, jobId, { until, timeoutMs, signal });
-      return { job: toJobHead(job), reached, reason };
-    } catch (error) {
-      if (!(error instanceof RailflowError) || error.kind !== 'timeout') throw error;
-      // Short waits can expire before SSE connects or the first snapshot arrives.
-      const job = await ops.getJob(jobId);
-      return { job: toJobHead(job), reached: false, reason: 'timeout' as const };
-    }
+    const { job, reached, reason } = await waitJob(client, jobId, { until, timeoutMs, signal });
+    return { job: toJobHead(job), reached, reason };
   },
   railflow_job_logs(args: ToolArgs<'railflow_job_logs'>, { ops, window }: ToolHandlerContext) {
     return window(
@@ -56,7 +49,15 @@ export const jobHandlers = {
         const response = await ops.openJobLogs(args.jobId);
         return { ...response, contentType: 'text/plain' };
       },
-      (preview) => preview,
+      (preview) => {
+        if ('binary' in preview)
+          throw new RailflowError({
+            kind: 'protocol',
+            message: 'Invalid UTF-8 job log',
+            jobId: args.jobId,
+          });
+        return preview;
+      },
     );
   },
   async railflow_job_pause({ jobId }: ToolArgs<'railflow_job_pause'>, { ops }: ToolHandlerContext) {

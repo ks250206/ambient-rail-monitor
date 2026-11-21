@@ -122,6 +122,8 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         ) {
           usage(`${token.rawName} requires a value`);
         }
+        if (token.name === 'project' && token.value !== parsed.values.project)
+          usage('Conflicting --project IDs');
         optionNames.add(token.name);
       }
     }
@@ -167,6 +169,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         argv.filter((_, index) => index !== commandIndex),
         env,
       );
+      checkInterrupted(signal);
       return 0;
     }
 

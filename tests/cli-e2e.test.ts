@@ -17,9 +17,8 @@ const reportScript = [
   `fs.writeFileSync('report.pptx', Buffer.from(${JSON.stringify([...binary])}));`,
 ].join('\n');
 
-function startCli(server: string, args: string[], env?: NodeJS.ProcessEnv) {
-  const child = spawn(process.execPath, ['cli.ts', '--server', server, ...args], {
-    env: { ...process.env, ...env },
+function startCli(server: string, args: string[], nodeArgs: string[] = []) {
+  const child = spawn(process.execPath, [...nodeArgs, 'cli.ts', '--server', server, ...args], {
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 12_000,
     killSignal: 'SIGKILL',
@@ -45,7 +44,6 @@ function startCli(server: string, args: string[], env?: NodeJS.ProcessEnv) {
   });
   return {
     child,
-    stderr,
     async result() {
       const result = await done;
       if (spawnError) throw spawnError;
@@ -365,12 +363,19 @@ if (fs.existsSync(hold)) {
       })
       .toBe('ready');
 
-    const waiter = startCli(f.url, ['jobs', 'wait', child.id, '--json'], { NODE_DEBUG: 'http' });
+    const readyFile = join(f.home, 'waiter-request');
+    const preload = join(f.home, 'observe-request.mjs');
+    await writeFile(
+      preload,
+      `import { channel } from 'node:diagnostics_channel';
+      import { writeFileSync } from 'node:fs';
+      channel('http.client.request.start').subscribe(() => writeFileSync(${JSON.stringify(readyFile)}, 'ready'));`,
+    );
+    const waiter = startCli(f.url, ['jobs', 'wait', child.id, '--json'], ['--import', preload]);
     try {
-      // Wait for a real HTTP response so SIGINT cannot race CLI startup.
       await expect
-        .poll(waiter.stderr, { timeout: 8_000, interval: 60 })
-        .toMatch(/HTTP \d+: AGENT incoming response!/);
+        .poll(() => readFile(readyFile, 'utf8').catch(() => ''), { timeout: 8000 })
+        .toBe('ready');
       expect(waiter.child.kill('SIGINT')).toBe(true);
       const result = await waiter.result();
       expect(result).toMatchObject({ code: 130, signal: null, stdout: Buffer.alloc(0) });

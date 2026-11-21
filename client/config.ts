@@ -7,11 +7,10 @@ export function parseServerOrigin(raw: string): URL {
   // Inspect the original input so the URL parser cannot hide credentials,
   // dot segments, empty queries, or alternate spellings of an IPv4 address.
   const match = /^(https?):\/\/(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?\/?$/i.exec(raw);
-  const bareIPv6 = /^(https?):\/\/::1\/?$/i.exec(raw);
-  if (match?.[0] === raw || bareIPv6?.[0] === raw) {
-    const protocol = match?.[1] ?? bareIPv6?.[1];
-    const host = match?.[2].toLowerCase() ?? '[::1]';
-    const port = match?.[3] ?? '';
+  if (match && match[0] === raw) {
+    const protocol = match[1];
+    const host = match[2].toLowerCase();
+    const port = match[3] ?? '';
     try {
       const origin = new URL(`${protocol}://${host === 'localhost' ? '127.0.0.1' : host}${port}`);
       if (origin.port !== '0') return origin;

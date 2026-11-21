@@ -182,6 +182,7 @@ it('maps health, project CRUD, and workflow aliases to project routes', async ()
       expect(await ops.listProjects()).toEqual([project]);
       expect(await ops.getProject('lab')).toEqual(project);
       expect(await ops.createProject(body)).toEqual(project);
+      expect(() => ops.updateProject('lab', definition, '')).toThrow(/revision/);
       expect(await ops.updateProject('lab', definition, project.updatedAt)).toEqual(updated);
       expect(await ops.getWorkflow('lab')).toEqual(project);
       expect(await ops.setWorkflow('lab', definition, project.updatedAt)).toEqual(updated);
@@ -467,6 +468,7 @@ it.each([
   ['application/pdf', [Buffer.from('text')]],
   ['application/octet-stream', [Buffer.of(97), Buffer.of(0)]],
   ['application/x-unknown', [Buffer.of(0xe3), Buffer.of(0x21)]],
+  ['text/plain', [Buffer.of(0xe3, 0x81)]],
 ] as const)('identifies binary %s', async (contentType, chunks) => {
   const stream = Readable.from(chunks);
   expect(await readTextWindow(stream, { contentType, contentLength: 4 })).toEqual({

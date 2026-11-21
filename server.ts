@@ -3116,7 +3116,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readJSON(req, 10_000);
       const job = jobs.get(reviewMatch[1]);
       if (!job) return deliverJSON(res, { error: 'Job not found' }, 404);
-      if (!['review', ...(job.workflow?.version === 2 ? ['running'] : [])].includes(job.status))
+      if (!(job.status === 'review' || (job.workflow?.version === 2 && allowsStageReview(job))))
         return deliverJSON(res, { error: 'Not in review' }, 409);
       const step = job.stages.find(
         (stage) => stage.status === 'review' && (!body.stage || stage.key === body.stage),

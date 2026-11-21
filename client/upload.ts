@@ -1,14 +1,17 @@
 import { constants, type BigIntStats, type ReadStream } from 'node:fs';
 import { lstat, open, readdir, realpath, type FileHandle } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { validRelativePath } from '../shared/conditions.ts';
 import { INPUT_LIMITS } from '../shared/input-limits.ts';
 import type { WorkflowJob } from '../shared/types.ts';
 import type { RailflowHttpClient } from './http.ts';
+import { jobFromResponse } from './operations.ts';
 import { RailflowError } from './types.ts';
 
 export interface UploadPolicy {
-  allowedRoot?: string;
+  /** A session can pin the canonical path resolved at startup. */
+  allowedRoot?: string | { canonicalPath: string };
+  signal?: AbortSignal;
   name?: string;
 }
 
@@ -20,6 +23,7 @@ export interface CollectedFile {
   dev: bigint | number;
   ino: bigint | number;
   mtimeNs: bigint;
+  ctimeNs: bigint;
   size: number;
 }
 
@@ -32,10 +36,11 @@ export interface UploadSelection {
 
 interface UploadOptions {
   signal?: AbortSignal;
+  onCommitStart?: (uploadId: string) => void;
   onProgress?: (done: number, total: number, file: string) => void;
 }
 
-const UPLOAD_ID = /^[a-f0-9-]{36}$/;
+const UPLOAD_ID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 const FILE_OPEN_FLAGS =
   constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
@@ -68,24 +73,21 @@ async function inspectPath(root: string, parts: string[], label: string) {
 }
 
 async function inspectLocalInput(input: string) {
-  const absolutePath = resolve(input);
-  const leaf = basename(absolutePath);
-  const parent = await realpath(dirname(absolutePath)).catch(() => {
-    throw usage(`Cannot resolve input parent: ${leaf}`);
-  });
-  const localPath = join(parent, leaf);
-  return { localPath, stat: await inspect(localPath, leaf) };
-}
-
-async function canonicalUploadRoot(input: string): Promise<string> {
-  if (!input) throw usage('Upload root must be an existing directory');
-  const root = await realpath(input).catch(() => {
-    throw usage('Upload root must be an existing directory');
-  });
-  if (!(await inspect(root, 'upload root')).isDirectory()) {
-    throw usage('Upload root must be an existing directory');
+  const absolute = resolve(input);
+  const parts = absolute.slice(parse(absolute).root.length).split(sep);
+  let root = parse(absolute).root;
+  // macOS exposes these system directories through fixed aliases to /private.
+  if (
+    process.platform === 'darwin' &&
+    parts.length > 1 &&
+    ['tmp', 'var', 'etc'].includes(parts[0])
+  ) {
+    const alias = join(root, parts[0]);
+    if ((await realpath(alias)) === join('/private', parts[0])) {
+      root = join('/private', parts.shift()!);
+    }
   }
-  return root;
+  return inspectPath(root, parts, basename(absolute));
 }
 
 async function verifyContainment(root: string, localPath: string, label: string): Promise<void> {
@@ -102,9 +104,25 @@ export async function collectSelection(
   inputPaths: string[],
   policy?: UploadPolicy,
 ): Promise<UploadSelection> {
+  function checkInterrupted() {
+    if (policy?.signal?.aborted)
+      throw new RailflowError({ kind: 'interrupted', message: 'Input selection interrupted' });
+  }
+  checkInterrupted();
   if (!inputPaths.length) throw usage('Select at least one input file or directory');
-  const allowedRoot =
-    policy?.allowedRoot === undefined ? undefined : await canonicalUploadRoot(policy.allowedRoot);
+  const configured = policy?.allowedRoot;
+  let allowedRoot: string | undefined;
+  if (configured !== undefined) {
+    const pinned = typeof configured === 'string' ? undefined : configured.canonicalPath;
+    const path = typeof configured === 'string' ? configured : configured.canonicalPath;
+    allowedRoot = path ? await realpath(path).catch(() => undefined) : undefined;
+    if (
+      !allowedRoot ||
+      (pinned !== undefined && pinned !== allowedRoot) ||
+      !(await inspect(allowedRoot, 'upload root')).isDirectory()
+    )
+      throw usage('Upload root is missing, redirected, or not a directory');
+  }
   const files: CollectedFile[] = [];
   const paths = new Set<string>();
   let totalBytes = 0;
@@ -146,6 +164,7 @@ export async function collectSelection(
       dev: stat.dev,
       ino: stat.ino,
       mtimeNs: stat.mtimeNs,
+      ctimeNs: stat.ctimeNs,
       size: bytes,
     });
   }
@@ -155,6 +174,7 @@ export async function collectSelection(
       throw usage(`Cannot list input directory: ${prefix || basename(localPath)}`);
     });
     for (const child of children) {
+      checkInterrupted();
       const childPath = join(localPath, child);
       const path = prefix ? `${prefix}/${child}` : child;
       await visit(childPath, path, await inspect(childPath, path));
@@ -162,6 +182,7 @@ export async function collectSelection(
   }
 
   for (const input of inputPaths) {
+    checkInterrupted();
     if (!input || input.includes('\0')) throw usage('Invalid input path');
     if (allowedRoot && !validRelativePath(input)) {
       throw usage('Upload paths must be safe paths relative to the upload root');
@@ -200,7 +221,8 @@ function matchesFile(stat: BigIntStats, file: CollectedFile): boolean {
     stat.dev === BigInt(file.dev) &&
     stat.ino === BigInt(file.ino) &&
     stat.size === BigInt(file.size) &&
-    stat.mtimeNs === file.mtimeNs
+    stat.mtimeNs === file.mtimeNs &&
+    stat.ctimeNs === file.ctimeNs
   );
 }
 
@@ -218,7 +240,7 @@ async function putFile(
     });
   let handle: FileHandle;
   try {
-    const stat = await inspect(file.localPath, file.path);
+    const { stat } = await inspectLocalInput(file.localPath);
     if (!matchesFile(stat, file)) throw changed();
     handle = await open(file.localPath, FILE_OPEN_FLAGS);
   } catch {
@@ -291,7 +313,7 @@ export async function submitDataset(
   client: RailflowHttpClient,
   projectId: string,
   selection: UploadSelection,
-  { signal, onProgress }: UploadOptions = {},
+  { signal, onProgress, onCommitStart }: UploadOptions = {},
 ): Promise<{ uploadId: string; job: WorkflowJob }> {
   const { id: uploadId } = await client.json<{ id: string }>(
     'POST',
@@ -337,6 +359,7 @@ export async function submitDataset(
       await client.json('DELETE', `/api/uploads/${uploadId}`, undefined, {
         operation: 'upload.delete',
         timeoutMs: 3_000,
+        independentSignal: true,
         uploadId,
       });
     } catch {
@@ -345,6 +368,7 @@ export async function submitDataset(
     throw error;
   }
 
+  onCommitStart?.(uploadId);
   return retryCommit(client, uploadId, { signal });
 }
 
@@ -354,11 +378,12 @@ export async function retryCommit(
   { signal }: { signal?: AbortSignal } = {},
 ): Promise<{ uploadId: string; job: WorkflowJob }> {
   if (!UPLOAD_ID.test(uploadId)) throw usage('Invalid upload ID');
-  const { job } = await client.json<{ job: WorkflowJob }>(
-    'POST',
-    `/api/uploads/${uploadId}/commit`,
-    undefined,
-    { operation: 'upload.commit', uploadId, mutating: true, signal },
-  );
+  const job = await client.json('POST', `/api/uploads/${uploadId}/commit`, undefined, {
+    operation: 'upload.commit',
+    uploadId,
+    mutating: true,
+    signal,
+    validate: jobFromResponse,
+  });
   return { uploadId, job };
 }

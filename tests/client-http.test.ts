@@ -70,6 +70,7 @@ it.each([
   'http://127.0.0.1:0',
   'https://localhost:000',
   'http://[::1]:0',
+  'http://::1',
   'http://user:pass@localhost',
   'http://@localhost',
   'http://127.0.0.1/prefix',
@@ -493,5 +494,30 @@ it('cancels an in-progress upload without marking its outcome unknown', async ()
     ).rejects.toMatchObject({ kind: 'interrupted' });
   } finally {
     await close();
+  }
+});
+
+it('rejects invalid UTF-8 inside a JSON string', async () => {
+  const fixture = await serve((_, res) =>
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end(Buffer.from([34, 255, 34])),
+  );
+  try {
+    await expect(fixture.client.json('GET', '/')).rejects.toMatchObject({ kind: 'protocol' });
+  } finally {
+    await fixture.close();
+  }
+});
+
+it('preserves a confirmed rejection when the error body stalls', async () => {
+  const fixture = await serve((_, res) =>
+    res.writeHead(409, { 'Content-Type': 'application/json' }).flushHeaders(),
+  );
+  try {
+    await expect(fixture.client.json('POST', '/', {}, { timeoutMs: 100 })).rejects.toMatchObject({
+      kind: 'http',
+      status: 409,
+    });
+  } finally {
+    await fixture.close();
   }
 });

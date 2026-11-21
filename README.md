@@ -152,7 +152,7 @@ Alongside the web UI, RAILFLOW provides a terminal CLI (`cli.ts`) for scripts an
 
 ### CLI (`railflow`)
 
-Run via `node cli.ts`, `./cli.ts`, or `pnpm cli -- ...`. The default target is `http://127.0.0.1:4173`. When the server runs on another port (for example `PORT=4310`), set `--server URL` or `RAILFLOW_SERVER`.
+Run via `node cli.ts`, `./cli.ts`, or `pnpm run cli <command> [options]`. The default target is `http://127.0.0.1:4173`. When the server runs on another port (for example `PORT=4310`), set `--server URL` or `RAILFLOW_SERVER`.
 
 ```sh
 # Check the default server (http://127.0.0.1:4173)
@@ -174,7 +174,7 @@ node cli.ts jobs provenance JOB_ID --out ./provenance.json
 
 Run `node cli.ts --help` to list all commands. Key safety guarantees:
 
-- `RAILFLOW_PROJECT` sets the default project for read commands (`projects get`, `jobs list`, etc.), while mutating commands (create/update/delete/submit/demo/save) require an explicit positional project ID or `--project`.
+- `RAILFLOW_PROJECT` sets the default project for read commands (`projects get`, `jobs list`, etc.), while mutating commands targeting an existing project require an explicit positional project ID or `--project`.
 - `projects update` and `workflow set` require `--expected-updated-at` for optimistic concurrency and exit with code `5` (HTTP 409) on conflict.
 - `review approve` requires the exact `--attempt`, `--sequence`, and `--receipt` from `review list` plus `--yes` (and `--exception` when approving a failed stage as an exception).
 - Binary responses are blocked from writing raw bytes to a TTY (`--out FILE` is required), and file downloads never overwrite an existing file.
@@ -188,9 +188,9 @@ Run `node cli.ts --help` to list all commands. Key safety guarantees:
 | `3`       | Connection or transport failure                                         |
 | `4`       | HTTP error (other than 409/422), protocol mismatch, or size limit error |
 | `5`       | Conflict (HTTP 409: optimistic concurrency or state mismatch)           |
-| `6`       | Validation failure (HTTP 422, or `inputs check` fail/unknown)           |
+| `6`       | Validation failure (HTTP 422, or `inputs check` fail/error)             |
 | `7`       | Job ended in `failed` or `cancelled`                                    |
-| `8`       | Job paused in `review` or `paused` (awaiting human action)              |
+| `8`       | Job paused or a stage awaits review                                     |
 | `9`       | Timeout (HTTP request or `jobs wait --timeout-ms`)                      |
 | `10`      | Outcome unknown (transport drop after sending a mutation)               |
 | `130`     | Interrupted by `SIGINT`                                                 |
@@ -217,10 +217,11 @@ Implements MCP protocol `2025-11-25` over stdio using newline-delimited JSON-RPC
 }
 ```
 
+- At its deadline, `railflow_job_wait` returns the last observed job with `reached:false`. If the API has not supplied a snapshot yet, the tool returns a timeout error.
 - Discovery (`initialize`, `tools/list`, `resources/list`, `resources/templates/list`) succeeds even when the API server is offline.
-- By default, 32 tools are exposed for reads, execution control, review, templates, and queue management. Passing an existing directory to `--upload-root DIR` adds `railflow_dataset_submit` and session-scoped `railflow_upload_commit` (34 tools total). Paths outside the upload root, symlinks, and hard links are rejected.
+- By default, 32 tools are exposed for reads, execution control, review, templates, and queue management. Passing the absolute path of a trusted staging directory to `--upload-root DIR` adds `railflow_dataset_submit` and session-scoped `railflow_upload_commit` (34 tools total). Only the operator should be able to rename or replace directories in this tree. Selected paths must stay within the root and cannot traverse symlinks or include hard-linked files.
 - Tool responses are capped at 32 KiB with pagination and byte-offset previews, pointing to CLI fallback commands when full logs or artifacts are needed. Read-only access is also provided via 3 static resources (`railflow://projects`, `railflow://queue`, `railflow://templates`) and 6 URI templates (`railflow://projects/{projectId}`, `/jobs`, `railflow://jobs/{jobId}`, `/logs`, `/provenance`, `/artifacts`).
-- `railflow_review_approve` only approves the exact attempt matching the receipt from `railflow_review_inspect`. Hosts should display `jobId`, `stageKey`, `attempt`, `failureKind`, and `exception` and confirm with a human before calling it.
+- `railflow_review_approve` only approves the exact attempt matching the receipt from `railflow_review_list`. Hosts should display `jobId`, `stageKey`, `attempt`, `failureKind`, and `exception` and confirm with a human before calling it.
 
 ## Data storage layout
 
@@ -257,7 +258,7 @@ pnpm run check   # Format, lint, and type check (vp check)
 pnpm run test    # Run Vitest suite (vp test run)
 pnpm run build   # Production frontend build into dist/
 pnpm run start   # Serve dist/ and API in production mode
-pnpm run cli -- health  # Run the CLI (or invoke node cli.ts directly)
+pnpm run cli health  # Run the CLI (or invoke node cli.ts directly)
 pnpm run mcp            # Manual MCP check (use node mcp.ts in MCP host configs)
 ```
 
@@ -270,7 +271,7 @@ pnpm run mcp            # Manual MCP check (use node mcp.ts in MCP host configs)
 | `RAILFLOW_HOME`             | Root directory for data and project folders. Default repository root                                                  |
 | `RAILFLOW_URL`              | API URL used by workers and the Vite dev proxy. Default `http://127.0.0.1:4173`                                       |
 | `RAILFLOW_SERVER`           | API URL used by the CLI and MCP server. Default `http://127.0.0.1:4173`                                               |
-| `RAILFLOW_PROJECT`          | Default project ID for workers and CLI read commands (CLI mutations and MCP tools require an explicit project ID)     |
+| `RAILFLOW_PROJECT`          | Project filter for workers and default project for CLI reads                                                          |
 | `RAILFLOW_AGENT_TIMEOUT_MS` | Optional additional execution timeout cap in milliseconds (minimum of this and workflow setting applies)              |
 | `RAILFLOW_PYTHON`           | Default Python executable for demo reports and Python stages. Default `python3`                                       |
 | `RAILFLOW_ALLOW_LOCAL_EXEC` | Set to `1` to allow command, Python, HTTP, and external AI stages under `--mode=demo` (blocked by default)            |

@@ -92,6 +92,7 @@ it('negotiates, declares capabilities, and serves each request with its original
   const call = { name: 'echo', arguments: { value: 'a\nb' } };
   const cases = [
     ['ping', {}, {}],
+    ['ping', { _meta: { progressToken: 1 } }, {}],
     ['tools/list', { cursor: 'tools' }, { tools: [], page: { cursor: 'tools' } }],
     ['tools/call', call, { content: [{ type: 'text', text: JSON.stringify(call) }] }],
     ['resources/list', undefined, { resources: [], page: {} }],

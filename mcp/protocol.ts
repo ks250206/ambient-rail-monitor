@@ -96,7 +96,11 @@ export function createMcpSession(
 
   function dispatch(method: string, params: Params, ctx: McpRequestContext) {
     if (method === 'ping') {
-      if (Object.keys(params).length) invalidParams();
+      if (
+        Object.keys(params).some((key) => key !== '_meta') ||
+        (params._meta !== undefined && !isObject(params._meta))
+      )
+        invalidParams();
       return {};
     }
     if (method === 'initialize') {

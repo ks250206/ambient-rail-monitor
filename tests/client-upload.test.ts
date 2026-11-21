@@ -24,7 +24,16 @@ import { INPUT_LIMITS } from '../shared/input-limits.ts';
 const uploadId = '01234567-89ab-cdef-0123-456789abcdef';
 const commitRoute = `/api/uploads/${uploadId}/commit`;
 const deleteRoute = `/api/uploads/${uploadId}`;
-const job = { id: 'job-1', projectId: 'test' };
+const job = {
+  id: 'run_12345678',
+  projectId: 'test',
+  file: 'data',
+  status: 'queued',
+  createdAt: 'now',
+  stages: [],
+  events: [],
+  artifacts: [],
+};
 
 let root: string;
 
@@ -119,6 +128,12 @@ it('rejects normalized file/directory prefix collisions in either argument order
       message: expect.stringMatching(/conflict/i),
     });
   }
+});
+
+it('honors cancellation before inspecting local paths', async () => {
+  await expect(
+    collectSelection(['missing'], { signal: AbortSignal.abort() }),
+  ).rejects.toMatchObject({ kind: 'interrupted' });
 });
 
 it('rejects empty selections and empty directory trees', async () => {
@@ -229,7 +244,7 @@ it('rejects nonexistent and non-directory upload roots', async () => {
 });
 
 it.skipIf(process.platform === 'win32')(
-  'canonicalizes the upload root and rejects symlinks below it',
+  'rejects a redirected canonical upload root and symlinks below it',
   async () => {
     const outside = write('outside/input.csv');
     write('allowed/inside/input.csv');
@@ -242,6 +257,9 @@ it.skipIf(process.platform === 'win32')(
     expect(
       (await collectSelection(['inside/input.csv'], { allowedRoot: rootAlias })).files,
     ).toHaveLength(1);
+    await expect(
+      collectSelection(['inside/input.csv'], { allowedRoot: { canonicalPath: rootAlias } }),
+    ).rejects.toMatchObject({ kind: 'usage' });
     for (const relative of [
       'outside-file.csv',
       'outside-dir/input.csv',
@@ -269,7 +287,7 @@ function sendJson(res: ServerResponse, body: object, status = 200) {
   res.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
 }
 
-async function serve(respond?: Respond) {
+async function serve(respond?: Respond, signal?: AbortSignal) {
   const requests: UploadRequest[] = [];
   const server = createServer((req, res) => {
     const request = { method: req.method, route: req.url, body: '' };
@@ -291,6 +309,7 @@ async function serve(respond?: Respond) {
   const client = createClient({
     origin: new URL(`http://127.0.0.1:${address.port}`),
     requestTimeoutMs: 2_000,
+    signal,
   });
   return {
     client,
@@ -304,23 +323,14 @@ async function serve(respond?: Respond) {
   };
 }
 
-it.skipIf(process.platform === 'win32')(
-  'uploads a CLI file through a symlinked parent directory',
-  async () => {
-    const file = write('real/input.csv', 'payload');
-    const parentAlias = join(root, 'alias');
-    symlinkSync(dirname(file), parentAlias, 'dir');
-    const selection = await collectSelection([join(parentAlias, 'input.csv')]);
-    expect(selection.files).toMatchObject([{ path: 'input.csv', localPath: file }]);
-    const { client, requests, close } = await serve();
-    try {
-      await expect(submitDataset(client, 'test', selection)).resolves.toEqual({ uploadId, job });
-      expect(requests[1]).toMatchObject({ method: 'PUT', body: 'payload' });
-    } finally {
-      await close();
-    }
-  },
-);
+it.skipIf(process.platform === 'win32')('rejects a symlink in a CLI input parent', async () => {
+  const file = write('real/input.csv', 'payload');
+  const parentAlias = join(root, 'alias');
+  symlinkSync(dirname(file), parentAlias, 'dir');
+  await expect(collectSelection([join(parentAlias, 'input.csv')])).rejects.toMatchObject({
+    kind: 'usage',
+  });
+});
 
 it('creates one upload, sends encoded file paths in order, reports progress, and commits', async () => {
   write('tree/a & #+.csv', 'payload');
@@ -353,13 +363,18 @@ it('creates one upload, sends encoded file paths in order, reports progress, and
   }
 });
 
-it.each(['modified', 'touched', 'replaced', 'removed', 'hardlinked'] as const)(
+it.each(['modified', 'touched', 'restored mtime', 'replaced', 'removed', 'hardlinked'] as const)(
   'cleans up before PUT when the selected file was %s',
   async (change) => {
     const path = write('input.csv');
+    if (change === 'restored mtime') utimesSync(path, 1, 1);
     const selection = await collectSelection([path]);
     if (change === 'modified') writeFileSync(path, 'longer contents');
     if (change === 'touched') utimesSync(path, 1, 1);
+    if (change === 'restored mtime') {
+      writeFileSync(path, 'y');
+      utimesSync(path, 1, 1);
+    }
     if (change === 'replaced') {
       renameSync(path, join(root, 'old.csv'));
       write('input.csv');
@@ -451,7 +466,7 @@ it('cleans up with a fresh request after cancellation before commit', async () =
     controller.abort();
     sendJson(res, { ok: true });
     return true;
-  });
+  }, controller.signal);
   try {
     await expect(
       submitDataset(client, 'test', selection, { signal: controller.signal }),
@@ -513,12 +528,32 @@ it('reconciles a dropped commit response by retrying the same upload ID', async 
 it('rejects an invalid retry ID before sending any HTTP requests', async () => {
   const { client, requests, close } = await serve();
   try {
-    for (const invalid of ['not-a-uuid', uploadId.toUpperCase(), `${uploadId}/files`]) {
+    for (const invalid of [
+      'not-a-uuid',
+      '-'.repeat(36),
+      uploadId.toUpperCase(),
+      `${uploadId}/files`,
+    ]) {
       await expect(retryCommit(client, invalid)).rejects.toBeInstanceOf(RailflowError);
       await expect(retryCommit(client, invalid)).rejects.toMatchObject({ kind: 'usage' });
     }
     expect(requests).toEqual([]);
   } finally {
     await close();
+  }
+});
+
+it('rejects a malformed success response when retrying a commit', async () => {
+  const fixture = await serve((_, _req, res) => {
+    sendJson(res, {});
+    return true;
+  });
+  try {
+    await expect(retryCommit(fixture.client, uploadId)).rejects.toMatchObject({
+      kind: 'protocol',
+      uploadId,
+    });
+  } finally {
+    await fixture.close();
   }
 });
