@@ -1,4 +1,6 @@
 let installed = false;
+let navigateTimer: number | undefined;
+let recoveryTimer: number | undefined;
 
 function prefersReducedMotion(): boolean {
   return (
@@ -6,6 +8,24 @@ function prefersReducedMotion(): boolean {
     typeof window.matchMedia === 'function' &&
     window.matchMedia('(prefers-reduced-motion: reduce)').matches
   );
+}
+
+function clearNavigationTimers() {
+  if (navigateTimer !== undefined) {
+    window.clearTimeout(navigateTimer);
+    navigateTimer = undefined;
+  }
+  if (recoveryTimer !== undefined) {
+    window.clearTimeout(recoveryTimer);
+    recoveryTimer = undefined;
+  }
+}
+
+export function clearNavigationTransition() {
+  clearNavigationTimers();
+  if (typeof document !== 'undefined') {
+    document.documentElement.classList.remove('is-navigating');
+  }
 }
 
 /** Smooth exit transition before full-page navigation when motion is enabled. */
@@ -19,8 +39,17 @@ export function navigateWithTransition(href: string, options: { replace?: boolea
     go();
     return;
   }
+  clearNavigationTimers();
   document.documentElement.classList.add('is-navigating');
-  window.setTimeout(go, 150);
+  navigateTimer = window.setTimeout(() => {
+    navigateTimer = undefined;
+    go();
+    // If navigation is cancelled (e.g. beforeunload prompt) or handled as an attachment download,
+    // restore visibility instead of leaving the page faded out.
+    recoveryTimer = window.setTimeout(() => {
+      clearNavigationTransition();
+    }, 900);
+  }, 150);
 }
 
 /** Installs global click interception for same-origin MPA links to animate page exits. */
@@ -28,10 +57,9 @@ export function installPageTransitions() {
   if (installed || typeof window === 'undefined' || typeof document === 'undefined') return;
   installed = true;
 
-  // Clear exit state when restored from bfcache.
-  window.addEventListener('pageshow', () => {
-    document.documentElement.classList.remove('is-navigating');
-  });
+  // Clear exit state when restored from bfcache or when unloading succeeds.
+  window.addEventListener('pageshow', clearNavigationTransition);
+  window.addEventListener('pagehide', clearNavigationTimers);
 
   document.addEventListener('click', (event) => {
     if (
@@ -56,6 +84,7 @@ export function installPageTransitions() {
       return;
     }
     if (url.origin !== window.location.origin) return;
+    if (url.pathname.startsWith('/api/')) return;
     if (url.pathname === window.location.pathname && url.search === window.location.search) return;
     if (prefersReducedMotion()) return;
     event.preventDefault();

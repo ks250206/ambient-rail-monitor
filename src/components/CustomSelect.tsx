@@ -128,7 +128,7 @@ export function CustomSelect<T extends string = string>({
     const option = flatOptions[index];
     if (!option || option.disabled) return;
     closeMenu(true);
-    onChange(option.value);
+    if (option.value !== value) onChange(option.value);
   }
 
   useLayoutEffect(() => {

@@ -7,7 +7,7 @@ import { alertDialog, confirmDialog, promptDialog } from '../src/components/Dial
 import { getLocale, setLocale } from '../src/i18n.ts';
 import { JobsPage } from '../src/JobsPage.tsx';
 import { LandingPage } from '../src/LandingPage.tsx';
-import { navigateWithTransition } from '../src/utils/navigation.ts';
+import { installPageTransitions, navigateWithTransition } from '../src/utils/navigation.ts';
 import { button, chooseSelect, client, enter, job, project, render } from './ui-fixture.ts';
 
 const click = (el: HTMLElement) => act(async () => el.click());
@@ -71,6 +71,18 @@ it('CustomSelect supports click, keyboard navigation, disabled skipping, typeahe
   await chooseSelect(trigger, 'gamma');
   expect(onChange).toHaveBeenLastCalledWith('gamma');
   expect(trigger.textContent).toContain('Cherry');
+
+  // Reselecting the already-selected option closes menu without firing onChange
+  const callsBefore = onChange.mock.calls.length;
+  await chooseSelect(trigger, 'gamma');
+  expect(onChange).toHaveBeenCalledTimes(callsBefore);
+  expect(trigger.getAttribute('aria-expanded')).toBe('false');
+
+  await keyDown(trigger, 'Enter');
+  expect(trigger.getAttribute('aria-expanded')).toBe('true');
+  await keyDown(trigger, 'Enter');
+  expect(onChange).toHaveBeenCalledTimes(callsBefore);
+  expect(trigger.getAttribute('aria-expanded')).toBe('false');
 });
 
 it('DialogHost resolves confirmDialog, alertDialog, and promptDialog with validation and Escape', async () => {
@@ -182,7 +194,7 @@ it('toggles JA/EN via AppHeader, persists locale, updates <html lang>, and trans
   expect(document.body.textContent).toContain('データをまとめて投入');
 });
 
-it('navigateWithTransition sets exit transition class before navigating when motion is enabled', () => {
+it('navigateWithTransition recovers if navigation does not unload and ignores /api/ links', () => {
   vi.useFakeTimers();
   const assign = vi.fn();
   const originalLocation = window.location;
@@ -206,6 +218,20 @@ it('navigateWithTransition sets exit transition class before navigating when mot
 
   vi.advanceTimersByTime(160);
   expect(assign).toHaveBeenCalledWith('/jobs');
+
+  // If the page does not unload (e.g. beforeunload cancelled), visibility is restored
+  vi.advanceTimersByTime(1000);
+  expect(document.documentElement.classList.contains('is-navigating')).toBe(false);
+
+  // Clicking an /api/ link does not trigger exit transition
+  installPageTransitions();
+  const apiLink = document.createElement('a');
+  apiLink.href = `${originalLocation.origin}/api/jobs/run_1/logs`;
+  document.body.appendChild(apiLink);
+  const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+  apiLink.dispatchEvent(clickEvent);
+  expect(clickEvent.defaultPrevented).toBe(false);
+  expect(document.documentElement.classList.contains('is-navigating')).toBe(false);
 
   document.documentElement.classList.remove('is-navigating');
   Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });

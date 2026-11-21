@@ -573,6 +573,7 @@ export function ActionsSection({
                 {selectedJob ? (
                   <a
                     href={`/api/jobs/${encodeURIComponent(selectedJob.id)}/logs`}
+                    download
                     className="inline-flex shrink-0 items-center gap-1 rounded-md border border-science-blue bg-white px-2.5 py-1 text-xs font-semibold text-science-blue transition-colors hover:bg-bg-2"
                     title={pick('このジョブのログをダウンロード', "Download this run's logs")}
                   >
