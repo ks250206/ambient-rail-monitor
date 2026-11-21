@@ -23,15 +23,16 @@ export function DatasetUpload({
   const fileRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
+  function selectionFailed(err: Error) {
+    setError(selection ? `${err.message} 前の選択を保持しています。` : err.message);
+  }
   function selected(files: File[], directory = false) {
-    setSelection(null);
-    setEvidence(null);
     try {
       setSelection(selectFiles(files, directory));
       setError('');
       setEvidence(null);
     } catch (err) {
-      setError((err as Error).message);
+      selectionFailed(err as Error);
     }
   }
   async function upload() {
@@ -97,8 +98,6 @@ export function DatasetUpload({
         dragDepth.current = 0;
         setDragging(false);
         if (busy) return;
-        setSelection(null);
-        setEvidence(null);
         setError('');
         setBusy(true);
         setProgress('フォルダの内容を確認中…');
@@ -108,7 +107,7 @@ export function DatasetUpload({
             setError('');
             setEvidence(null);
           })
-          .catch((err: Error) => setError(err.message))
+          .catch(selectionFailed)
           .finally(() => {
             setBusy(false);
             setProgress('');

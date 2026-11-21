@@ -308,7 +308,9 @@ function buildProjectSpec(
   existing?: ProjectSpec,
   options: { strictTemplates?: boolean } = {},
 ): ProjectSpec {
-  const now = new Date().toISOString();
+  // A project timestamp also identifies its revision, including back-to-back saves.
+  const previousTime = Date.parse(existing?.updatedAt ?? '') || 0;
+  const now = new Date(Math.max(Date.now(), previousTime + 1)).toISOString();
   const baseStages = existing?.stages ?? defaultStages();
   let stages: WorkflowStageSpec[];
   let automation: ReturnType<typeof projectAutomation>;
@@ -1235,6 +1237,11 @@ const server = http.createServer(async (req, res) => {
       const raw = await readJSON(req, 4_000_000);
       const existing = projects.get(projectId);
       if (!existing) return deliverJSON(res, { error: 'Project not found' }, 404);
+      if (raw.expectedUpdatedAt !== undefined && raw.expectedUpdatedAt !== existing.updatedAt)
+        throw new HttpError(
+          409,
+          '保存前にプロジェクトが更新されました。最新版を確認してください。',
+        );
       const updated = buildProjectSpec(projectId, raw, existing);
       projects.set(projectId, updated);
       saveProjects();
@@ -1279,8 +1286,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/workflow' && req.method === 'PUT') {
-      const target = getProjectOrDefault(url.searchParams.get('project'));
       const raw = await readJSON(req, 4_000_000);
+      const target = getProjectOrDefault(url.searchParams.get('project'));
       const updated = buildProjectSpec(target.id, raw, target);
       projects.set(target.id, updated);
       saveProjects();

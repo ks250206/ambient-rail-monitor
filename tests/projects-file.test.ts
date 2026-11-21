@@ -71,3 +71,25 @@ it('still moves a wholly unreadable projects.json aside and starts with a defaul
     await f.close();
   }
 });
+
+it('accepts only one workflow save against the same revision and permits an explicit retry', async () => {
+  const f = await workflowFixture();
+  try {
+    const { project } = await f.state();
+    const route = '/api/projects/' + project.id;
+    const save = (prompt: string, expectedUpdatedAt: string) =>
+      f.response(route, { prompt, expectedUpdatedAt }, 'PUT');
+    const responses = await Promise.all([
+      save('first draft', project.updatedAt),
+      save('other draft', project.updatedAt),
+    ]);
+    expect(responses.map((res) => res.status).sort((a, b) => a - b)).toEqual([200, 409]);
+    const latest = (await f.state()).project;
+    expect(latest.prompt).toBe(responses[0].ok ? 'first draft' : 'other draft');
+    expect(latest.updatedAt > project.updatedAt).toBe(true);
+    expect((await save('reviewed draft', latest.updatedAt)).ok).toBe(true);
+    expect((await f.state()).project.prompt).toBe('reviewed draft');
+  } finally {
+    await f.close();
+  }
+});

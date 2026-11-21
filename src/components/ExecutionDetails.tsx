@@ -79,14 +79,21 @@ export function StageExecutionDetails({
           秒
         </span>
       </div>
+      <span role="status" className="sr-only">
+        {stage.status === 'retry'
+          ? '再試行を待っています。'
+          : stage.status === 'running'
+            ? '試行を実行中です。'
+            : ''}
+      </span>
       {stage.status === 'running' && stage.deadlineAt && (
-        <p role="status">
+        <p role="timer">
           この試行の残り時間：約{' '}
           {Math.max(0, Math.ceil((Date.parse(stage.deadlineAt) - nowMs) / 1000))} 秒
         </p>
       )}
       {stage.status === 'retry' && stage.retryAt && (
-        <p role="status">
+        <p role="timer">
           次の試行まで：約 {Math.max(0, Math.ceil((Date.parse(stage.retryAt) - nowMs) / 1000))} 秒
         </p>
       )}

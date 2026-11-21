@@ -38,7 +38,12 @@ export type WorkflowUpdatePayload = Pick<
 interface WorkflowSpecSectionProps {
   project: ProjectSpec;
   saving: boolean;
-  onSave: (next: WorkflowUpdatePayload) => void;
+  onDirtyChange: (dirty: boolean) => void;
+  onSave: (
+    next: WorkflowUpdatePayload,
+    expectedUpdatedAt: string,
+    onSaved: (saved: ProjectSpec) => void,
+  ) => void;
 }
 
 const EFFORT_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
@@ -64,7 +69,12 @@ function editableStages(stages: WorkflowStageSpec[]) {
   return stages.map((stage, rowId) => ({ ...stage, rowId }));
 }
 
-export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSectionProps) {
+export function WorkflowSpecSection({
+  project,
+  saving,
+  onSave,
+  onDirtyChange,
+}: WorkflowSpecSectionProps) {
   const [automation, setAutomation] = useState(() => projectAutomation({}, project));
   const monitor = useProjectJobs(project.id);
   const [candidate, setCandidate] = useState('');
@@ -76,30 +86,12 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
   const [stages, setStages] = useState(() => editableStages(project.stages));
   const nextId = useRef(stages.length);
   const [active, setActive] = useState(0);
-  const syncedUpdatedAt = useRef(project.updatedAt);
+  const [baseline, setBaseline] = useState(project);
   const index = Math.max(
     0,
     stages.findIndex((s) => s.rowId === active),
   );
   const stage = stages[index];
-  useEffect(() => {
-    if (syncedUpdatedAt.current === project.updatedAt) return;
-    syncedUpdatedAt.current = project.updatedAt;
-    setAutomation(projectAutomation({}, project));
-    setAcceptance(project.acceptanceCriteria);
-    setLlm(project.llm);
-    setStages((prev) => {
-      const activeKey = prev.find((item) => item.rowId === active)?.key;
-      const nextStages = project.stages.map((spec) => {
-        const existing = prev.find((item) => item.key === spec.key);
-        return { ...spec, rowId: existing ? existing.rowId : nextId.current++ };
-      });
-      const matching = nextStages.find((item) => item.key === activeKey);
-      if (matching) setActive(matching.rowId);
-      else if (nextStages[0]) setActive(nextStages[0].rowId);
-      return nextStages;
-    });
-  }, [project, active]);
   const availableCandidates = monitor.data?.candidates ?? [];
   const activeCandidate = availableCandidates.some(
     (item) => JSON.stringify({ name: item.name, origin: item.origin }) === candidate,
@@ -119,10 +111,15 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
     stages: stages.map(({ rowId: _id, ...spec }) => spec),
   };
   const dirty =
-    acceptanceCriteria !== project.acceptanceCriteria ||
-    JSON.stringify(llm) !== JSON.stringify(project.llm) ||
-    JSON.stringify(payload.stages) !== JSON.stringify(project.stages) ||
-    JSON.stringify(automation) !== JSON.stringify(projectAutomation({}, project));
+    acceptanceCriteria !== baseline.acceptanceCriteria ||
+    JSON.stringify(llm) !== JSON.stringify(baseline.llm) ||
+    JSON.stringify(payload.stages) !== JSON.stringify(baseline.stages) ||
+    JSON.stringify(automation) !== JSON.stringify(projectAutomation({}, baseline));
+  const externalUpdate = project.updatedAt > baseline.updatedAt;
+  useEffect(() => {
+    onDirtyChange(dirty);
+    return () => onDirtyChange(false);
+  }, [dirty, onDirtyChange]);
   let validation = '';
   let promptPreview = '';
   try {
@@ -162,21 +159,31 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
       setTesting(false);
     }
   }
-  function reset() {
-    setAutomation(projectAutomation({}, project));
+  function loadVersion(version: ProjectSpec) {
+    setBaseline(version);
+    setAutomation(projectAutomation({}, version));
     setTestResult(null);
-    setAcceptance(project.acceptanceCriteria);
-    setLlm(project.llm);
-    setStages(editableStages(project.stages));
-    setActive(0);
+    setTestError('');
+    setAcceptance(version.acceptanceCriteria);
+    setLlm(version.llm);
+    // Keep the selected stage and its focused controls mounted across a refresh.
+    let nextRow = Math.max(...stages.map((item) => item.rowId)) + 1;
+    const rows = version.stages.map((spec) => ({
+      ...spec,
+      rowId: stages.find((item) => item.key === spec.key)?.rowId ?? nextRow++,
+    }));
+    setStages(rows);
+    setActive(rows.find((item) => item.key === stage.key)?.rowId ?? rows[0].rowId);
   }
+  if (externalUpdate && !dirty) loadVersion(project);
   function update(patch: Partial<WorkflowStageSpec>) {
     setStages((prev) =>
       prev.map((item) => (item.rowId === stage.rowId ? { ...item, ...patch } : item)),
     );
   }
   function add() {
-    const rowId = nextId.current++;
+    const rowId = Math.max(nextId.current, ...stages.map((item) => item.rowId + 1));
+    nextId.current = rowId + 1;
     let n = rowId + 1;
     while (stages.some((s) => s.key === `stage_${n}`)) n++;
     setStages([
@@ -215,21 +222,30 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
             {dirty ? '未保存の変更' : `最終更新 ${clockDate(project.updatedAt)}`}
           </span>
           {dirty && (
-            <button className="wf-secondary" disabled={saving || testing} onClick={reset}>
+            <button
+              className="wf-secondary"
+              disabled={saving || testing}
+              onClick={() => loadVersion(project)}
+            >
               <RotateCcw size={14} />
-              戻す
+              {externalUpdate ? '下書きを破棄して最新版を読み込む' : '戻す'}
             </button>
           )}
           <button
             className="wf-primary"
             disabled={!dirty || saving || testing || Boolean(validation)}
-            onClick={() => onSave(payload)}
+            onClick={() => onSave(payload, project.updatedAt, loadVersion)}
           >
             <Save size={15} />
-            {saving ? '保存中…' : '定義を保存'}
+            {saving ? '保存中…' : externalUpdate ? '下書きで上書き保存' : '定義を保存'}
           </button>
         </div>
       </div>
+      {externalUpdate && dirty && !saving && (
+        <p className="condition-error" role="alert">
+          外部で更新されました。下書きを保持しています。最新版を読み込むか、現在の下書きで最新のワークフロー定義を上書きできます。
+        </p>
+      )}
       {validation && (
         <p className="condition-error" role="alert">
           {validation}
@@ -319,37 +335,60 @@ export function WorkflowSpecSection({ project, saving, onSave }: WorkflowSpecSec
               setTestResult(null);
             }}
           />
-          <div className="condition-toolbar">
-            <label>
-              テストする監視入力
-              <select
-                value={activeCandidate}
-                onChange={(e) => {
-                  setCandidate(e.target.value);
-                  setTestResult(null);
-                }}
+          {monitor.isPending ? (
+            <p role="status">テストする監視入力を読み込み中…</p>
+          ) : monitor.isError ? (
+            <div className="condition-toolbar">
+              <p role="alert" className="condition-error">
+                監視入力を取得できませんでした。
+              </p>
+              <button
+                type="button"
+                className="wf-secondary"
+                disabled={monitor.isFetching}
+                onClick={() => void monitor.refetch()}
               >
-                <option value="">入力を選択…</option>
-                {availableCandidates.map((item, i) => (
-                  <option
-                    key={`${item.name}-${i}`}
-                    value={JSON.stringify({ name: item.name, origin: item.origin })}
-                  >
-                    {item.origin === 'legacy' ? '旧 inbox / ' : ''}
-                    {item.name}（{item.fileCount}ファイル）
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              className="wf-secondary"
-              type="button"
-              disabled={!activeCandidate || testing || Boolean(triggerValidation)}
-              onClick={() => void testInput()}
-            >
-              {testing ? '判定中…' : '未保存の条件をテスト'}
-            </button>
-          </div>
+                {monitor.isFetching ? '再取得中…' : '監視入力の取得を再試行'}
+              </button>
+            </div>
+          ) : availableCandidates.length === 0 ? (
+            <p role="status" className="wf-help">
+              テストできる監視入力がありません。監視フォルダ <code>{project.inboxDir}</code>{' '}
+              にファイルまたはフォルダを置いてください。
+            </p>
+          ) : (
+            <div className="condition-toolbar">
+              <label>
+                テストする監視入力
+                <select
+                  value={activeCandidate}
+                  onChange={(e) => {
+                    setCandidate(e.target.value);
+                    setTestResult(null);
+                  }}
+                >
+                  <option value="">入力を選択…</option>
+                  {availableCandidates.map((item, i) => (
+                    <option
+                      key={`${item.name}-${i}`}
+                      value={JSON.stringify({ name: item.name, origin: item.origin })}
+                    >
+                      {item.origin === 'legacy' ? '旧 inbox / ' : ''}
+                      {item.name}（{item.fileCount}ファイル）
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                className="wf-secondary"
+                type="button"
+                disabled={!activeCandidate || testing || Boolean(triggerValidation)}
+                onClick={() => void testInput()}
+              >
+                {testing ? '判定中…' : '未保存の条件をテスト'}
+              </button>
+            </div>
+          )}
           <p className="wf-help">
             テストは監視中の現在の内容で条件だけを判定します。ジョブは作成しません。
           </p>
