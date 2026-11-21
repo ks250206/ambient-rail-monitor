@@ -24,8 +24,8 @@ function workflow(stages: WorkflowStageSpec[]): ProjectSpec {
 function field(label: string) {
   const target = [...document.querySelectorAll('label')]
     .find((item) => item.firstChild?.textContent?.trim() === label)
-    ?.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
-      'input,textarea,select',
+    ?.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement>(
+      'input,textarea,button[role="combobox"]',
     );
   if (!target) throw new Error('Field not found: ' + label);
   return target;
@@ -96,20 +96,20 @@ it('restores runner and mode drafts across stages and confirms the precise loss 
   await enter(field('実行モデル'), 'sequential');
   expect(field('同時実行するタスク数').value).toBe('7');
   await enter(field('実行モデル'), 'dag');
-  const confirm = vi.fn(() => true);
-  vi.stubGlobal('confirm', confirm);
   await click(button('定義を保存'));
+  await click(button('破棄して保存'));
   expect(save.mock.calls[0][0].stages[1].dependsOn).toEqual([]);
   expect(save.mock.calls[0][0].stages[2].dependsOn).toEqual(['prep', 'independent']);
   await enter(field('実行モデル'), 'legacy');
-  confirm.mockReturnValue(false);
   await click(button('定義を保存'));
-  expect(save).toHaveBeenCalledTimes(1);
-  expect(confirm.mock.lastCall?.join('')).toMatch(
+  const dialog = document.querySelector('[role="alertdialog"]');
+  expect(dialog?.textContent).toMatch(
     /対象 2 工程[\s\S]*コマンドと引数[\s\S]*Pythonコード[\s\S]*入出力契約[\s\S]*DAG依存関係/,
   );
-  confirm.mockReturnValue(true);
+  await click(button('キャンセル'));
+  expect(save).toHaveBeenCalledTimes(1);
   await click(button('定義を保存'));
+  await click(button('破棄して保存'));
   expect(save.mock.lastCall![0].stages[0]).toMatchObject({
     runner: undefined,
     contracts: undefined,
@@ -219,11 +219,20 @@ it('opens the selected review evidence before approving its exact attempt; graph
   });
   await click(button('この試行の出力を例外承認して続行'));
   expect(approve).toHaveBeenCalledWith(run.id, run.stages[1]);
-  await enter(document.querySelector('.graph-node select')!, 'scan_a');
+  await enter(document.querySelector<HTMLElement>('.graph-node [role="combobox"]')!, 'scan_a');
   expect(document.activeElement?.textContent).toBe('scan_a');
-  const picker = document.querySelector<HTMLSelectElement>('select:has(optgroup)')!;
-  expect(picker.querySelector('optgroup[label="scan"]')?.children).toHaveLength(2);
-  await enter(picker, 'scan_b');
+  const picker = document.querySelector<HTMLElement>(
+    '[role="combobox"][aria-label="表示するタスク"]',
+  )!;
+  await click(picker);
+  expect(
+    document
+      .querySelector('[role="group"][aria-label="scan"]')
+      ?.querySelectorAll('[role="option"]'),
+  ).toHaveLength(2);
+  await click(
+    document.querySelector<HTMLButtonElement>('[role="option"][data-option-value="scan_b"]')!,
+  );
   expect(document.activeElement?.textContent).toBe('scan_b');
 });
 
@@ -293,16 +302,17 @@ it.each(['human', 'http'])(
       packages: { numpy: '2' },
     };
     const save = await editor(definition);
-    const confirm = vi.fn(() => false);
-    vi.stubGlobal('confirm', confirm);
     await enter(field('環境の版'), 'env-2');
     await enter(field('キャッシュの版'), 'cache-2');
     await enter(field('工程の種類'), kind);
     await click(button('定義を保存'));
-    expect(confirm.mock.lastCall?.join('')).toMatch(/対象 1 工程[\s\S]*prep：.*キャッシュ/);
+    expect(document.querySelector('[role="alertdialog"]')?.textContent).toMatch(
+      /対象 1 工程[\s\S]*prep：.*キャッシュ/,
+    );
+    await click(button('キャンセル'));
     expect(save).not.toHaveBeenCalled();
-    confirm.mockReturnValue(true);
     await click(button('定義を保存'));
+    await click(button('破棄して保存'));
     expect(save.mock.lastCall![0].stages[0].cache?.enabled).toBeFalsy();
     expect(save.mock.lastCall![0].stages[0].cache?.revision).toBeFalsy();
     expect(save.mock.lastCall![0].runtime?.revision).toBe('env-2');
@@ -313,12 +323,14 @@ it.each(['human', 'http'])(
     expect(field('環境の版').value).toBe('env-2');
     expect(field('キャッシュの版').value).toBe('cache-2');
     await enter(field('実行モデル'), 'legacy');
-    confirm.mockReturnValue(false);
     await click(button('定義を保存'));
-    expect(confirm.mock.lastCall?.join('')).toMatch(/キャッシュ[\s\S]*実行環境/);
+    expect(document.querySelector('[role="alertdialog"]')?.textContent).toMatch(
+      /キャッシュ[\s\S]*実行環境/,
+    );
+    await click(button('キャンセル'));
     expect(save).toHaveBeenCalledTimes(1);
-    confirm.mockReturnValue(true);
     await click(button('定義を保存'));
+    await click(button('破棄して保存'));
     const saved = save.mock.lastCall![0];
     expect(saved.graph).toBeUndefined();
     expect(saved.runtime).toEqual({ revision: '', python: '', expected: {}, packages: {} });

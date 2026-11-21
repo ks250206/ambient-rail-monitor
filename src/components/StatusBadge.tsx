@@ -1,10 +1,12 @@
 import { AlertCircle, Check, Circle, Loader2, X, Pause } from 'lucide-react';
 
 import type { JobStatus, StageStatus } from '../../shared/types.ts';
+import { useI18n } from '../i18n.ts';
 import {
-  ACTION_STATUS_LABELS,
+  actionStatusLabel,
   normalizeActionStatus,
   STATUS_LABELS,
+  statusLabel,
   type NormalizedActionStatus,
 } from '../utils/workflow.ts';
 
@@ -24,15 +26,17 @@ const ICON_TONE: Record<NormalizedActionStatus, string> = {
 };
 
 export function StatusIcon({ status, size = 'md' }: StatusIconProps) {
+  const { locale } = useI18n();
   const state = normalizeActionStatus(status);
   const dim = size === 'sm' ? 'h-4 w-4' : 'h-5 w-5';
   const iconSize = size === 'sm' ? 'h-2.5 w-2.5' : 'h-3 w-3';
+  const label = actionStatusLabel(state, locale);
 
   return (
     <span
       className={`inline-flex shrink-0 items-center justify-center rounded-full border ${dim} ${ICON_TONE[state]}`}
-      aria-label={ACTION_STATUS_LABELS[state]}
-      title={ACTION_STATUS_LABELS[state]}
+      aria-label={label}
+      title={label}
     >
       {state === 'done' && <Check className={iconSize} strokeWidth={2.75} />}
       {state === 'running' && <Loader2 className={`${iconSize} animate-spin`} strokeWidth={2.5} />}
@@ -61,10 +65,13 @@ const PILL_TONE: Record<NormalizedActionStatus, string> = {
 };
 
 export function StatusPill({ status, label }: StatusPillProps) {
+  const { locale } = useI18n();
   const state = normalizeActionStatus(status);
   const text =
     label ||
-    (status in STATUS_LABELS ? STATUS_LABELS[status as JobStatus] : ACTION_STATUS_LABELS[state]);
+    (status in STATUS_LABELS
+      ? statusLabel(status as JobStatus, locale)
+      : actionStatusLabel(state, locale));
 
   return (
     <span

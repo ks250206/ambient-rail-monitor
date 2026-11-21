@@ -1,15 +1,16 @@
 import { ChevronDown, ChevronLeft, ChevronRight, Search } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import type { WorkflowJob } from '../../shared/types.ts';
+import { useI18n } from '../i18n.ts';
 import { actionDuration, clockDate, jobMatchesSearch } from '../utils/workflow.ts';
 import { StatusIcon } from './StatusBadge.tsx';
 
 type RunFilter = 'all' | 'running' | 'done' | 'review';
-const FILTER_TABS: Array<{ id: RunFilter; label: string }> = [
-  { id: 'all', label: 'All' },
-  { id: 'running', label: 'Active' },
-  { id: 'done', label: 'Success' },
-  { id: 'review', label: 'Issues' },
+const FILTER_TABS: Array<{ id: RunFilter; ja: string; en: string }> = [
+  { id: 'all', ja: 'すべて', en: 'All' },
+  { id: 'running', ja: '実行中', en: 'Active' },
+  { id: 'done', ja: '成功', en: 'Success' },
+  { id: 'review', ja: '要確認', en: 'Issues' },
 ];
 
 const RUNS_PER_PAGE = 7;
@@ -27,6 +28,7 @@ export function RunHistorySidebar({
   nowMs,
   onSelectJob,
 }: RunHistorySidebarProps) {
+  const { pick } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const [runFilter, setRunFilter] = useState<RunFilter>('all');
@@ -57,7 +59,9 @@ export function RunHistorySidebar({
 
   const heading = (
     <>
-      <span className="text-sm font-bold text-science-blue">ジョブの実行履歴</span>
+      <span className="text-sm font-bold text-science-blue">
+        {pick('ジョブの実行履歴', 'Run history')}
+      </span>
       <span className="rounded-full bg-bg-1 px-2 py-0.5 font-mono text-xs font-bold text-science-blue">
         {jobs.length}
       </span>
@@ -65,7 +69,7 @@ export function RunHistorySidebar({
   );
 
   return (
-    <aside aria-label="ジョブの実行履歴" className="run-history-sidebar">
+    <aside aria-label={pick('ジョブの実行履歴', 'Run history')} className="run-history-sidebar">
       <h2 className="run-history-heading items-center gap-2 px-3.5 py-4">{heading}</h2>
       <button
         type="button"
@@ -96,13 +100,17 @@ export function RunHistorySidebar({
                 setRunSearch(event.target.value);
                 setPage(0);
               }}
-              placeholder="Search runs or files…"
-              aria-label="ジョブを検索"
+              placeholder={pick('ジョブやファイル名を検索…', 'Search runs or files…')}
+              aria-label={pick('ジョブを検索', 'Search runs')}
               className="w-full min-w-0 bg-transparent text-xs text-ink outline-none placeholder:text-ink-muted"
             />
           </label>
 
-          <div className="mt-2.5 flex flex-wrap gap-1" role="group" aria-label="Filter run status">
+          <div
+            className="mt-2.5 flex flex-wrap gap-1"
+            role="group"
+            aria-label={pick('実行状態で絞り込み', 'Filter run status')}
+          >
             {FILTER_TABS.map((tab) => {
               const active = runFilter === tab.id;
               return (
@@ -114,13 +122,13 @@ export function RunHistorySidebar({
                     setRunFilter(tab.id);
                     setPage(0);
                   }}
-                  className={`rounded-md px-2.5 py-1 font-en text-xs font-semibold transition-colors ${
+                  className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors ${
                     active
                       ? 'bg-science-blue text-white shadow-2xs'
                       : 'bg-white text-ink-muted hover:bg-bg-1 hover:text-science-blue'
                   }`}
                 >
-                  {tab.label}
+                  {pick(tab.ja, tab.en)}
                 </button>
               );
             })}
@@ -131,11 +139,16 @@ export function RunHistorySidebar({
           {pageJobs.length === 0 ? (
             <div className="flex min-h-[220px] flex-col items-center justify-center gap-2 p-6 text-center">
               <Search className="h-6 w-6 text-eyebrow" />
-              <strong className="text-xs font-semibold text-science-blue">No matching runs</strong>
+              <strong className="text-xs font-semibold text-science-blue">
+                {pick('該当するジョブがありません', 'No matching runs')}
+              </strong>
               <p className="text-xs text-ink-muted">
                 {jobs.length
-                  ? 'Try another status or search term.'
-                  : 'ジョブ一覧からファイルを投入できます。'}
+                  ? pick('別の状態や検索語を試してください。', 'Try another status or search term.')
+                  : pick(
+                      'ジョブ一覧からファイルを投入できます。',
+                      'Submit files from the Jobs page.',
+                    )}
               </p>
             </div>
           ) : (
@@ -144,14 +157,18 @@ export function RunHistorySidebar({
               const isSelected = selectedJobId === job.id;
               const summaryLabel =
                 job.status === 'done'
-                  ? 'Completed'
+                  ? pick('完了', 'Completed')
                   : job.status === 'review'
-                    ? 'Attention required'
+                    ? pick('要承認', 'Attention required')
                     : job.status === 'failed'
-                      ? 'Execution failed'
+                      ? pick('実行失敗', 'Execution failed')
                       : job.status === 'running'
-                        ? 'Processing'
-                        : 'Waiting for worker';
+                        ? pick('処理中', 'Processing')
+                        : job.status === 'paused'
+                          ? pick('一時停止中', 'Paused')
+                          : job.status === 'cancelled'
+                            ? pick('中止', 'Cancelled')
+                            : pick('ワーカー待機中', 'Waiting for worker');
               const resultTone =
                 job.status === 'done'
                   ? 'text-st-green-dark'
@@ -187,7 +204,7 @@ export function RunHistorySidebar({
                   <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <strong className="break-all text-xs font-bold text-ink">{job.file}</strong>
                     <span className="truncate text-xs text-ink-muted">
-                      {(job.agent || 'unassigned').toUpperCase()}
+                      {(job.agent || pick('未割当', 'unassigned')).toUpperCase()}
                     </span>
                     <span className="truncate font-mono text-xs text-ink-muted">
                       {job.id} · {clockDate(job.createdAt)}
@@ -198,10 +215,13 @@ export function RunHistorySidebar({
                     <span className="font-mono text-xs text-ink">
                       {job.startedAt
                         ? actionDuration(job.startedAt, job.finishedAt, nowMs)
-                        : 'Queued'}
+                        : pick('待機', 'Queued')}
                     </span>
                     <span className="text-xs text-ink-muted">
-                      {done}/{job.stages.length} steps
+                      {pick(
+                        `${done}/${job.stages.length} 工程`,
+                        `${done}/${job.stages.length} steps`,
+                      )}
                     </span>
                   </span>
                 </button>
@@ -213,16 +233,22 @@ export function RunHistorySidebar({
         <div className="flex items-center justify-between gap-2 border-t border-line bg-bg-1/70 px-3.5 py-2.5 text-xs text-ink-muted">
           <span>
             {filteredJobs.length
-              ? `${clampedPage * RUNS_PER_PAGE + 1}–${Math.min(
-                  (clampedPage + 1) * RUNS_PER_PAGE,
-                  filteredJobs.length,
-                )} of ${filteredJobs.length}`
-              : '0 runs'}
+              ? pick(
+                  `${clampedPage * RUNS_PER_PAGE + 1}–${Math.min(
+                    (clampedPage + 1) * RUNS_PER_PAGE,
+                    filteredJobs.length,
+                  )} / ${filteredJobs.length}件`,
+                  `${clampedPage * RUNS_PER_PAGE + 1}–${Math.min(
+                    (clampedPage + 1) * RUNS_PER_PAGE,
+                    filteredJobs.length,
+                  )} of ${filteredJobs.length}`,
+                )
+              : pick('0件', '0 runs')}
           </span>
           <div className="flex items-center gap-1">
             <button
               type="button"
-              aria-label="Previous page"
+              aria-label={pick('前のページ', 'Previous page')}
               disabled={clampedPage === 0}
               onClick={() => setPage(clampedPage - 1)}
               className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-line bg-white text-science-blue hover:bg-bg-1 disabled:cursor-not-allowed disabled:opacity-40"
@@ -231,7 +257,7 @@ export function RunHistorySidebar({
             </button>
             <button
               type="button"
-              aria-label="Next page"
+              aria-label={pick('次のページ', 'Next page')}
               disabled={clampedPage + 1 >= totalPages}
               onClick={() => setPage(clampedPage + 1)}
               className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-line bg-white text-science-blue hover:bg-bg-1 disabled:cursor-not-allowed disabled:opacity-40"

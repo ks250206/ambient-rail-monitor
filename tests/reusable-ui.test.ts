@@ -59,7 +59,7 @@ it('compares mapped tasks by their readable labels, distinguishing missing tasks
   };
   client.setQueryData(['monitor', project.id], { jobs: [current, other] });
   await render(h(RunMetrics, { job: current }));
-  await enter(document.querySelector('select')!, other.id);
+  await enter(document.querySelector<HTMLElement>('[role="combobox"]')!, other.id);
   const rows = [...document.querySelectorAll('.comparison-outputs tbody tr')];
   const states = [
     '今回のみ未確定',

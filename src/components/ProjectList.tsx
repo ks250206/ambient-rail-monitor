@@ -1,10 +1,15 @@
 import { ChevronRight } from 'lucide-react';
 import type { ProjectSpec } from '../../shared/types.ts';
+import { useI18n } from '../i18n.ts';
 import { pageHref, rememberProjectId } from '../utils/workflow.ts';
 
 export function ProjectList({ projects }: { projects: ProjectSpec[] }) {
+  const { pick } = useI18n();
   return (
-    <ul aria-label="全プロジェクト" className="divide-y divide-line border-y border-line">
+    <ul
+      aria-label={pick('全プロジェクト', 'All projects')}
+      className="divide-y divide-line border-y border-line"
+    >
       {projects.map((project) => (
         <li key={project.id}>
           <a

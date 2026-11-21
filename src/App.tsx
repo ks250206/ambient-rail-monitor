@@ -9,7 +9,7 @@ import {
   useConnection,
   useClock,
 } from './api.ts';
-import { useMemo, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
 import type { JobStage, ProjectSpec, StageKey } from '../shared/types.ts';
 import { ActionsSection } from './components/ActionsSection.tsx';
@@ -19,6 +19,7 @@ import { JobsPage } from './JobsPage.tsx';
 import { RunHistorySidebar } from './components/RunHistorySidebar.tsx';
 import { SectionNavigation } from './components/SectionNavigation.tsx';
 import { TraceSection } from './components/TraceSection.tsx';
+import { useI18n } from './i18n.ts';
 import {
   pageHref,
   persistProjectId,
@@ -36,6 +37,7 @@ function subscribeLocation(notify: () => void) {
 }
 
 export function App({ page }: { page: 'monitor' | 'jobs' }) {
+  const { locale, pick } = useI18n();
   const [requestedId, setRequestedId] = useState(readInitialProjectId);
   const projects = useProjects();
   const connection = useConnection();
@@ -47,6 +49,13 @@ export function App({ page }: { page: 'monitor' | 'jobs' }) {
     persistProjectId(id);
     setRequestedId(id);
   };
+
+  useEffect(() => {
+    document.title =
+      page === 'monitor'
+        ? `${pick('実行モニター', 'Execution Monitor')} — RAILFLOW | Science Tokyo`
+        : `${pick('ジョブ一覧', 'Jobs')} — RAILFLOW | Science Tokyo`;
+  }, [page, locale]);
 
   return (
     <>
@@ -66,14 +75,17 @@ export function App({ page }: { page: 'monitor' | 'jobs' }) {
       ) : (
         <p role="status" className="page-width py-6">
           {projects.isError ? (
-            'プロジェクトを取得できませんでした。'
+            pick('プロジェクトを取得できませんでした。', 'Failed to load projects.')
           ) : projects.isPending ? (
-            '読み込み中…'
+            pick('読み込み中…', 'Loading…')
           ) : (
             <>
-              指定されたプロジェクトが見つかりません。{' '}
+              {pick(
+                '指定されたプロジェクトが見つかりません。',
+                'The requested project was not found.',
+              )}{' '}
               <a href="/projects" className="text-science-blue underline">
-                プロジェクト一覧へ戻る
+                {pick('プロジェクト一覧へ戻る', 'Back to projects')}
               </a>
             </>
           )}
@@ -84,6 +96,7 @@ export function App({ page }: { page: 'monitor' | 'jobs' }) {
 }
 
 function Monitor({ project }: { project: ProjectSpec }) {
+  const { pick } = useI18n();
   const query = useProjectJobs(project.id);
   const state = query.data ?? { jobs: [], project };
   const href = useSyncExternalStore(subscribeLocation, () => window.location.href);
@@ -124,7 +137,7 @@ function Monitor({ project }: { project: ProjectSpec }) {
       );
     },
     onSuccess: () => {
-      showToast('レビューを承認しました。');
+      showToast(pick('レビューを承認しました。', 'Review approved.'));
       return queryClient.invalidateQueries({ queryKey: ['monitor', project.id] });
     },
     onError: (err) => showToast(err.message, true),
@@ -160,22 +173,25 @@ function Monitor({ project }: { project: ProjectSpec }) {
             )}
           </header>
           <SectionNavigation activeHash={activeHash === '#job-detail' ? '#actions' : activeHash} />
-          <div className="pb-10">
+          <div key={selectedJobId ?? 'empty'} className="panel-enter pb-10">
             {query.isError && (
               <p role="alert" className="pt-4 text-st-red-dark">
-                ジョブの取得に失敗しました。{' '}
+                {pick('ジョブの取得に失敗しました。', 'Failed to load jobs.')}{' '}
                 <button type="button" className="underline" onClick={() => void query.refetch()}>
-                  再読み込み
+                  {pick('再読み込み', 'Reload')}
                 </button>
               </p>
             )}
             {query.isSuccess && !selectedJob && (
               <p role="status" className="pt-4 text-sm">
                 {requestedJob
-                  ? '指定されたジョブが見つかりません。'
-                  : 'このプロジェクトにはまだジョブがありません。'}{' '}
+                  ? pick('指定されたジョブが見つかりません。', 'The requested job was not found.')
+                  : pick(
+                      'このプロジェクトにはまだジョブがありません。',
+                      'No jobs have been submitted to this project yet.',
+                    )}{' '}
                 <a className="text-science-blue underline" href={pageHref('/jobs', project.id)}>
-                  ジョブ一覧へ
+                  {pick('ジョブ一覧へ', 'Open jobs')}
                 </a>
               </p>
             )}
@@ -203,8 +219,8 @@ function Monitor({ project }: { project: ProjectSpec }) {
               Institute of Science Tokyo
             </span>
             <span>
-              実行履歴のエージェント　
-              {agentNames || '記録なし'}
+              {pick('実行履歴のエージェント　', 'Agents in run history: ')}
+              {agentNames || pick('記録なし', 'None recorded')}
             </span>
           </footer>
         </main>

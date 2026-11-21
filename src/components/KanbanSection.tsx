@@ -2,24 +2,26 @@ import { useState } from 'react';
 
 import type { WorkflowJob } from '../../shared/types.ts';
 import { useClock } from '../api.ts';
+import { useI18n } from '../i18n.ts';
 import {
   dateMs,
   elapsed,
   KANBAN_COLUMNS,
-  STATUS_LABELS,
   monitorJobHref,
   needsApproval,
+  statusLabel,
   type KanbanColumnDef,
 } from '../utils/workflow.ts';
 
 const INITIAL_JOB_COUNT = 5;
 
 export function KanbanSection({ jobs }: { jobs: WorkflowJob[] }) {
+  const { pick } = useI18n();
   const nowMs = useClock();
   return (
     <section
       id="board"
-      aria-label="状態別のジョブ"
+      aria-label={pick('状態別のジョブ', 'Jobs by status')}
       className="grid grid-cols-1 gap-4 @xl:grid-cols-2 @5xl:grid-cols-4"
     >
       {KANBAN_COLUMNS.map((column) => (
@@ -45,6 +47,7 @@ function JobColumn({
   jobs: WorkflowJob[];
   nowMs: number;
 }) {
+  const { locale, pick } = useI18n();
   const [expanded, setExpanded] = useState(false);
   return (
     <section
@@ -53,21 +56,24 @@ function JobColumn({
     >
       <div className="mb-3 flex items-baseline justify-between gap-2">
         <h2 id={`column-${column.id}`} tabIndex={-1} className="text-base font-semibold text-ink">
-          {column.label}
+          {pick(column.label, column.labelEn)}
         </h2>
         <span className="font-en text-sm text-ink-muted tabular-nums">{jobs.length}</span>
       </div>
       {column.id === 'done' && jobs.length > 0 && (
         <p className="mb-3 flex flex-wrap gap-x-3 text-sm text-ink-muted">
-          {column.statuses.map((status) => (
-            <span key={status}>
-              {STATUS_LABELS[status]} {jobs.filter((job) => job.status === status).length}件
-            </span>
-          ))}
+          {column.statuses.map((status) => {
+            const count = jobs.filter((job) => job.status === status).length;
+            return (
+              <span key={status}>
+                {statusLabel(status, locale)} {pick(`${count}件`, String(count))}
+              </span>
+            );
+          })}
         </p>
       )}
       {jobs.length === 0 ? (
-        <p className="py-3 text-sm text-ink-muted">{column.hint}</p>
+        <p className="py-3 text-sm text-ink-muted">{pick(column.hint, column.hintEn)}</p>
       ) : (
         <ul className="space-y-2.5" id={`jobs-${column.id}`}>
           {(expanded ? jobs : jobs.slice(0, INITIAL_JOB_COUNT)).map((job) => (
@@ -85,7 +91,12 @@ function JobColumn({
           onClick={() => setExpanded(!expanded)}
           className="mt-2 w-fit py-2 text-sm font-semibold text-science-blue hover:underline"
         >
-          {expanded ? '折りたたむ' : `残り${jobs.length - INITIAL_JOB_COUNT}件を表示`}
+          {expanded
+            ? pick('折りたたむ', 'Collapse')
+            : pick(
+                `残り${jobs.length - INITIAL_JOB_COUNT}件を表示`,
+                `Show ${jobs.length - INITIAL_JOB_COUNT} more`,
+              )}
         </button>
       )}
     </section>
@@ -93,6 +104,7 @@ function JobColumn({
 }
 
 function JobCard({ job, nowMs }: { job: WorkflowJob; nowMs: number }) {
+  const { locale, pick } = useI18n();
   const total = Math.max(1, job.stages.length);
   const done = job.stages.filter((stage) => stage.status === 'success').length;
   const activeStage = job.stages.find(
@@ -102,10 +114,11 @@ function JobCard({ job, nowMs }: { job: WorkflowJob; nowMs: number }) {
       stage.status === 'failed' ||
       stage.status === 'retry',
   );
-  let tag = STATUS_LABELS[job.status];
+  let tag = statusLabel(job.status, locale);
   if (job.status === 'running' && activeStage) tag += ` · ${activeStage.short}`;
-  if (job.status === 'running' && needsApproval(job)) tag += ' · 要承認';
-  if (job.status === 'queued' || job.status === 'paused') tag += ` · 優先度 ${job.priority ?? 0}`;
+  if (job.status === 'running' && needsApproval(job)) tag += pick(' · 要承認', ' · Needs approval');
+  if (job.status === 'queued' || job.status === 'paused')
+    tag += pick(` · 優先度 ${job.priority ?? 0}`, ` · Priority ${job.priority ?? 0}`);
   const start = job.startedAt || job.createdAt;
   return (
     <a
@@ -132,7 +145,7 @@ function JobCard({ job, nowMs }: { job: WorkflowJob; nowMs: number }) {
       </div>
       <div className="flex items-center justify-between gap-1 text-xs text-ink-muted tabular-nums">
         <span className="truncate font-en font-semibold text-science-blue">
-          {(job.agent || 'unassigned').toUpperCase()}
+          {(job.agent || pick('未割当', 'unassigned')).toUpperCase()}
         </span>
         <span className="shrink-0 font-mono">
           {done}/{job.stages.length} ·{' '}

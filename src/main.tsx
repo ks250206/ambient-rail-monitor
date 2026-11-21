@@ -13,7 +13,12 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import { pageHref, readInitialProjectId } from './utils/workflow.ts';
+import { installPageTransitions } from './utils/navigation.ts';
+import { getLocale, pickText } from './i18n.ts';
 import { AppHeader } from './components/AppHeader.tsx';
+import { DialogHost } from './components/DialogHost.tsx';
+
+installPageTransitions();
 
 const container = document.getElementById('root');
 if (!container) {
@@ -29,17 +34,25 @@ if (page === 'monitor' && (legacyHash === '#board' || legacyHash === '#workflow'
   const { LandingPage } = await import('./LandingPage.tsx');
   createRoot(container).render(
     <StrictMode>
+      <div className="page-transition-bar" aria-hidden="true" />
       <AppHeader currentPage="home" />
       <LandingPage />
+      <DialogHost />
     </StrictMode>,
   );
 } else {
-  if (page === 'monitor') document.title = '実行モニター — RAILFLOW | Science Tokyo';
+  const locale = getLocale();
+  document.title =
+    page === 'monitor'
+      ? `${pickText(locale, '実行モニター', 'Execution Monitor')} — RAILFLOW | Science Tokyo`
+      : `${pickText(locale, 'ジョブ一覧', 'Jobs')} — RAILFLOW | Science Tokyo`;
   const { App } = await import('./App.tsx');
   createRoot(container).render(
     <StrictMode>
       <QueryClientProvider client={queryClient}>
+        <div className="page-transition-bar" aria-hidden="true" />
         <App page={page} />
+        <DialogHost />
       </QueryClientProvider>
     </StrictMode>,
   );
