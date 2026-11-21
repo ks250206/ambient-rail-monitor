@@ -11,13 +11,17 @@ export function NumberValue({
   onChange,
   scale = 1,
   integer = false,
+  inputMode = integer ? 'numeric' : 'decimal',
   disabled = false,
+  errorId,
 }: {
   value: number;
   onChange: (value: number) => void;
   scale?: number;
   integer?: boolean;
+  inputMode?: 'text' | 'numeric' | 'decimal';
   disabled?: boolean;
+  errorId?: string;
 }) {
   const [draft, setDraft] = useState(() => formatScaled(value, scale));
   const last = useRef(value);
@@ -30,10 +34,11 @@ export function NumberValue({
   return (
     <input
       type="text"
-      inputMode={integer ? 'numeric' : 'decimal'}
+      inputMode={inputMode}
       value={draft}
       disabled={disabled}
-      aria-invalid={!Number.isFinite(value)}
+      aria-invalid={Boolean(errorId) || !Number.isFinite(value)}
+      aria-describedby={errorId}
       onChange={(event) => {
         const text = event.target.value;
         setDraft(text);

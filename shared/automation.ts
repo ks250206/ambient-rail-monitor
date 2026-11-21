@@ -1,5 +1,5 @@
 import { parseCondition } from './conditions.ts';
-import { parsePriority } from './queue.ts';
+import { parsePriority, parseQueueValue } from './queue.ts';
 import {
   boundedInteger,
   MAX_BUDGET_MS,
@@ -51,12 +51,11 @@ export function projectAutomation(
   if (!queue || typeof queue !== 'object' || Array.isArray(queue))
     throw new Error('プロジェクトのキュー設定が不正です。');
   const values = queue as Record<string, unknown>;
-  const maxConcurrentJobs = boundedInteger(
+  const maxConcurrentJobs = parseQueueValue(
+    'maxConcurrentJobs',
     values.maxConcurrentJobs,
     'プロジェクトの同時実行数',
-    32,
   );
-  if (!maxConcurrentJobs) throw new Error('同時実行数は1以上にしてください。');
   return {
     queue: { maxConcurrentJobs, priority: parsePriority(values.priority) },
     input:

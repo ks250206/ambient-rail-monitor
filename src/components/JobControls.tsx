@@ -2,7 +2,8 @@ import { useMutation } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import type { WorkflowJob } from '../../shared/types.ts';
 import { jsonRequest, queryClient, request } from '../api.ts';
-import { NumberValue } from './NumberValue.tsx';
+import { validQueueValue } from '../../shared/queue.ts';
+import { QueueNumberField } from './QueueNumberField.tsx';
 
 export function JobControls({ job }: { job: WorkflowJob }) {
   const [priority, setPriority] = useState(job.priority ?? 0);
@@ -40,21 +41,32 @@ export function JobControls({ job }: { job: WorkflowJob }) {
           <button
             className="wf-secondary"
             disabled={action.isPending}
-            onClick={() => action.mutate({ name: 'cancel' })}
+            onClick={() => {
+              if (
+                window.confirm(
+                  `「${job.file}」（${job.id}）を中止しますか？ 中止後はこのジョブを再開できません。`,
+                )
+              )
+                action.mutate({ name: 'cancel' });
+            }}
           >
-            キャンセル
+            ジョブを中止
           </button>
         )}
         {['queued', 'paused'].includes(job.status) && (
           <>
-            <label>
-              優先度（大きい順）
-              <NumberValue value={priority} integer onChange={setPriority} />
-            </label>
+            <QueueNumberField
+              field="priority"
+              label="優先度・数値が大きいほど先に実行"
+              value={priority}
+              onChange={setPriority}
+            />
             <button
               className="wf-secondary"
               disabled={
-                action.isPending || !Number.isInteger(priority) || priority === (job.priority ?? 0)
+                action.isPending ||
+                !validQueueValue('priority', priority) ||
+                priority === (job.priority ?? 0)
               }
               onClick={() => action.mutate({ name: 'priority', data: { priority } })}
             >

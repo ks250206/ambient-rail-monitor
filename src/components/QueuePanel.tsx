@@ -2,7 +2,8 @@ import { useMutation } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import type { AppStateResponse } from '../../shared/types.ts';
 import { jsonRequest, queryClient, request } from '../api.ts';
-import { NumberValue } from './NumberValue.tsx';
+import { validQueueValue } from '../../shared/queue.ts';
+import { QueueNumberField } from './QueueNumberField.tsx';
 
 export function QueuePanel({ queue }: { queue: NonNullable<AppStateResponse['queue']> }) {
   const [settings, setSettings] = useState({
@@ -21,10 +22,12 @@ export function QueuePanel({ queue }: { queue: NonNullable<AppStateResponse['que
     mutationFn: () => request('/api/queue', jsonRequest('PUT', settings)),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['monitor'] }),
   });
-  const invalid =
-    !Number.isInteger(settings.maxConcurrentJobs) ||
-    !Number.isInteger(settings.maxJobsPerWorker) ||
-    !Number.isInteger(settings.maxRecoveries);
+  const fields = [
+    ['maxConcurrentJobs', '全体の同時ジョブ数'],
+    ['maxJobsPerWorker', 'ワーカーあたりの同時ジョブ数'],
+    ['maxRecoveries', 'ジョブの自動復旧回数'],
+  ] as const;
+  const invalid = fields.some(([key]) => !validQueueValue(key, settings[key]));
   return (
     <details className="wf-disclosure">
       <summary>
@@ -34,21 +37,17 @@ export function QueuePanel({ queue }: { queue: NonNullable<AppStateResponse['que
         このサーバー全体の上限です。優先度が高いジョブから、同じ優先度は登録順に開始します。上限を下げても実行中の処理は完了まで続けます。
       </p>
       <fieldset disabled={save.isPending} className="wf-fields">
-        {(
-          [
-            ['maxConcurrentJobs', '全体の同時ジョブ数'],
-            ['maxJobsPerWorker', 'ワーカーあたりの同時ジョブ数'],
-            ['maxRecoveries', 'ジョブの自動復旧回数'],
-          ] as const
-        ).map(([key, label]) => (
-          <label key={key}>
-            {label}
-            <NumberValue
-              value={settings[key]}
-              integer
-              onChange={(next) => setSettings({ ...settings, [key]: next })}
-            />
-          </label>
+        {fields.map(([key, label]) => (
+          <QueueNumberField
+            key={key}
+            field={key}
+            label={label}
+            value={settings[key]}
+            onChange={(next) => {
+              save.reset();
+              setSettings({ ...settings, [key]: next });
+            }}
+          />
         ))}
         <button className="wf-secondary" disabled={invalid} onClick={() => save.mutate()}>
           キュー設定を保存

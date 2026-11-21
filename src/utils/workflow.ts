@@ -18,15 +18,15 @@ export type NormalizedActionStatus =
 export type LogEventLevel = 'normal' | 'success' | 'warning' | 'error';
 
 export const STATUS_LABELS: Record<JobStatus, string> = {
-  queued: 'Queued',
-  running: 'Running',
-  review: 'Needs review',
-  done: 'Completed',
-  failed: 'Failed',
-  pausing: 'Pausing',
-  paused: 'Paused',
-  cancelling: 'Cancelling',
-  cancelled: 'Cancelled',
+  queued: '待機中',
+  running: '実行中',
+  review: '要承認',
+  done: '成功',
+  failed: '失敗',
+  pausing: '一時停止処理中',
+  paused: '一時停止中',
+  cancelling: '中止処理中',
+  cancelled: '中止',
 };
 
 export const ACTION_STATUS_LABELS: Record<NormalizedActionStatus, string> = {
@@ -52,13 +52,29 @@ export interface KanbanColumnDef {
   id: 'queued' | 'running' | 'review' | 'done';
   label: string;
   hint: string;
+  statuses: JobStatus[];
 }
 
 export const KANBAN_COLUMNS: KanbanColumnDef[] = [
-  { id: 'queued', label: 'Queued', hint: '待機中のジョブはありません' },
-  { id: 'running', label: 'Running', hint: '実行中のジョブはありません' },
-  { id: 'review', label: 'Review / blocked', hint: '要対応のジョブはありません' },
-  { id: 'done', label: 'Completed', hint: '完了したジョブはありません' },
+  {
+    id: 'queued',
+    label: '待機・一時停止',
+    hint: '待機・一時停止中のジョブはありません',
+    statuses: ['queued', 'paused'],
+  },
+  {
+    id: 'running',
+    label: '実行中',
+    hint: '実行中のジョブはありません',
+    statuses: ['running', 'pausing', 'cancelling'],
+  },
+  { id: 'review', label: '要承認', hint: '承認待ちのジョブはありません', statuses: ['review'] },
+  {
+    id: 'done',
+    label: '終了',
+    hint: '終了したジョブはありません',
+    statuses: ['done', 'failed', 'cancelled'],
+  },
 ];
 
 export function dateMs(value: string | null | undefined): number {
