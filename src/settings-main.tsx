@@ -12,7 +12,12 @@ import { queryClient } from './api.ts';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import { SettingsPage, settingsTitles } from './SettingsPage.tsx';
+import { SettingsPage, getSettingsTitle } from './SettingsPage.tsx';
+import { DialogHost } from './components/DialogHost.tsx';
+import { getLocale } from './i18n.ts';
+import { installPageTransitions } from './utils/navigation.ts';
+
+installPageTransitions();
 
 const container = document.getElementById('root');
 if (!container) {
@@ -28,12 +33,14 @@ const view =
       : params.get('project')
         ? 'projects'
         : 'list';
-document.title = `${settingsTitles[view]} — RAILFLOW | Science Tokyo`;
+document.title = `${getSettingsTitle(view, getLocale())} — RAILFLOW | Science Tokyo`;
 
 createRoot(container).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
+      <div className="page-transition-bar" aria-hidden="true" />
       <SettingsPage view={view} />
+      <DialogHost />
     </QueryClientProvider>
   </StrictMode>,
 );

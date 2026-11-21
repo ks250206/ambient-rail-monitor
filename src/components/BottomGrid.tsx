@@ -1,6 +1,7 @@
 import { ArtifactViewer } from './ArtifactViewer.tsx';
 
 import type { WorkflowJob } from '../../shared/types.ts';
+import { useI18n } from '../i18n.ts';
 import { clock } from '../utils/workflow.ts';
 
 interface BottomGridProps {
@@ -9,6 +10,7 @@ interface BottomGridProps {
 }
 
 export function BottomGrid({ job, jobs }: BottomGridProps) {
+  const { pick } = useI18n();
   const recentEvents = job ? job.events.slice(-35).reverse() : [];
 
   return (
@@ -20,14 +22,17 @@ export function BottomGrid({ job, jobs }: BottomGridProps) {
       >
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h3 id="events-heading" className="section-heading">
-            イベント
+            {pick('イベント', 'Events')}
           </h3>
           {job && <span className="font-mono text-xs text-ink-muted">{job.id}</span>}
         </div>
         <div className="mt-4 max-h-[280px] overflow-y-auto divide-y divide-line">
           {recentEvents.length === 0 ? (
             <div className="flex min-h-[140px] items-center justify-center text-xs text-ink-muted">
-              このジョブのイベントはまだありません。
+              {pick(
+                'このジョブのイベントはまだありません。',
+                'No events recorded for this job yet.',
+              )}
             </div>
           ) : (
             recentEvents.map((event) => {
@@ -54,7 +59,7 @@ export function BottomGrid({ job, jobs }: BottomGridProps) {
                     {event.type}
                   </span>
                   <span className="truncate text-ink" title={event.message || ''}>
-                    {event.message || event.stage || 'Event received'}
+                    {event.message || event.stage || pick('イベント受信', 'Event received')}
                   </span>
                 </div>
               );
@@ -68,7 +73,7 @@ export function BottomGrid({ job, jobs }: BottomGridProps) {
         className="mt-7 min-w-0 scroll-mt-6 border-t border-line pt-5"
       >
         <h3 id="artifacts-heading" className="section-heading mb-4">
-          成果物
+          {pick('成果物', 'Artifacts')}
         </h3>
         <ArtifactViewer job={job} jobs={jobs} />
       </section>

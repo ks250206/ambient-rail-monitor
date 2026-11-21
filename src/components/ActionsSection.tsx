@@ -14,6 +14,7 @@ import { flushSync } from 'react-dom';
 import { useMemo, useRef, useState } from 'react';
 
 import type { ProjectSpec, StageKey, WorkflowJob, JobStage } from '../../shared/types.ts';
+import { useI18n } from '../i18n.ts';
 import {
   actionDuration,
   actionEventLevel,
@@ -26,9 +27,10 @@ import {
   getSpans,
   groupStageAttempts,
   pageHref,
-  STAGE_STATUS_LABELS,
-  STATUS_LABELS,
+  stageStatusLabel,
+  statusLabel,
 } from '../utils/workflow.ts';
+import { CustomSelect } from './CustomSelect.tsx';
 import { DatasetDetails, StageExecutionDetails } from './ExecutionDetails.tsx';
 import { WorkflowGraph } from './WorkflowGraph.tsx';
 import { RerunControls } from './RerunControls.tsx';
@@ -61,6 +63,7 @@ export function ActionsSection({
   onShowAllLogs,
   onApproveReview,
 }: ActionsSectionProps) {
+  const { locale, pick } = useI18n();
   const [detailTab, setDetailTab] = useState<StepDetailTab>('summary');
   const [logSearch, setLogSearch] = useState('');
   const [showTimestamps, setShowTimestamps] = useState(true);
@@ -180,6 +183,7 @@ export function ActionsSection({
         tasks[0].label,
     }));
   }, [selectedJob]);
+
   return (
     <section
       id="actions"
@@ -188,7 +192,7 @@ export function ActionsSection({
     >
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
         <h3 id="job-detail-title" className="section-heading">
-          ジョブ詳細
+          {pick('ジョブ詳細', 'Job details')}
         </h3>
       </div>
 
@@ -196,14 +200,17 @@ export function ActionsSection({
         <div
           id="job-detail"
           tabIndex={-1}
-          aria-label="選択中のジョブ"
+          aria-label={pick('選択中のジョブ', 'Selected job')}
           className="flex min-w-0 scroll-mt-6 flex-col"
         >
           {/* Run Header */}
           <div className="border-b border-line bg-white px-5 py-4">
             {!selectedJob ? (
               <div className="flex min-h-[120px] items-center justify-center text-xs text-ink-muted">
-                実行履歴からジョブを選択すると、工程ごとの Summary と Logs を確認できます。
+                {pick(
+                  '実行履歴からジョブを選択すると、工程ごとの Summary と Logs を確認できます。',
+                  'Select a run from history to inspect per-stage Summary and Logs.',
+                )}
               </div>
             ) : (
               <>
@@ -220,10 +227,14 @@ export function ActionsSection({
                     <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-ink-muted">
                       <StatusIcon status={selectedJob.status} size="sm" />
                       <span className="font-semibold text-ink">
-                        {STATUS_LABELS[selectedJob.status]}
+                        {statusLabel(selectedJob.status, locale)}
                       </span>
                       <span>·</span>
-                      <span>{selectedJob.demo ? 'Manual demo' : 'File detected'}</span>
+                      <span>
+                        {selectedJob.demo
+                          ? pick('手動デモ', 'Manual demo')
+                          : pick('ファイル投入', 'File detected')}
+                      </span>
                       <span>·</span>
                       <span>{clockDate(selectedJob.createdAt)}</span>
                     </p>
@@ -236,7 +247,10 @@ export function ActionsSection({
                         onClick={() => selectTask(reviewStage.key)}
                         className="wf-primary"
                       >
-                        「{reviewStage.label}」の出力を確認
+                        {pick(
+                          `「${reviewStage.label}」の出力を確認`,
+                          `Review "${reviewStage.label}" outputs`,
+                        )}
                       </button>
                     )}
                     {selectedJob.artifacts.length > 0 && (
@@ -244,14 +258,17 @@ export function ActionsSection({
                         href="#artifacts"
                         className="inline-flex items-center gap-1 rounded-lg border border-line bg-white px-2.5 py-1.5 text-xs font-semibold text-science-blue transition-colors hover:bg-bg-1"
                       >
-                        成果物を見る（{selectedJob.artifacts.length}）
+                        {pick(
+                          `成果物を見る（${selectedJob.artifacts.length}）`,
+                          `Artifacts (${selectedJob.artifacts.length})`,
+                        )}
                       </a>
                     )}
                     <a
                       href="#trace"
                       className="inline-flex items-center gap-1 rounded-lg border border-line bg-white px-2.5 py-1.5 text-xs font-semibold text-eyebrow transition-colors hover:bg-bg-1 hover:text-science-blue"
                     >
-                      トレース
+                      {pick('トレース', 'Trace')}
                       <ExternalLink className="h-3 w-3" />
                     </a>
                   </div>
@@ -273,7 +290,7 @@ export function ActionsSection({
                 <div className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-3.5 sm:grid-cols-4">
                   <div>
                     <span className="font-en text-xs font-bold tracking-[0.1em] text-eyebrow uppercase">
-                      Progress
+                      {pick('進捗', 'Progress')}
                     </span>
                     <div className="mt-0.5 text-sm font-bold text-science-blue tabular-nums">
                       {completedStages}
@@ -282,7 +299,9 @@ export function ActionsSection({
                         / {selectedJob.stages.length}
                       </span>{' '}
                       <span className="text-xs font-medium text-ink-muted">
-                        {selectedJob.status === 'running' ? 'Running' : 'steps'}
+                        {selectedJob.status === 'running'
+                          ? pick('実行中', 'Running')
+                          : pick('工程', 'steps')}
                       </span>
                     </div>
                     <div className="mt-1.5 h-1.5 w-11/12 overflow-hidden rounded-full bg-bg-1">
@@ -297,7 +316,7 @@ export function ActionsSection({
 
                   <div className="sm:border-l sm:border-line sm:pl-3">
                     <span className="font-en text-xs font-bold tracking-[0.1em] text-eyebrow uppercase">
-                      Run time
+                      {pick('実行時間', 'Run time')}
                     </span>
                     <div className="mt-0.5 font-mono text-sm font-bold text-ink tabular-nums">
                       {selectedJob.startedAt
@@ -305,34 +324,36 @@ export function ActionsSection({
                         : '—'}
                     </div>
                     <p className="text-xs text-ink-muted">
-                      {actionSeconds(activeStageSeconds)} stage active
+                      {actionSeconds(activeStageSeconds)} {pick('工程累計', 'stage active')}
                     </p>
                   </div>
 
                   <div className="sm:border-l sm:border-line sm:pl-3">
                     <span className="font-en text-xs font-bold tracking-[0.1em] text-eyebrow uppercase">
-                      Queue wait
+                      {pick('キュー待機', 'Queue wait')}
                     </span>
                     <div className="mt-0.5 font-mono text-sm font-bold text-ink tabular-nums">
                       {selectedJob.startedAt
                         ? actionDuration(selectedJob.createdAt, selectedJob.startedAt, nowMs)
                         : actionDuration(selectedJob.createdAt, null, nowMs)}
                     </div>
-                    <p className="text-xs text-ink-muted">from file event</p>
+                    <p className="text-xs text-ink-muted">
+                      {pick('登録から開始まで', 'from file event')}
+                    </p>
                   </div>
 
                   <div className="sm:border-l sm:border-line sm:pl-3">
                     <span className="font-en text-xs font-bold tracking-[0.1em] text-eyebrow uppercase">
-                      Runner
+                      {pick('ランナー', 'Runner')}
                     </span>
                     <div className="mt-0.5 truncate font-en text-sm font-bold text-science-blue">
-                      {(selectedJob.agent || 'unassigned').toUpperCase()}
+                      {(selectedJob.agent || pick('未割当', 'unassigned')).toUpperCase()}
                     </div>
                     <p
                       className="truncate text-xs text-ink-muted"
-                      title={selectedJob.worker || 'Not claimed'}
+                      title={selectedJob.worker || pick('未取得', 'Not claimed')}
                     >
-                      {selectedJob.worker || 'Not claimed'}
+                      {selectedJob.worker || pick('未取得', 'Not claimed')}
                     </p>
                   </div>
                 </div>
@@ -345,40 +366,41 @@ export function ActionsSection({
             {/* Vertical Steps Tabs */}
             <div className="flex min-w-0 flex-col border-b border-line bg-bg-2/40 @3xl:border-b-0 @3xl:border-r">
               <div className="flex items-center justify-between border-b border-line bg-bg-1/70 px-3.5 py-2.5 text-xs font-bold tracking-[0.12em] text-eyebrow uppercase">
-                <span className="font-en">Jobs &amp; Steps</span>
+                <span className="font-en">{pick('工程・タスク', 'Jobs & Steps')}</span>
                 <span className="font-mono tracking-normal text-ink-muted">
-                  {selectedJob ? `${selectedJob.stages.length} steps` : ''}
+                  {selectedJob
+                    ? pick(
+                        `${selectedJob.stages.length} 工程`,
+                        `${selectedJob.stages.length} steps`,
+                      )
+                    : ''}
                 </span>
               </div>
 
               {!selectedJob ? (
                 <div className="flex flex-1 items-center justify-center p-6 text-xs text-ink-muted">
-                  ジョブを選択してください。
+                  {pick('ジョブを選択してください。', 'Select a job.')}
                 </div>
               ) : (
                 <div className="flex-1 divide-y divide-line/60">
-                  <label className="block p-3 @3xl:hidden">
-                    表示するタスク
-                    <select
-                      className="w-full"
-                      value={showAllLogs ? '' : selectedStage}
-                      onChange={(e) => selectTask(e.target.value)}
-                    >
-                      <option value="" disabled>
-                        タスクを選択…
-                      </option>
-                      {taskGroups.map((group) => (
-                        <optgroup key={group.key} label={group.label}>
-                          {group.tasks.map((task) => (
-                            <option key={task.key} value={task.key}>
-                              {task.status === 'review' ? '要承認 · ' : ''}
-                              {task.item?.path ?? task.label}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ))}
-                    </select>
-                  </label>
+                  <div className="block p-3 @3xl:hidden">
+                    <label className="grid gap-1.5 text-xs font-semibold text-ink">
+                      {pick('表示するタスク', 'Task to inspect')}
+                      <CustomSelect
+                        ariaLabel={pick('表示するタスク', 'Task to inspect')}
+                        value={showAllLogs ? '' : selectedStage}
+                        placeholder={pick('タスクを選択…', 'Select task…')}
+                        groups={taskGroups.map((group) => ({
+                          label: group.label,
+                          options: group.tasks.map((task) => ({
+                            value: task.key,
+                            label: `${task.status === 'review' ? pick('要承認 · ', 'Needs approval · ') : ''}${task.item?.path ?? task.label}`,
+                          })),
+                        }))}
+                        onChange={selectTask}
+                      />
+                    </label>
+                  </div>
                   <div className="hidden @3xl:block">
                     {taskGroups.map((group) => {
                       const rows = group.tasks.map((stage) => {
@@ -420,7 +442,7 @@ export function ActionsSection({
                                 {retryCount > 1 && (
                                   <span
                                     className="inline-flex shrink-0 items-center gap-0.5 rounded bg-st-orange-bg px-1 py-0.5 font-mono text-[10px] font-semibold text-st-orange-dark"
-                                    title={`${retryCount} attempts`}
+                                    title={pick(`${retryCount} 試行`, `${retryCount} attempts`)}
                                   >
                                     <RotateCw className="h-2.5 w-2.5" />
                                     {retryCount}
@@ -439,7 +461,10 @@ export function ActionsSection({
                       return group.tasks.some((task) => task.item) ? (
                         <details key={group.key} className="wf-disclosure">
                           <summary>
-                            {group.label}（{group.tasks.length}ファイル）
+                            {pick(
+                              `${group.label}（${group.tasks.length}ファイル）`,
+                              `${group.label} (${group.tasks.length} files)`,
+                            )}
                           </summary>
                           {rows}
                         </details>
@@ -461,7 +486,7 @@ export function ActionsSection({
                   >
                     <span className="inline-flex items-center gap-2">
                       <List className="h-3.5 w-3.5 text-eyebrow" />
-                      All run events
+                      {pick('全実行イベント', 'All run events')}
                     </span>
                     <span className="rounded bg-bg-1 px-1.5 py-0.5 font-mono text-xs text-science-blue">
                       {selectedJob.events.length}
@@ -472,7 +497,12 @@ export function ActionsSection({
 
               <div className="flex items-center gap-2 border-t border-line bg-bg-2 px-3 py-2 text-xs text-ink-muted">
                 <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-science-sub" />
-                <span>Worker events, not inferred agent progress</span>
+                <span>
+                  {pick(
+                    'ワーカーからの実イベントを表示（推測値なし）',
+                    'Worker events, not inferred agent progress',
+                  )}
+                </span>
               </div>
             </div>
 
@@ -484,7 +514,10 @@ export function ActionsSection({
                   {selectedJob && !showAllLogs && activeStage ? (
                     <div
                       role="tablist"
-                      aria-label="Summary と Logs の切り替え"
+                      aria-label={pick(
+                        'Summary と Logs の切り替え',
+                        'Switch between Summary and Logs',
+                      )}
                       className="inline-flex rounded-md border border-line bg-white p-0.5"
                     >
                       <button
@@ -529,7 +562,9 @@ export function ActionsSection({
                     <div className="flex min-w-0 items-center gap-2">
                       <Terminal className="h-3.5 w-3.5 shrink-0 text-science-blue" />
                       <strong className="truncate font-en text-sm font-semibold text-science-blue">
-                        {selectedJob ? 'All run logs' : 'Summary & Logs'}
+                        {selectedJob
+                          ? pick('全実行ログ', 'All run logs')
+                          : pick('Summary と Logs', 'Summary & Logs')}
                       </strong>
                     </div>
                   )}
@@ -539,7 +574,7 @@ export function ActionsSection({
                   <a
                     href={`/api/jobs/${encodeURIComponent(selectedJob.id)}/logs`}
                     className="inline-flex shrink-0 items-center gap-1 rounded-md border border-science-blue bg-white px-2.5 py-1 text-xs font-semibold text-science-blue transition-colors hover:bg-bg-2"
-                    title="Download this run's logs"
+                    title={pick('このジョブのログをダウンロード', "Download this run's logs")}
                   >
                     <Download className="h-3 w-3" />
                     Logs
@@ -554,7 +589,10 @@ export function ActionsSection({
 
               {/* Stacked panel body */}
               {activeTab === 'summary' && selectedJob && activeStage ? (
-                <div className="flex min-h-[340px] flex-1 flex-col justify-between p-4">
+                <div
+                  key={`${selectedJob.id}:${activeStage.key}:summary`}
+                  className="panel-enter flex min-h-[340px] flex-1 flex-col justify-between p-4"
+                >
                   <div>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
@@ -571,7 +609,7 @@ export function ActionsSection({
                       </div>
                       <StatusPill
                         status={activeStage.status}
-                        label={STAGE_STATUS_LABELS[activeStage.status]}
+                        label={stageStatusLabel(activeStage.status, locale)}
                       />
                     </div>
 
@@ -580,12 +618,12 @@ export function ActionsSection({
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-1.5 text-xs font-bold text-eyebrow">
                           <FileText className="h-3.5 w-3.5" />
-                          <span>結果の概要</span>
+                          <span>{pick('結果の概要', 'Result summary')}</span>
                         </div>
                         {effectiveStageLlm &&
                           (effectiveStageLlm.model || effectiveStageLlm.effort) && (
                             <span className="rounded border border-line bg-white px-2 py-0.5 font-mono text-[11px] font-semibold text-science-blue">
-                              LLM: {effectiveStageLlm.model || 'CLI既定'}
+                              LLM: {effectiveStageLlm.model || pick('CLI既定', 'CLI default')}
                               {effectiveStageLlm.effort
                                 ? ` · effort=${effectiveStageLlm.effort}`
                                 : ''}
@@ -595,20 +633,27 @@ export function ActionsSection({
                       <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-ink">
                         {activeStage.summary ||
                           activeStageFallbackMessage ||
-                          'この工程はまだ開始していません。完了すると LLM が要約した結果の概要がここに表示されます。'}
+                          pick(
+                            'この工程はまだ開始していません。完了すると LLM が要約した結果の概要がここに表示されます。',
+                            'This stage has not started yet. A summary will appear here once completed.',
+                          )}
                       </p>
                     </div>
 
                     {/* Compact Step Execution Facts */}
                     <dl className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
                       <div className="rounded border border-line bg-bg-2/50 px-2.5 py-2">
-                        <dt className="text-[11px] text-ink-muted">試行回数</dt>
+                        <dt className="text-[11px] text-ink-muted">
+                          {pick('試行回数', 'Attempts')}
+                        </dt>
                         <dd className="mt-0.5 font-mono text-xs font-bold text-ink">
                           {activeStage.attempts}
                         </dd>
                       </div>
                       <div className="rounded border border-line bg-bg-2/50 px-2.5 py-2">
-                        <dt className="text-[11px] text-ink-muted">経過時間</dt>
+                        <dt className="text-[11px] text-ink-muted">
+                          {pick('経過時間', 'Elapsed')}
+                        </dt>
                         <dd className="mt-0.5 font-mono text-xs font-bold text-ink tabular-nums">
                           {activeStage.startedAt
                             ? elapsed(
@@ -619,19 +664,25 @@ export function ActionsSection({
                         </dd>
                       </div>
                       <div className="rounded border border-line bg-bg-2/50 px-2.5 py-2">
-                        <dt className="text-[11px] text-ink-muted">開始時刻</dt>
+                        <dt className="text-[11px] text-ink-muted">
+                          {pick('開始時刻', 'Started')}
+                        </dt>
                         <dd className="mt-0.5 font-mono text-xs font-bold text-ink tabular-nums">
                           {clock(activeStage.startedAt)}
                         </dd>
                       </div>
                       <div className="rounded border border-line bg-bg-2/50 px-2.5 py-2">
-                        <dt className="text-[11px] text-ink-muted">失敗試行</dt>
+                        <dt className="text-[11px] text-ink-muted">
+                          {pick('失敗試行', 'Failed attempts')}
+                        </dt>
                         <dd className="mt-0.5 font-mono text-xs font-bold text-ink">
                           {activeStageSpans.filter((span) => span.status === 'failed').length}
                         </dd>
                       </div>
                       <div className="rounded border border-line bg-bg-2/50 px-2.5 py-2">
-                        <dt className="text-[11px] text-ink-muted">エージェント出力</dt>
+                        <dt className="text-[11px] text-ink-muted">
+                          {pick('エージェント出力', 'Agent lines')}
+                        </dt>
                         <dd className="mt-0.5 font-mono text-xs font-bold text-ink">
                           {activeStageEvents.filter((event) => event.type === 'agent.event').length}
                         </dd>
@@ -651,7 +702,7 @@ export function ActionsSection({
                         <div className="min-w-0">
                           <span className="inline-flex items-center gap-1 text-[11px] font-bold text-science-blue">
                             <SlidersHorizontal className="h-3 w-3" />
-                            この工程のカスタム指示
+                            {pick('この工程のカスタム指示', 'Custom stage instructions')}
                           </span>
                           <p className="mt-0.5 whitespace-pre-wrap text-xs text-ink-muted">
                             {customStageInstruction}
@@ -661,14 +712,19 @@ export function ActionsSection({
                           href={pageHref('/workflow', project.id)}
                           className="shrink-0 text-xs font-semibold text-eyebrow underline hover:text-science-blue"
                         >
-                          定義ページで編集
+                          {pick('定義ページで編集', 'Edit in Workflow')}
                         </a>
                       </div>
                     )}
                   </div>
 
                   <div className="mt-4 flex items-center justify-between border-t border-line pt-2.5 text-xs text-ink-muted">
-                    <span>詳細ログは「Logs」タブから確認できます</span>
+                    <span>
+                      {pick(
+                        '詳細ログは「Logs」タブから確認できます',
+                        'Open the Logs tab for full per-attempt output',
+                      )}
+                    </span>
                     <button
                       type="button"
                       onClick={() => setDetailTab('logs')}
@@ -679,7 +735,10 @@ export function ActionsSection({
                   </div>
                 </div>
               ) : (
-                <>
+                <div
+                  key={`${selectedJob?.id ?? 'none'}:${showAllLogs ? 'all' : selectedStage}:logs`}
+                  className="panel-enter flex flex-1 flex-col"
+                >
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-bg-2 px-3.5 py-2 text-xs text-ink-muted">
                     <label className="inline-flex cursor-pointer items-center gap-1.5">
                       <input
@@ -688,7 +747,7 @@ export function ActionsSection({
                         onChange={(event) => setShowTimestamps(event.target.checked)}
                         className="h-3.5 w-3.5 accent-science-blue"
                       />
-                      <span>Timestamps</span>
+                      <span>{pick('タイムスタンプ', 'Timestamps')}</span>
                     </label>
 
                     <label className="flex min-h-8 w-48 max-w-full items-center gap-1.5 rounded-md border border-ink-muted bg-white px-2 focus-within:outline-2 focus-within:outline-science-blue">
@@ -697,8 +756,8 @@ export function ActionsSection({
                         type="search"
                         value={logSearch}
                         onChange={(event) => setLogSearch(event.target.value)}
-                        placeholder="Filter log lines"
-                        aria-label="Filter step logs"
+                        placeholder={pick('ログ行を絞り込み', 'Filter log lines')}
+                        aria-label={pick('ログを絞り込み', 'Filter step logs')}
                         className="w-full min-w-0 bg-transparent text-xs text-ink outline-none placeholder:text-ink-muted"
                       />
                     </label>
@@ -706,18 +765,24 @@ export function ActionsSection({
 
                   <div
                     role="region"
-                    aria-label="Step log output"
+                    aria-label={pick('工程のログ出力', 'Step log output')}
                     className="max-h-[400px] min-h-[300px] flex-1 overflow-y-auto py-2.5 font-mono text-xs"
                   >
                     {!selectedJob ? (
                       <div className="px-4 py-10 text-center font-sans text-xs text-ink-muted">
-                        ジョブが実行されるとログが表示されます。
+                        {pick(
+                          'ジョブが実行されるとログが表示されます。',
+                          'Logs will appear once a job starts running.',
+                        )}
                       </div>
                     ) : filteredEvents.length === 0 ? (
                       <div className="px-4 py-10 text-center font-sans text-xs text-ink-muted">
                         {logQuery
-                          ? 'No log lines match your filter.'
-                          : 'No log entries yet. Events will appear as the agent progresses.'}
+                          ? pick('一致するログ行はありません。', 'No log lines match your filter.')
+                          : pick(
+                              'まだログがありません。処理が進むとここに表示されます。',
+                              'No log entries yet. Events will appear as the agent progresses.',
+                            )}
                       </div>
                     ) : showAllLogs ? (
                       <div className="space-y-0.5">
@@ -793,25 +858,29 @@ export function ActionsSection({
                       </div>
                     )}
                   </div>
-                </>
+                </div>
               )}
 
               <div className="flex items-center justify-between gap-2 border-t border-line bg-bg-2 px-3.5 py-2 text-xs text-ink-muted">
                 <span>
                   {selectedJob
-                    ? `${filteredEvents.length} / ${stageHistory.length} events`
-                    : 'No events'}
+                    ? `${filteredEvents.length} / ${stageHistory.length} ${pick('件のイベント', 'events')}`
+                    : pick('イベントなし', 'No events')}
                 </span>
                 {selectedJob && (
                   <span className="inline-flex items-center gap-1.5">
-                    <span>{selectedJob.agent || 'awaiting worker'}</span>
+                    <span>{selectedJob.agent || pick('ワーカー待機中', 'awaiting worker')}</span>
                     <span>·</span>
                     <span
                       className={`h-2 w-2 rounded-full ${
                         selectedJob.status === 'running' ? 'bg-st-green' : 'border border-navy-300'
                       }`}
                     />
-                    <span>{selectedJob.status === 'running' ? 'Streaming' : 'Saved history'}</span>
+                    <span>
+                      {selectedJob.status === 'running'
+                        ? pick('リアルタイム更新中', 'Streaming')
+                        : pick('保存済み履歴', 'Saved history')}
+                    </span>
                   </span>
                 )}
               </div>
@@ -829,6 +898,7 @@ interface LogLineRowProps {
 }
 
 function LogLineRow({ event, showTimestamps }: LogLineRowProps) {
+  const { pick } = useI18n();
   const level = actionEventLevel(event);
   const rowTone =
     level === 'error'
@@ -866,7 +936,8 @@ function LogLineRow({ event, showTimestamps }: LogLineRowProps) {
         <span className="text-ink">{event.message || event.type}</span>
         {event.summary && (
           <div className="mt-1 rounded bg-navy-50 px-2 py-1 font-sans text-xs text-science-blue">
-            概要: {event.summary}
+            {pick('概要: ', 'Summary: ')}
+            {event.summary}
           </div>
         )}
         {event.gate && <ConditionEvidence result={event.gate.result} />}

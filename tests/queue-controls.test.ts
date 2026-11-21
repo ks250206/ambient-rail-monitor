@@ -10,14 +10,16 @@ import { QueuePanel } from '../src/components/QueuePanel.tsx';
 it('identifies the job and irreversible consequence and sends cancel only after confirmation', async () => {
   const fetch = vi.fn().mockResolvedValue(Response.json({ ok: true }));
   vi.stubGlobal('fetch', fetch);
-  const confirm = vi.fn(() => false);
-  vi.stubGlobal('confirm', confirm);
   await render(h(JobControls, { job: job('running', 'run_01') }));
   await act(async () => button('ジョブを中止').click());
-  expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/測定\.csv.*run_01.*再開できません/));
+  const dialog = document.querySelector('[role="alertdialog"]');
+  expect(dialog?.textContent).toMatch(/測定\.csv.*run_01.*再開できません/);
   expect(fetch).not.toHaveBeenCalled();
-  confirm.mockReturnValue(true);
+  await act(async () => button('やめる').click());
+  expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+  expect(fetch).not.toHaveBeenCalled();
   await act(async () => button('ジョブを中止').click());
+  await act(async () => button('ジョブを中止する').click());
   expect(fetch).toHaveBeenCalledTimes(1);
   expect(fetch).toHaveBeenCalledWith(
     '/api/jobs/run_01/cancel',

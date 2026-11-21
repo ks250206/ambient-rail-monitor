@@ -1,5 +1,10 @@
 import { validRelativePath } from '../../shared/conditions.ts';
 import { INPUT_LIMITS } from '../../shared/input-limits.ts';
+import { getLocale } from '../i18n.ts';
+
+function t(ja: string, en: string) {
+  return getLocale() === 'en' ? en : ja;
+}
 
 export interface UploadFile {
   file: File;
@@ -13,18 +18,31 @@ export interface UploadSelection {
 
 export function validateSelection(selection: UploadSelection): UploadSelection {
   if (!selection.files.length || selection.files.length > INPUT_LIMITS.files)
-    throw new Error('1〜1000ファイルを選択してください。空のフォルダは投入できません。');
+    throw new Error(
+      t(
+        '1〜1000ファイルを選択してください。空のフォルダは投入できません。',
+        'Select between 1 and 1,000 files. Empty folders cannot be submitted.',
+      ),
+    );
   const paths = new Set<string>();
   let bytes = 0;
   for (const { file, path } of selection.files) {
     if (!validRelativePath(path) || path.split('/').length > INPUT_LIMITS.depth)
-      throw new Error(`相対パスを使用できません: ${path}`);
+      throw new Error(t(`相対パスを使用できません: ${path}`, `Invalid relative path: ${path}`));
     const normalized = path.normalize('NFC').toLowerCase();
-    if (paths.has(normalized)) throw new Error(`同じ相対パスが複数あります: ${path}`);
+    if (paths.has(normalized))
+      throw new Error(
+        t(`同じ相対パスが複数あります: ${path}`, `Duplicate relative path found: ${path}`),
+      );
     paths.add(normalized);
     bytes += file.size;
     if (file.size > INPUT_LIMITS.fileBytes || bytes > INPUT_LIMITS.totalBytes)
-      throw new Error('1ファイル20MB、合計200MB以内で投入してください。');
+      throw new Error(
+        t(
+          '1ファイル20MB、合計200MB以内で投入してください。',
+          'Keep each file under 20 MB and total size under 200 MB.',
+        ),
+      );
   }
   return { ...selection, files: selection.files.toSorted((a, b) => a.path.localeCompare(b.path)) };
 }
@@ -32,7 +50,7 @@ export function validateSelection(selection: UploadSelection): UploadSelection {
 export function selectFiles(files: File[], directory = false): UploadSelection {
   const folder = directory ? files[0]?.webkitRelativePath.split('/')[0] : undefined;
   return validateSelection({
-    name: folder || (files.length === 1 ? files[0].name : 'データセット'),
+    name: folder || (files.length === 1 ? files[0].name : t('データセット', 'dataset')),
     kind: directory || files.length !== 1 ? 'directory' : 'file',
     files: files.map((file) => ({
       file,
@@ -53,14 +71,17 @@ export async function droppedFiles(transfer: DataTransfer): Promise<UploadSelect
   if (!entries.length || entries.some((entry) => !entry)) {
     if (entries.some((entry) => entry?.isDirectory))
       throw new Error(
-        'このブラウザではドロップしたフォルダをすべて読み取れません。「フォルダを選ぶ」を使用してください。',
+        t(
+          'このブラウザではドロップしたフォルダをすべて読み取れません。「フォルダを選ぶ」を使用してください。',
+          'This browser cannot read all dropped folder contents. Use "Choose folder" instead.',
+        ),
       );
     if (fallback.some((file) => file.webkitRelativePath)) {
       const root = fallback[0]?.webkitRelativePath.split('/')[0];
       if (root && fallback.every((file) => file.webkitRelativePath.startsWith(root + '/')))
         return selectFiles(fallback, true);
       return validateSelection({
-        name: 'データセット',
+        name: t('データセット', 'dataset'),
         kind: 'directory',
         files: fallback.map((file) => ({ file, path: file.webkitRelativePath || file.name })),
       });
@@ -69,14 +90,16 @@ export async function droppedFiles(transfer: DataTransfer): Promise<UploadSelect
   }
   const files: UploadFile[] = [];
   const walk = async (entry: FileSystemEntry, prefix: string, depth: number): Promise<void> => {
-    if (depth > INPUT_LIMITS.depth) throw new Error('フォルダの階層が深すぎます。');
+    if (depth > INPUT_LIMITS.depth)
+      throw new Error(t('フォルダの階層が深すぎます。', 'Folder nesting is too deep.'));
     const relative = prefix + entry.name;
     if (entry.isFile) {
       const file = await new Promise<File>((resolve, reject) =>
         (entry as FileSystemFileEntry).file(resolve, reject),
       );
       files.push({ file, path: relative });
-      if (files.length > INPUT_LIMITS.files) throw new Error('入力は1000ファイルまでです。');
+      if (files.length > INPUT_LIMITS.files)
+        throw new Error(t('入力は1000ファイルまでです。', 'Maximum 1,000 input files allowed.'));
     } else if (entry.isDirectory) {
       const reader = (entry as FileSystemDirectoryEntry).createReader();
       while (true) {
@@ -91,7 +114,7 @@ export async function droppedFiles(transfer: DataTransfer): Promise<UploadSelect
   for (const entry of entries) await walk(entry!, '', 0);
   const singleFolder = entries.length === 1 && entries[0]!.isDirectory;
   return validateSelection({
-    name: entries.length === 1 ? entries[0]!.name : 'データセット',
+    name: entries.length === 1 ? entries[0]!.name : t('データセット', 'dataset'),
     kind:
       singleFolder || files.length !== 1 || entries.some((entry) => entry!.isDirectory)
         ? 'directory'

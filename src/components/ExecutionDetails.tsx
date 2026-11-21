@@ -2,24 +2,38 @@ import { RunMetrics, RuntimeDetails } from './RunMetrics.tsx';
 import { useQuery } from '@tanstack/react-query';
 import { resolveExecution, RETRY_LABELS } from '../../shared/execution-policy.ts';
 import type { JobStage, WorkflowJob } from '../../shared/types.ts';
+import { useI18n } from '../i18n.ts';
 import { monitorJobHref } from '../utils/workflow.ts';
 import { request } from '../api.ts';
 import { ConditionEvidence } from './ConditionBuilder.tsx';
 
+const RETRY_LABELS_EN: Record<string, string> = {
+  execution_error: 'Execution error',
+  timeout: 'Attempt timeout',
+  acceptance_failed: 'Acceptance check failed',
+  stage_timeout: 'Stage timeout',
+  job_timeout: 'Job timeout',
+  interrupted: 'Worker interrupted',
+};
+
 export function DatasetDetails({ job }: { job: WorkflowJob }) {
+  const { pick } = useI18n();
   return (
     <div className="dataset-details">
       <RunMetrics job={job} />
       {job.parentJobId && (
         <p className="wf-help">
-          再実行元: <a href={monitorJobHref(job.projectId, job.parentJobId)}>{job.parentJobId}</a>
+          {pick('再実行元: ', 'Rerun of: ')}
+          <a href={monitorJobHref(job.projectId, job.parentJobId)}>{job.parentJobId}</a>
         </p>
       )}
       {job.dataset && (
         <details>
           <summary>
-            登録時の入力：{job.dataset.files.length} ファイル・
-            {(job.dataset.bytes / 1024 / 1024).toFixed(2)} MB
+            {pick(
+              `登録時の入力：${job.dataset.files.length} ファイル・${(job.dataset.bytes / 1024 / 1024).toFixed(2)} MB`,
+              `Registered input: ${job.dataset.files.length} files · ${(job.dataset.bytes / 1024 / 1024).toFixed(2)} MB`,
+            )}
           </summary>
           <ul className="upload-file-list">
             {job.dataset.files.map((file) => (
@@ -32,18 +46,22 @@ export function DatasetDetails({ job }: { job: WorkflowJob }) {
             ))}
           </ul>
           <p className="wf-help">
-            入力 SHA-256: <code>{job.dataset.hash}</code>
+            {pick('入力 SHA-256: ', 'Input SHA-256: ')}
+            <code>{job.dataset.hash}</code>
           </p>
         </details>
       )}
       <p className="wf-help">
         {job.workflow ? (
           <>
-            登録時の定義を固定して実行 · <code>{job.workflow.hash.slice(0, 12)}</code> ·{' '}
-            {job.workflow.project.name}
+            {pick('登録時の定義を固定して実行 · ', 'Frozen workflow definition · ')}
+            <code>{job.workflow.hash.slice(0, 12)}</code> · {job.workflow.project.name}
           </>
         ) : (
-          '旧形式のジョブ：登録時の設定スナップショットはありません。'
+          pick(
+            '旧形式のジョブ：登録時の設定スナップショットはありません。',
+            'Legacy job: no workflow snapshot recorded at submission.',
+          )
         )}
       </p>
     </div>
@@ -63,6 +81,7 @@ export function StageExecutionDetails({
   approving: boolean;
   onApprove: () => void;
 }) {
+  const { locale, pick } = useI18n();
   const spec = job.workflow?.project.stages.find(
     (item) => item.key === (stage.stageKey ?? stage.key),
   );
@@ -71,24 +90,36 @@ export function StageExecutionDetails({
   )?.stageConfig;
   const policy =
     config?.execution ?? resolveExecution(job.workflow?.project.execution, spec?.execution);
-  const budget = (ms: number) => (ms ? `${ms / 1000}秒` : '無制限');
+  const budget = (ms: number) =>
+    ms ? pick(`${ms / 1000}秒`, `${ms / 1000}s`) : pick('無制限', 'Unlimited');
+  const activeSeconds = Math.round(
+    ((stage.activeMs ?? 0) +
+      (stage.status === 'running' && stage.startedAt
+        ? Math.max(0, nowMs - Date.parse(stage.startedAt))
+        : 0)) /
+      1000,
+  );
   return (
     <div className="stage-execution-details">
       {stage.item && (
         <p>
-          対象ファイル：<strong>{stage.item.path}</strong>
+          {pick('対象ファイル：', 'Target file: ')}
+          <strong>{stage.item.path}</strong>
         </p>
       )}
       {(stage.completion?.mode === 'reused' || stage.completion?.mode === 'cached') && (
         <p>
           {stage.completion.mode === 'cached'
-            ? 'キャッシュで実行を省略。元ジョブ '
-            : 'チェックポイントを再利用。元ジョブ '}
+            ? pick('キャッシュで実行を省略。元ジョブ ', 'Restored from cache. Source job ')
+            : pick('チェックポイントを再利用。元ジョブ ', 'Reused checkpoint. Source job ')}
           <a href={monitorJobHref(job.projectId, stage.completion.jobId!)}>
             {stage.completion.jobId}
           </a>
-          {stage.completion.task ? ` (${stage.completion.task})` : ''} の試行{' '}
-          {stage.completion.attempt} を再利用しました。
+          {stage.completion.task ? ` (${stage.completion.task})` : ''}
+          {pick(
+            ` の試行 ${stage.completion.attempt} を再利用しました。`,
+            ` attempt ${stage.completion.attempt}.`,
+          )}
         </p>
       )}
       {stage.cache && <p className="wf-help">{stage.cache.reason}</p>}
@@ -96,7 +127,10 @@ export function StageExecutionDetails({
       {stage.output && (
         <details>
           <summary>
-            確定した出力（{stage.output.files.length}件）· {stage.output.hash.slice(0, 12)}
+            {pick(
+              `確定した出力（${stage.output.files.length}件）· ${stage.output.hash.slice(0, 12)}`,
+              `Verified outputs (${stage.output.files.length}) · ${stage.output.hash.slice(0, 12)}`,
+            )}
           </summary>
           <ul className="upload-file-list">
             {stage.output.files.map((file) => (
@@ -112,58 +146,72 @@ export function StageExecutionDetails({
       )}
       <div className="execution-facts">
         <span>
-          試行 {stage.attempts} 回 · リトライ {stage.retryCount ?? 0} / {policy.maxRetries} 回
+          {pick(
+            `試行 ${stage.attempts} 回 · リトライ ${stage.retryCount ?? 0} / ${policy.maxRetries} 回`,
+            `Attempts ${stage.attempts} · Retries ${stage.retryCount ?? 0} / ${policy.maxRetries}`,
+          )}
         </span>
-        <span>1回の上限 {budget(policy.attemptTimeoutMs)}</span>
-        <span>工程の上限 {budget(policy.stageTimeoutMs)}</span>
-        <span>ジョブの上限 {budget(job.workflow?.project.jobTimeoutMs ?? 0)}</span>
         <span>
-          累計実行{' '}
-          {Math.round(
-            ((stage.activeMs ?? 0) +
-              (stage.status === 'running' && stage.startedAt
-                ? Math.max(0, nowMs - Date.parse(stage.startedAt))
-                : 0)) /
-              1000,
-          )}{' '}
-          秒
+          {pick('1回の上限 ', 'Attempt limit ')}
+          {budget(policy.attemptTimeoutMs)}
         </span>
+        <span>
+          {pick('工程の上限 ', 'Stage limit ')}
+          {budget(policy.stageTimeoutMs)}
+        </span>
+        <span>
+          {pick('ジョブの上限 ', 'Job limit ')}
+          {budget(job.workflow?.project.jobTimeoutMs ?? 0)}
+        </span>
+        <span>{pick(`累計実行 ${activeSeconds} 秒`, `Active ${activeSeconds}s`)}</span>
       </div>
       <span role="status" className="sr-only">
         {stage.status === 'retry'
-          ? '再試行を待っています。'
+          ? pick('再試行を待っています。', 'Waiting to retry.')
           : stage.status === 'running'
-            ? '試行を実行中です。'
+            ? pick('試行を実行中です。', 'Attempt in progress.')
             : ''}
       </span>
       {stage.status === 'running' && stage.deadlineAt && (
         <p role="timer">
-          この試行の残り時間：約{' '}
-          {Math.max(0, Math.ceil((Date.parse(stage.deadlineAt) - nowMs) / 1000))} 秒
+          {pick(
+            `この試行の残り時間：約 ${Math.max(0, Math.ceil((Date.parse(stage.deadlineAt) - nowMs) / 1000))} 秒`,
+            `Attempt time left: ~${Math.max(0, Math.ceil((Date.parse(stage.deadlineAt) - nowMs) / 1000))}s`,
+          )}
         </p>
       )}
       {stage.status === 'retry' && stage.retryAt && (
         <p role="timer">
-          次の試行まで：約 {Math.max(0, Math.ceil((Date.parse(stage.retryAt) - nowMs) / 1000))} 秒
+          {pick(
+            `次の試行まで：約 ${Math.max(0, Math.ceil((Date.parse(stage.retryAt) - nowMs) / 1000))} 秒`,
+            `Next retry in: ~${Math.max(0, Math.ceil((Date.parse(stage.retryAt) - nowMs) / 1000))}s`,
+          )}
         </p>
       )}
       {stage.failureKind && (
         <p className="condition-error">
-          失敗の種類：
-          {stage.failureKind in RETRY_LABELS
-            ? RETRY_LABELS[stage.failureKind as keyof typeof RETRY_LABELS]
-            : stage.failureKind}
+          {pick('失敗の種類：', 'Failure kind: ')}
+          {locale === 'en'
+            ? (RETRY_LABELS_EN[stage.failureKind] ?? stage.failureKind)
+            : stage.failureKind in RETRY_LABELS
+              ? RETRY_LABELS[stage.failureKind as keyof typeof RETRY_LABELS]
+              : stage.failureKind}
         </p>
       )}
       {stage.approvedAttempt !== undefined && (
         <p>
-          試行 {stage.approvedAttempt} の出力を人間が承認済み
-          {stage.failureKind ? '（自動判定の失敗は下記に保持）' : ''}
+          {pick(
+            `試行 ${stage.approvedAttempt} の出力を人間が承認済み`,
+            `Attempt ${stage.approvedAttempt} output approved by human review`,
+          )}
+          {stage.failureKind
+            ? pick('（自動判定の失敗は下記に保持）', ' (failed automated checks retained below)')
+            : ''}
         </p>
       )}
       {spec?.acceptanceCriteria && (
         <details>
-          <summary>この工程の受け入れ要件</summary>
+          <summary>{pick('この工程の受け入れ要件', 'Stage acceptance requirements')}</summary>
           <p className="whitespace-pre-wrap">{spec.acceptanceCriteria}</p>
         </details>
       )}
@@ -172,10 +220,10 @@ export function StageExecutionDetails({
           <h4>
             {
               {
-                input: '入力契約',
-                output: '出力契約',
-                stage: '工程の受け入れ判定',
-                final: '最終成果物の受け入れ判定',
+                input: pick('入力契約', 'Input contracts'),
+                output: pick('出力契約', 'Output contracts'),
+                stage: pick('工程の受け入れ判定', 'Stage acceptance gate'),
+                final: pick('最終成果物の受け入れ判定', 'Final publication gate'),
               }[gate.scope]
             }
           </h4>
@@ -189,8 +237,8 @@ export function StageExecutionDetails({
         <details>
           <summary>
             {!spec?.runner || spec.runner.kind === 'ai'
-              ? 'この試行で送信したプロンプト'
-              : 'この試行の指示と入力'}
+              ? pick('この試行で送信したプロンプト', 'Prompt sent for this attempt')
+              : pick('この試行の指示と入力', 'Instructions and inputs for this attempt')}
           </summary>
           <pre className="prompt-preview">{config.prompt}</pre>
         </details>
@@ -210,6 +258,7 @@ function ReviewOutputs({
   approving: boolean;
   onApprove: () => void;
 }) {
+  const { pick } = useI18n();
   const hasInventory = Boolean(stage.workspace && stage.reviewSequence !== undefined);
   const query = useQuery({
     queryKey: ['review-outputs', job.id, stage.key, stage.reviewSequence],
@@ -227,17 +276,29 @@ function ReviewOutputs({
   const legacy = !hasInventory && !job.workflow;
   return (
     <div className="review-outputs">
-      <h4>承認前の出力を確認</h4>
+      <h4>{pick('承認前の出力を確認', 'Review outputs before approval')}</h4>
       <p className="wf-help">
-        工程 {stage.label}・試行 {stage.attempts} の出力です。
+        {pick(
+          `工程 ${stage.label}・試行 ${stage.attempts} の出力です。`,
+          `Outputs from stage ${stage.label}, attempt ${stage.attempts}. `,
+        )}
         {stage.failureKind
-          ? '自動処理が失敗しています。例外承認すると、この試行の出力を採用して続行します。'
-          : 'この工程を承認すると、後続工程または成果物の公開へ進みます。'}
+          ? pick(
+              '自動処理が失敗しています。例外承認すると、この試行の出力を採用して続行します。',
+              'Automated checks failed. Exception approval accepts this attempt output and continues.',
+            )
+          : pick(
+              'この工程を承認すると、後続工程または成果物の公開へ進みます。',
+              'Approving advances to downstream stages or report publication.',
+            )}
       </p>
-      <p>対象：{stage.item?.path ?? job.file}</p>
+      <p>
+        {pick('対象：', 'Target: ')}
+        {stage.item?.path ?? job.file}
+      </p>
       {stage.failureKind && (
         <p className="condition-error">
-          失敗理由：
+          {pick('失敗理由：', 'Failure reason: ')}
           {job.events.findLast(
             (event) =>
               event.stage === stage.key &&
@@ -251,20 +312,31 @@ function ReviewOutputs({
       {!hasInventory && (
         <p>
           {legacy
-            ? '旧形式のジョブには出力一覧の記録がありません。工程のログを確認してください。'
-            : 'この試行の出力一覧を確認できません。'}
+            ? pick(
+                '旧形式のジョブには出力一覧の記録がありません。工程のログを確認してください。',
+                'Legacy jobs have no recorded output inventory. Check the stage logs.',
+              )
+            : pick(
+                'この試行の出力一覧を確認できません。',
+                'Unable to inspect the output inventory for this attempt.',
+              )}
         </p>
       )}
-      {hasInventory && query.isPending && <p role="status">出力を読み込み中…</p>}
+      {hasInventory && query.isPending && (
+        <p role="status">{pick('出力を読み込み中…', 'Loading outputs…')}</p>
+      )}
       {hasInventory && (query.isError || (query.isSuccess && !current)) && (
         <p role="alert">
-          {query.error?.message ?? 'レビュー対象が更新されました。'}{' '}
+          {query.error?.message ??
+            pick('レビュー対象が更新されました。', 'Review target has changed.')}{' '}
           <button className="wf-secondary" onClick={() => void query.refetch()}>
-            出力を再取得
+            {pick('出力を再取得', 'Reload outputs')}
           </button>
         </p>
       )}
-      {current && query.data.files.length === 0 && <p>この試行に出力ファイルはありません。</p>}
+      {current && query.data.files.length === 0 && (
+        <p>{pick('この試行に出力ファイルはありません。', 'No output files in this attempt.')}</p>
+      )}
       {current && query.data.files.length > 0 && (
         <ul className="upload-file-list">
           {query.data.files.map((file) => (
@@ -288,10 +360,10 @@ function ReviewOutputs({
         onClick={onApprove}
       >
         {approving
-          ? '承認中…'
+          ? pick('承認中…', 'Approving…')
           : stage.failureKind
-            ? 'この試行の出力を例外承認して続行'
-            : 'この工程を承認して続行'}
+            ? pick('この試行の出力を例外承認して続行', 'Exception-approve this output & continue')
+            : pick('この工程を承認して続行', 'Approve stage & continue')}
       </button>
     </div>
   );

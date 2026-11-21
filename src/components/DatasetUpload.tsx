@@ -3,6 +3,7 @@ import { FolderOpen, Upload } from 'lucide-react';
 import type { ConditionResult } from '../../shared/conditions.ts';
 import type { WorkflowJob } from '../../shared/types.ts';
 import { ApiError, jsonRequest, request } from '../api.ts';
+import { useI18n } from '../i18n.ts';
 import { droppedFiles, selectFiles } from '../utils/dataset-upload.ts';
 import type { UploadSelection } from '../utils/dataset-upload.ts';
 import { ConditionEvidence } from './ConditionBuilder.tsx';
@@ -14,6 +15,7 @@ export function DatasetUpload({
   projectId: string;
   onCreated: (job: WorkflowJob) => void;
 }) {
+  const { pick } = useI18n();
   const [selection, setSelection] = useState<UploadSelection | null>(null);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState('');
@@ -24,7 +26,11 @@ export function DatasetUpload({
   const folderRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
   function selectionFailed(err: Error) {
-    setError(selection ? `${err.message} 前の選択を保持しています。` : err.message);
+    setError(
+      selection
+        ? `${err.message} ${pick('前の選択を保持しています。', 'Keeping your previous selection.')}`
+        : err.message,
+    );
   }
   function selected(files: File[], directory = false) {
     try {
@@ -54,14 +60,19 @@ export function DatasetUpload({
       id = session.id;
       for (let i = 0; i < selection.files.length; i++) {
         const { file, path } = selection.files[i];
-        setProgress(`${i + 1} / ${selection.files.length} ファイルを転送中：${path}`);
+        setProgress(
+          pick(
+            `${i + 1} / ${selection.files.length} ファイルを転送中：${path}`,
+            `Uploading ${i + 1} / ${selection.files.length}: ${path}`,
+          ),
+        );
         await request(`/api/uploads/${id}/files?${new URLSearchParams({ path })}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/octet-stream' },
           body: file,
         });
       }
-      setProgress('入力を検証してジョブを登録中…');
+      setProgress(pick('入力を検証してジョブを登録中…', 'Validating inputs and creating job…'));
       const { job } = await request<{ job: WorkflowJob }>(
         `/api/uploads/${id}/commit`,
         jsonRequest('POST', {}),
@@ -79,7 +90,7 @@ export function DatasetUpload({
   return (
     <section
       className={`dataset-upload ${dragging ? 'is-dragging' : ''}`}
-      aria-label="データセットの投入"
+      aria-label={pick('データセットの投入', 'Submit dataset')}
       onDragEnter={(event) => {
         if (event.dataTransfer.types.includes('Files')) {
           event.preventDefault();
@@ -101,7 +112,7 @@ export function DatasetUpload({
         if (busy) return;
         setError('');
         setBusy(true);
-        setProgress('フォルダの内容を確認中…');
+        setProgress(pick('フォルダの内容を確認中…', 'Inspecting dropped folder…'));
         void droppedFiles(event.dataTransfer)
           .then((value) => {
             setSelection(value);
@@ -117,14 +128,14 @@ export function DatasetUpload({
     >
       <div className="condition-toolbar">
         <Upload size={20} aria-hidden="true" />
-        <h2>データをまとめて投入</h2>
+        <h2>{pick('データをまとめて投入', 'Submit dataset')}</h2>
         <button
           className="wf-secondary"
           type="button"
           disabled={busy}
           onClick={() => fileRef.current?.click()}
         >
-          複数ファイルを選ぶ
+          {pick('複数ファイルを選ぶ', 'Select files')}
         </button>
         <button
           className="wf-secondary"
@@ -133,11 +144,14 @@ export function DatasetUpload({
           onClick={() => folderRef.current?.click()}
         >
           <FolderOpen size={16} />
-          フォルダを選ぶ
+          {pick('フォルダを選ぶ', 'Select folder')}
         </button>
       </div>
       <p className="wf-help">
-        ここにフォルダや複数ファイルをドロップできます。選んだ内容を1つのジョブにまとめ、相対パスを保ちます。上限1000ファイル・1ファイル20MB・合計200MB。
+        {pick(
+          'ここにフォルダや複数ファイルをドロップできます。選んだ内容を1つのジョブにまとめ、相対パスを保ちます。上限1000ファイル・1ファイル20MB・合計200MB。',
+          'Drop a folder or multiple files here. Selected files are bundled into one job while preserving relative paths (limits: 1,000 files, 20 MB/file, 200 MB total).',
+        )}
       </p>
       <input
         ref={fileRef}
@@ -166,7 +180,7 @@ export function DatasetUpload({
         <div className="upload-selection">
           <div className="wf-fields">
             <label>
-              データセット名
+              {pick('データセット名', 'Dataset name')}
               <input
                 value={selection.name}
                 disabled={busy}
@@ -175,17 +189,17 @@ export function DatasetUpload({
               />
             </label>
             <p>
-              {selection.files.length} ファイル /{' '}
+              {pick(`${selection.files.length} ファイル`, `${selection.files.length} files`)} /{' '}
               {(
                 selection.files.reduce((sum, item) => sum + item.file.size, 0) /
                 1024 /
                 1024
               ).toFixed(2)}{' '}
-              MB → 1ジョブ
+              {pick('MB → 1ジョブ', 'MB → 1 job')}
             </p>
           </div>
           <details>
-            <summary>投入するファイルを確認</summary>
+            <summary>{pick('投入するファイルを確認', 'Review selected files')}</summary>
             <ul className="upload-file-list">
               {selection.files.map(({ file, path }) => (
                 <li key={path}>
@@ -202,7 +216,12 @@ export function DatasetUpload({
               disabled={busy || !selection.name.trim()}
               onClick={() => void upload()}
             >
-              {busy ? '処理中…' : `${selection.files.length} ファイルを1ジョブとして投入`}
+              {busy
+                ? pick('処理中…', 'Uploading…')
+                : pick(
+                    `${selection.files.length} ファイルを1ジョブとして投入`,
+                    `Submit ${selection.files.length} files as 1 job`,
+                  )}
             </button>
             <button
               className="wf-secondary"
@@ -214,7 +233,7 @@ export function DatasetUpload({
                 setEvidence(null);
               }}
             >
-              選択を解除
+              {pick('選択を解除', 'Clear selection')}
             </button>
           </div>
         </div>

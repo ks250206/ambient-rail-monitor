@@ -1,4 +1,6 @@
 import type { StageRunner } from '../../shared/graph.ts';
+import { useI18n } from '../i18n.ts';
+import { CustomSelect } from './CustomSelect.tsx';
 import { NumberValue } from './NumberValue.tsx';
 
 const defaults: Record<StageRunner['kind'], StageRunner> = {
@@ -20,6 +22,7 @@ const defaults: Record<StageRunner['kind'], StageRunner> = {
   },
   human: { kind: 'human' },
 };
+
 export function StageRunnerFields({
   value = defaults.ai,
   onChange,
@@ -33,53 +36,64 @@ export function StageRunnerFields({
   argumentText?: string;
   onArgumentsChange: (text: string) => void;
 }) {
+  const { pick } = useI18n();
   return (
     <div id="stage-runner" className="wf-fields">
       <label>
-        工程の種類
-        <select
+        {pick('工程の種類', 'Stage runner')}
+        <CustomSelect
+          ariaLabel={pick('工程の種類', 'Stage runner')}
           value={value.kind}
-          onChange={(event) =>
-            onChange(structuredClone(defaults[event.target.value as StageRunner['kind']]))
-          }
-        >
-          <option value="ai">AIエージェント</option>
-          <option value="command">プログラム・シェル</option>
-          <option value="python">Python</option>
-          <option value="http">HTTP API</option>
-          <option value="human" disabled={disableHuman}>
-            人間の確認{disableHuman ? '（公開工程は不可）' : ''}
-          </option>
-        </select>
+          options={[
+            { value: 'ai', label: pick('AIエージェント', 'AI agent') },
+            { value: 'command', label: pick('プログラム・シェル', 'Command / shell') },
+            { value: 'python', label: 'Python' },
+            { value: 'http', label: 'HTTP API' },
+            {
+              value: 'human',
+              label: pick(
+                `人間の確認${disableHuman ? '（公開工程は不可）' : ''}`,
+                `Human approval${disableHuman ? ' (unavailable on publish stage)' : ''}`,
+              ),
+              disabled: disableHuman,
+            },
+          ]}
+          onChange={(kind) => onChange(structuredClone(defaults[kind]))}
+        />
       </label>
       {value.kind === 'ai' && (
         <label>
-          実行エンジン
-          <select
+          {pick('実行エンジン', 'AI engine')}
+          <CustomSelect
+            ariaLabel={pick('実行エンジン', 'AI engine')}
             value={value.engine}
-            onChange={(event) =>
-              onChange({ ...value, engine: event.target.value as 'worker' | 'codex' | 'claude' })
-            }
-          >
-            <option value="worker">ワーカーの起動モード</option>
-            <option value="codex">Codex</option>
-            <option value="claude">Claude</option>
-          </select>
+            options={[
+              { value: 'worker', label: pick('ワーカーの起動モード', 'Worker default mode') },
+              { value: 'codex', label: 'Codex' },
+              { value: 'claude', label: 'Claude' },
+            ]}
+            onChange={(engine) => onChange({ ...value, engine })}
+          />
         </label>
       )}
       {value.kind === 'command' && (
         <label>
-          実行プログラム
+          {pick('実行プログラム', 'Executable program')}
           <input
             value={value.program}
             onChange={(event) => onChange({ ...value, program: event.target.value })}
           />
-          <small>シェル処理なら bash と引数 -c を明示してください。</small>
+          <small>
+            {pick(
+              'シェル処理なら bash と引数 -c を明示してください。',
+              'For shell scripts, explicitly specify bash with -c in arguments.',
+            )}
+          </small>
         </label>
       )}
       {value.kind === 'python' && (
         <label className="wf-wide">
-          Pythonコード
+          {pick('Pythonコード', 'Python code')}
           <textarea
             rows={10}
             value={value.code}
@@ -91,7 +105,7 @@ export function StageRunnerFields({
       {(value.kind === 'command' || value.kind === 'python') && (
         <>
           <label className="wf-wide">
-            引数（1行で1つ）
+            {pick('引数（1行で1つ）', 'Arguments (one per line)')}
             <textarea
               rows={3}
               value={argumentText ?? value.args.join('\n')}
@@ -99,25 +113,26 @@ export function StageRunnerFields({
             />
           </label>
           <p className="wf-help wf-wide">
-            入力は環境変数 RAILFLOW_INPUT_DIR、RAILFLOW_INPUT_ITEM、RAILFLOW_UPSTREAM_MANIFEST
-            から参照できます。bash -c 等のシェル文字列には {'{{...}}'}{' '}
-            を直接埋め込まず、環境変数を使用してください。
+            {pick(
+              '入力は環境変数 RAILFLOW_INPUT_DIR、RAILFLOW_INPUT_ITEM、RAILFLOW_UPSTREAM_MANIFEST から参照できます。bash -c 等のシェル文字列には {{...}} を直接埋め込まず、環境変数を使用してください。',
+              'Read inputs via RAILFLOW_INPUT_DIR, RAILFLOW_INPUT_ITEM, and RAILFLOW_UPSTREAM_MANIFEST. Avoid interpolating {{...}} directly into bash -c strings; use environment variables instead.',
+            )}
           </p>
         </>
       )}
       {value.kind === 'http' && (
         <>
           <label>
-            メソッド
-            <select
+            {pick('メソッド', 'HTTP method')}
+            <CustomSelect
+              ariaLabel={pick('メソッド', 'HTTP method')}
               value={value.method}
-              onChange={(event) =>
-                onChange({ ...value, method: event.target.value as 'GET' | 'POST' })
-              }
-            >
-              <option>GET</option>
-              <option>POST</option>
-            </select>
+              options={[
+                { value: 'GET', label: 'GET' },
+                { value: 'POST', label: 'POST' },
+              ]}
+              onChange={(method) => onChange({ ...value, method })}
+            />
           </label>
           <label className="wf-wide">
             URL
@@ -130,7 +145,7 @@ export function StageRunnerFields({
           {value.method === 'POST' && (
             <>
               <label className="wf-wide">
-                リクエスト本文
+                {pick('リクエスト本文', 'Request body (JSON)')}
                 <textarea
                   rows={4}
                   value={value.body}
@@ -143,12 +158,15 @@ export function StageRunnerFields({
                   checked={value.idempotencyKey}
                   onChange={(event) => onChange({ ...value, idempotencyKey: event.target.checked })}
                 />
-                同じタスクの再試行に同じIdempotency-Keyを送る（接続先の対応が必要）
+                {pick(
+                  '同じタスクの再試行に同じIdempotency-Keyを送る（接続先の対応が必要）',
+                  'Send a stable Idempotency-Key across retries of the same task (endpoint must support it)',
+                )}
               </label>
             </>
           )}
           <label>
-            成功ステータス
+            {pick('成功ステータス', 'Expected HTTP status')}
             <NumberValue
               value={value.successStatus}
               integer
@@ -156,21 +174,26 @@ export function StageRunnerFields({
             />
           </label>
           <label>
-            レスポンス保存先
+            {pick('レスポンス保存先', 'Response output file')}
             <input
               value={value.output}
               onChange={(event) => onChange({ ...value, output: event.target.value })}
             />
           </label>
           <p className="wf-help wf-wide">
-            応答は最大2
-            MiB。リダイレクトには追従しません。POSTのリトライにはIdempotency-Keyを有効にしてください。
+            {pick(
+              '応答は最大2 MiB。リダイレクトには追従しません。POSTのリトライにはIdempotency-Keyを有効にしてください。',
+              'Max response size 2 MiB; redirects are not followed. Enable Idempotency-Key when retrying POST requests.',
+            )}
           </p>
         </>
       )}
       {value.kind === 'human' && (
         <p className="wf-help wf-wide">
-          AIを呼ばず、入力資料とこの工程の指示を表示して承認を待ちます。並列の他工程は続行できます。
+          {pick(
+            'AIを呼ばず、入力資料とこの工程の指示を表示して承認を待ちます。並列の他工程は続行できます。',
+            'Pauses for human review without invoking an AI agent. Independent sibling branches continue running in parallel.',
+          )}
         </p>
       )}
     </div>

@@ -6,6 +6,7 @@ import type {
   WorkflowEvent,
   WorkflowJob,
 } from '../../shared/types.ts';
+import type { Locale } from '../i18n.ts';
 
 export type NormalizedActionStatus =
   | 'queued'
@@ -29,6 +30,22 @@ export const STATUS_LABELS: Record<JobStatus, string> = {
   cancelled: '中止',
 };
 
+export const STATUS_LABELS_EN: Record<JobStatus, string> = {
+  queued: 'Queued',
+  running: 'Running',
+  review: 'Needs approval',
+  done: 'Succeeded',
+  failed: 'Failed',
+  pausing: 'Pausing',
+  paused: 'Paused',
+  cancelling: 'Cancelling',
+  cancelled: 'Cancelled',
+};
+
+export function statusLabel(status: JobStatus, locale: Locale): string {
+  return locale === 'en' ? STATUS_LABELS_EN[status] : STATUS_LABELS[status];
+}
+
 export const ACTION_STATUS_LABELS: Record<NormalizedActionStatus, string> = {
   queued: 'Queued',
   running: 'In progress',
@@ -39,6 +56,20 @@ export const ACTION_STATUS_LABELS: Record<NormalizedActionStatus, string> = {
   cancelled: 'Cancelled',
 };
 
+export const ACTION_STATUS_LABELS_JA: Record<NormalizedActionStatus, string> = {
+  queued: '待機中',
+  running: '実行中',
+  review: '要承認',
+  done: '成功',
+  failed: '失敗',
+  paused: '一時停止中',
+  cancelled: '中止',
+};
+
+export function actionStatusLabel(state: NormalizedActionStatus, locale: Locale): string {
+  return locale === 'en' ? ACTION_STATUS_LABELS[state] : ACTION_STATUS_LABELS_JA[state];
+}
+
 export const STAGE_STATUS_LABELS: Record<StageStatus, string> = {
   pending: 'Not started',
   success: 'Succeeded',
@@ -48,10 +79,25 @@ export const STAGE_STATUS_LABELS: Record<StageStatus, string> = {
   review: 'Human review',
 };
 
+export const STAGE_STATUS_LABELS_JA: Record<StageStatus, string> = {
+  pending: '未開始',
+  success: '成功',
+  running: '実行中',
+  retry: '再試行中',
+  failed: '失敗',
+  review: '人間の確認待ち',
+};
+
+export function stageStatusLabel(status: StageStatus, locale: Locale): string {
+  return locale === 'en' ? STAGE_STATUS_LABELS[status] : STAGE_STATUS_LABELS_JA[status];
+}
+
 export interface KanbanColumnDef {
   id: 'queued' | 'running' | 'review' | 'done';
   label: string;
+  labelEn: string;
   hint: string;
+  hintEn: string;
   statuses: JobStatus[];
 }
 
@@ -59,20 +105,33 @@ export const KANBAN_COLUMNS: KanbanColumnDef[] = [
   {
     id: 'queued',
     label: '待機・一時停止',
+    labelEn: 'Queued / Paused',
     hint: '待機・一時停止中のジョブはありません',
+    hintEn: 'No queued or paused jobs',
     statuses: ['queued', 'paused'],
   },
   {
     id: 'running',
     label: '実行中',
+    labelEn: 'Running',
     hint: '実行中のジョブはありません',
+    hintEn: 'No running jobs',
     statuses: ['running', 'pausing', 'cancelling'],
   },
-  { id: 'review', label: '要承認', hint: '承認待ちのジョブはありません', statuses: ['review'] },
+  {
+    id: 'review',
+    label: '要承認',
+    labelEn: 'Needs approval',
+    hint: '承認待ちのジョブはありません',
+    hintEn: 'No jobs waiting for approval',
+    statuses: ['review'],
+  },
   {
     id: 'done',
     label: '終了',
+    labelEn: 'Finished',
     hint: '終了したジョブはありません',
+    hintEn: 'No finished jobs',
     statuses: ['done', 'failed', 'cancelled'],
   },
 ];

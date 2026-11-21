@@ -1,4 +1,5 @@
 import type { StageKey, WorkflowJob } from '../../shared/types.ts';
+import { useI18n } from '../i18n.ts';
 import { axisTime, dateMs, elapsed, getSpans } from '../utils/workflow.ts';
 
 interface TraceSectionProps {
@@ -8,6 +9,7 @@ interface TraceSectionProps {
 }
 
 export function TraceSection({ job, nowMs, onSelectStage }: TraceSectionProps) {
+  const { pick } = useI18n();
   const spans = job ? getSpans(job) : [];
   const start = spans.length
     ? Math.min(...spans.map((span) => span.start))
@@ -26,7 +28,7 @@ export function TraceSection({ job, nowMs, onSelectStage }: TraceSectionProps) {
     <section id="trace" className="mt-5 scroll-mt-6 border-t-2 border-science-sub bg-white pt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h3 className="section-heading">トレース</h3>
+          <h3 className="section-heading">{pick('トレース', 'Trace')}</h3>
         </div>
 
         <span className="font-mono text-xs text-ink-muted tabular-nums">
@@ -42,17 +44,20 @@ export function TraceSection({ job, nowMs, onSelectStage }: TraceSectionProps) {
       <div className="mt-5">
         {!job ? (
           <div className="flex min-h-[120px] items-center justify-center text-xs text-ink-muted">
-            No trace available
+            {pick('トレースがありません', 'No trace available')}
           </div>
         ) : spans.length === 0 ? (
           <div className="flex min-h-[120px] items-center justify-center text-xs text-ink-muted">
-            No trace data yet. Workerがジョブを取得すると表示されます。
+            {pick(
+              'まだトレースデータがありません。ワーカーがジョブを取得すると表示されます。',
+              'No trace data yet. Spans appear once a worker claims the job.',
+            )}
           </div>
         ) : (
           <>
             <div className="mb-3 grid grid-cols-[120px_1fr] items-center gap-3 sm:grid-cols-[170px_1fr]">
               <span className="font-mono text-xs font-semibold text-ink-muted uppercase">
-                Span / Attempt
+                {pick('工程 / 試行', 'Span / Attempt')}
               </span>
               <div className="flex justify-between font-mono text-xs text-ink-muted tabular-nums">
                 {ticks.map((tick, index) => (
@@ -117,8 +122,10 @@ export function TraceSection({ job, nowMs, onSelectStage }: TraceSectionProps) {
       </div>
 
       <p className="mt-4 border-t border-line pt-3 text-xs text-ink-muted">
-        Each bar represents an actual stage attempt. Failures and retries are retained as separate
-        spans. Time axis is relative to the first step.
+        {pick(
+          '各バーは実際の試行を表します。失敗と再試行も個別のスパンとして保持されます。時間軸は最初の工程を基準としています。',
+          'Each bar represents an actual stage attempt. Failures and retries are retained as separate spans. The time axis is relative to the first step.',
+        )}
       </p>
     </section>
   );

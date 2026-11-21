@@ -4,6 +4,8 @@ import type { ProjectSpec } from '../../shared/types.ts';
 import type { WorkflowTemplate } from '../../shared/templates.ts';
 import { executionDetails } from '../../shared/template-preview.ts';
 import { jsonRequest, queryClient, request } from '../api.ts';
+import { useI18n } from '../i18n.ts';
+import { CustomSelect } from './CustomSelect.tsx';
 
 type Catalog = { builtins: WorkflowTemplate[]; saved: WorkflowTemplate[] };
 
@@ -31,6 +33,7 @@ export function TemplatePicker({
   onChange: (template: WorkflowTemplate | null) => void;
   onBlocked: (blocked: boolean) => void;
 }) {
+  const { pick } = useI18n();
   const catalog = useQuery({
     queryKey: ['templates'],
     queryFn: () => request<Catalog>('/api/templates'),
@@ -84,7 +87,10 @@ export function TemplatePicker({
     let failed = false;
     try {
       if (!file) return;
-      if (file.size > 4_000_000) throw new Error('テンプレートは4 MB以内にしてください。');
+      if (file.size > 4_000_000)
+        throw new Error(
+          pick('テンプレートは4 MB以内にしてください。', 'Templates must be 4 MB or smaller.'),
+        );
       const text = await file.text();
       if (ticket !== generation.current) return;
       await select(JSON.parse(text), true);
@@ -119,33 +125,46 @@ export function TemplatePicker({
   };
   const options = [...(catalog.data?.builtins ?? []), ...(catalog.data?.saved ?? [])];
   const needsExecConfirm = Boolean(selected && isExternal && hasExecutableSteps(selected));
+  const selectedIndex = selected ? options.findIndex((item) => sameTemplate(item, selected)) : -2;
+  const selectValue = selected ? String(selectedIndex) : '';
+  const selectOptions = [
+    { value: '', label: pick('使用しない / JSONを選択', 'None / Upload JSON') },
+    ...(selected && selectedIndex === -1
+      ? [
+          {
+            value: '-1',
+            label: pick(
+              `読み込んだJSON: ${selected.template.name}`,
+              `Loaded JSON: ${selected.template.name}`,
+            ),
+          },
+        ]
+      : []),
+    ...options.map((item, index) => ({
+      value: String(index),
+      label: `${item.template.name} · ${item.template.revision}`,
+    })),
+  ];
   return (
-    <section className="wf-template" aria-label="テンプレートから作成">
-      <h3>テンプレートから作成</h3>
+    <section
+      className="wf-template"
+      aria-label={pick('テンプレートから作成', 'Create from template')}
+    >
+      <h3>{pick('テンプレートから作成', 'Create from template')}</h3>
       <label>
-        保存済み・組み込みテンプレート
-        <select
-          value={selected ? options.findIndex((item) => sameTemplate(item, selected)) : ''}
-          onChange={(e) =>
-            void select(e.target.value === '' ? null : options[Number(e.target.value)], false)
-          }
-        >
-          <option value="">使用しない / JSONを選択</option>
-          {selected && !options.some((item) => sameTemplate(item, selected)) && (
-            <option value={-1}>読み込んだJSON: {selected.template.name}</option>
-          )}
-          {options.map((item, index) => (
-            <option
-              key={`${item.template.name}-${item.template.revision}-${item.template.hash}-${index}`}
-              value={index}
-            >
-              {item.template.name} · {item.template.revision}
-            </option>
-          ))}
-        </select>
+        {pick('保存済み・組み込みテンプレート', 'Saved & built-in templates')}
+        <CustomSelect
+          ariaLabel={pick('保存済み・組み込みテンプレート', 'Saved & built-in templates')}
+          value={selectValue}
+          options={selectOptions}
+          onChange={(next) => {
+            if (next === '-1') return;
+            void select(next === '' ? null : options[Number(next)], false);
+          }}
+        />
       </label>
       <label>
-        テンプレートJSON
+        {pick('テンプレートJSON', 'Template JSON')}
         <input
           type="file"
           accept=".json,application/json"
@@ -162,27 +181,35 @@ export function TemplatePicker({
       )}
       {catalog.isError && (
         <p role="alert">
-          保存済みテンプレートを取得できません。
+          {pick('保存済みテンプレートを取得できません。', 'Failed to load saved templates.')}
           <button type="button" onClick={() => void catalog.refetch()}>
-            再試行
+            {pick('再試行', 'Retry')}
           </button>
         </p>
       )}
       {!!catalog.data?.saved.length && (
         <details className="wf-disclosure">
-          <summary>保存済みテンプレートを管理（{catalog.data.saved.length} / 30件）</summary>
+          <summary>
+            {pick(
+              `保存済みテンプレートを管理（${catalog.data.saved.length} / 30件）`,
+              `Manage saved templates (${catalog.data.saved.length} / 30)`,
+            )}
+          </summary>
           <ul className="upload-file-list">
             {catalog.data.saved.map((item) => {
               const key = `${item.template.name}:${item.template.revision}:${item.template.hash}`;
               return (
                 <li key={key}>
                   <span>
-                    {item.template.name} · 版 {item.template.revision} (
-                    {item.template.hash.slice(0, 8)})
+                    {item.template.name} · {pick('版 ', 'Rev ')}
+                    {item.template.revision} ({item.template.hash.slice(0, 8)})
                   </span>
                   {confirmDelete === key && (
                     <span role="status">
-                      「{item.template.name}」（版 {item.template.revision}）を削除しますか？
+                      {pick(
+                        `「${item.template.name}」（版 ${item.template.revision}）を削除しますか？`,
+                        `Delete "${item.template.name}" (rev ${item.template.revision})?`,
+                      )}
                     </span>
                   )}
                   <button
@@ -191,7 +218,7 @@ export function TemplatePicker({
                     disabled={Boolean(deletingKey)}
                     onClick={() => setConfirmDelete(confirmDelete === key ? '' : key)}
                   >
-                    {confirmDelete === key ? '取り消す' : '削除'}
+                    {confirmDelete === key ? pick('取り消す', 'Cancel') : pick('削除', 'Delete')}
                   </button>
                   {confirmDelete === key && (
                     <button
@@ -200,7 +227,9 @@ export function TemplatePicker({
                       disabled={Boolean(deletingKey)}
                       onClick={() => void removeSaved(item)}
                     >
-                      {deletingKey === key ? '削除中…' : '削除を確定'}
+                      {deletingKey === key
+                        ? pick('削除中…', 'Deleting…')
+                        : pick('削除を確定', 'Confirm delete')}
                     </button>
                   )}
                 </li>
@@ -210,32 +239,44 @@ export function TemplatePicker({
         </details>
       )}
       <button type="button" className="wf-secondary" onClick={() => void select(null)}>
-        テンプレートを解除して白紙から作成
+        {pick('テンプレートを解除して白紙から作成', 'Clear template and start blank')}
       </button>
       {selected && (
         <div role="status" className="wf-template-preview">
           <strong>
-            {selected.template.name} · 版 {selected.template.revision}
+            {selected.template.name} · {pick('版 ', 'Rev ')}
+            {selected.template.revision}
           </strong>
           <p>
-            {selected.definition.stages.length} 工程 ·{' '}
-            {selected.definition.graph?.mode ?? '従来の逐次実行'} ·{' '}
+            {pick(
+              `${selected.definition.stages.length} 工程`,
+              `${selected.definition.stages.length} stages`,
+            )}{' '}
+            · {selected.definition.graph?.mode ?? pick('従来の逐次実行', 'Legacy sequential')} ·{' '}
             {[
               ...new Set(selected.definition.stages.map((stage) => stage.runner?.kind ?? 'ai')),
             ].join(' / ')}
           </p>
           <p>{selected.definition.purpose}</p>
           <p className="wf-help">
-            環境の版: {selected.definition.runtime?.revision || '指定なし'} · Python:{' '}
-            {selected.definition.runtime?.python || 'ワーカー既定'} · 内容hash:{' '}
+            {pick('環境の版: ', 'Env revision: ')}
+            {selected.definition.runtime?.revision || pick('指定なし', 'Not set')} · Python:{' '}
+            {selected.definition.runtime?.python || pick('ワーカー既定', 'Worker default')} ·{' '}
+            {pick('内容hash: ', 'Hash: ')}
             {selected.template.hash.slice(0, 12)}
           </p>
           {hasExecutableSteps(selected) && (
             <details open={isExternal} className="wf-disclosure">
-              <summary>実行コマンド・Pythonコード・HTTP接続先と送信内容の詳細</summary>
+              <summary>
+                {pick(
+                  '実行コマンド・Pythonコード・HTTP接続先と送信内容の詳細',
+                  'Inspect commands, Python code, and HTTP targets/payloads',
+                )}
+              </summary>
               {selected.definition.runtime?.python && (
                 <p className="wf-help">
-                  環境プローブ・実行用 Python: <code>{selected.definition.runtime.python}</code>
+                  {pick('環境プローブ・実行用 Python: ', 'Runtime probe & execution Python: ')}
+                  <code>{selected.definition.runtime.python}</code>
                 </p>
               )}
               {executionDetails(selected.definition.stages).map((detail) => (
@@ -263,11 +304,17 @@ export function TemplatePicker({
                   onBlocked(!e.target.checked);
                 }}
               />
-              外部テンプレート内のコマンド・Python・HTTP・実行ファイル設定を確認し、ローカル実行を許可する
+              {pick(
+                '外部テンプレート内のコマンド・Python・HTTP・実行ファイル設定を確認し、ローカル実行を許可する',
+                'I have reviewed the commands, Python code, HTTP requests, and executable paths in this external template and allow local execution',
+              )}
             </label>
           )}
           <p className="wf-help">
-            下の名前で新しいプロジェクトを作成します。テンプレートの元のプロジェクトは変更されません。
+            {pick(
+              '下の名前で新しいプロジェクトを作成します。テンプレートの元のプロジェクトは変更されません。',
+              'Creates a new project with the name below. The original template project is not modified.',
+            )}
           </p>
         </div>
       )}
@@ -276,6 +323,7 @@ export function TemplatePicker({
 }
 
 export function TemplateExport({ project }: { project: ProjectSpec }) {
+  const { pick } = useI18n();
   const [revision, setRevision] = useState('1');
   const [name, setName] = useState(project.name);
   const [status, setStatus] = useState('');
@@ -289,7 +337,12 @@ export function TemplateExport({ project }: { project: ProjectSpec }) {
         jsonRequest('POST', { projectId: project.id, name, revision }),
       );
       await queryClient.invalidateQueries({ queryKey: ['templates'] });
-      setStatus('保存済みテンプレートに追加しました。新規プロジェクト作成画面で選択できます。');
+      setStatus(
+        pick(
+          '保存済みテンプレートに追加しました。新規プロジェクト作成画面で選択できます。',
+          'Saved to template catalog. Available when creating a new project.',
+        ),
+      );
     } catch (error) {
       setStatus((error as Error).message);
     } finally {
@@ -297,21 +350,22 @@ export function TemplateExport({ project }: { project: ProjectSpec }) {
     }
   };
   return (
-    <section className="wf-template" aria-label="定義の再利用">
-      <h3>保存済み定義を再利用</h3>
+    <section className="wf-template" aria-label={pick('定義の再利用', 'Reuse workflow definition')}>
+      <h3>{pick('保存済み定義を再利用', 'Reuse saved definition')}</h3>
       {project.templateOrigin && (
         <p>
-          作成元: {project.templateOrigin.name} · {project.templateOrigin.revision} ·{' '}
+          {pick('作成元: ', 'Created from: ')}
+          {project.templateOrigin.name} · {project.templateOrigin.revision} ·{' '}
           {project.templateOrigin.hash.slice(0, 12)}
         </p>
       )}
       <div className="wf-fields">
         <label>
-          テンプレート名
+          {pick('テンプレート名', 'Template name')}
           <input value={name} maxLength={120} onChange={(e) => setName(e.target.value)} />
         </label>
         <label>
-          テンプレートの版
+          {pick('テンプレートの版', 'Template revision')}
           <input value={revision} maxLength={80} onChange={(e) => setRevision(e.target.value)} />
         </label>
       </div>
@@ -322,7 +376,7 @@ export function TemplateExport({ project }: { project: ProjectSpec }) {
           disabled={pending || !name.trim() || !revision.trim()}
           onClick={() => void save()}
         >
-          テンプレートとして保存
+          {pick('テンプレートとして保存', 'Save as template')}
         </button>
         {name.trim() && revision.trim() && (
           <a
@@ -330,12 +384,15 @@ export function TemplateExport({ project }: { project: ProjectSpec }) {
             href={`/api/projects/${project.id}/template?revision=${encodeURIComponent(revision.trim())}&name=${encodeURIComponent(name.trim())}`}
             download
           >
-            保存済み定義をJSONで書き出す
+            {pick('保存済み定義をJSONで書き出す', 'Export saved definition as JSON')}
           </a>
         )}
       </div>
       <p className="wf-help">
-        入力データ・実行履歴・保存先は含みません。新しい版を保存しても既存ジョブの定義は変わりません。
+        {pick(
+          '入力データ・実行履歴・保存先は含みません。新しい版を保存しても既存ジョブの定義は変わりません。',
+          'Excludes input data, run history, and local paths. Saving a new revision does not change existing jobs.',
+        )}
       </p>
       {status && <p role="status">{status}</p>}
     </section>

@@ -2,7 +2,9 @@ import { Download, ExternalLink } from 'lucide-react';
 import { useId, useState, type KeyboardEvent } from 'react';
 
 import type { WorkflowJob } from '../../shared/types.ts';
+import { useI18n } from '../i18n.ts';
 import { bytes } from '../utils/workflow.ts';
+import { CustomSelect } from './CustomSelect.tsx';
 
 interface ArtifactViewerProps {
   job: WorkflowJob | null;
@@ -10,12 +12,13 @@ interface ArtifactViewerProps {
 }
 
 const modes = [
-  { id: 'single', label: '単独表示' },
-  { id: 'compare', label: 'ジョブ比較' },
+  { id: 'single', ja: '単独表示', en: 'Single view' },
+  { id: 'compare', ja: 'ジョブ比較', en: 'Compare jobs' },
 ] as const;
 type ViewerMode = (typeof modes)[number]['id'];
 
 export function ArtifactViewer({ job, jobs }: ArtifactViewerProps) {
+  const { pick } = useI18n();
   const [mode, setMode] = useState<ViewerMode>('single');
   const [comparisonId, setComparisonId] = useState('');
   const viewerId = useId();
@@ -54,8 +57,12 @@ export function ArtifactViewer({ job, jobs }: ArtifactViewerProps) {
 
   return (
     <div className="mt-3">
-      <div role="tablist" aria-label="成果物" className="flex border-b border-line">
-        {modes.map(({ id, label }) => (
+      <div
+        role="tablist"
+        aria-label={pick('成果物', 'Artifacts')}
+        className="flex border-b border-line"
+      >
+        {modes.map(({ id, ja, en }) => (
           <button
             key={id}
             id={`${viewerId}-${id}`}
@@ -68,25 +75,31 @@ export function ArtifactViewer({ job, jobs }: ArtifactViewerProps) {
             onKeyDown={navigate}
             className={`border-b-2 px-4 py-2.5 text-sm font-bold focus-visible:z-10 ${mode === id ? 'border-science-blue text-science-blue' : 'border-transparent text-ink-muted hover:bg-bg-2'}`}
           >
-            {label}
+            {pick(ja, en)}
           </button>
         ))}
       </div>
       <div
+        key={mode}
         id={`${viewerId}-panel`}
         role="tabpanel"
         aria-labelledby={`${viewerId}-${mode}`}
-        className="pt-4"
+        className="panel-enter pt-4"
       >
         {!job ? (
-          <p className="py-5 text-sm text-ink-muted">ジョブを選択すると成果物が表示されます。</p>
+          <p className="py-5 text-sm text-ink-muted">
+            {pick(
+              'ジョブを選択すると成果物が表示されます。',
+              'Select a job to view its artifacts.',
+            )}
+          </p>
         ) : (
           <div className={`grid items-start gap-4 ${mode === 'compare' ? '@2xl:grid-cols-2' : ''}`}>
-            <ArtifactPane key={job.id} job={job} label="選択中のジョブ" />
+            <ArtifactPane key={job.id} job={job} label={pick('選択中のジョブ', 'Selected job')} />
             {mode === 'compare' && (
               <ArtifactPane
                 job={comparison}
-                label="比較するジョブ"
+                label={pick('比較するジョブ', 'Compare with')}
                 choices={candidates}
                 onChoose={setComparisonId}
               />
@@ -106,6 +119,7 @@ interface ArtifactPaneProps {
 }
 
 function ArtifactPane({ job, label, choices, onChoose }: ArtifactPaneProps) {
+  const { pick } = useI18n();
   const [selection, setSelection] = useState<{ jobId: string; file: string } | null>(null);
   const fileGroup = useId();
   const files = job?.artifacts ?? [];
@@ -114,12 +128,10 @@ function ArtifactPane({ job, label, choices, onChoose }: ArtifactPaneProps) {
     files.find((item) => /\.html?$/i.test(item.name)) ??
     files[0];
   const isHtml = artifact && /\.html?$/i.test(artifact.name);
-  const selectClass =
-    'min-h-10 w-full min-w-0 rounded border border-navy-400 bg-white px-2.5 py-1.5 text-sm text-ink';
 
   return (
     <section
-      aria-label={`${label}の成果物`}
+      aria-label={pick(`${label}の成果物`, `${label} artifacts`)}
       className="min-w-0 overflow-hidden rounded border border-line bg-white"
     >
       <div className="border-b border-line bg-bg-2 px-4 py-3">
@@ -127,20 +139,17 @@ function ArtifactPane({ job, label, choices, onChoose }: ArtifactPaneProps) {
           {choices && onChoose ? (
             <label className="grid gap-1">
               <span className="text-xs font-bold text-ink-muted">{label}</span>
-              <select
-                aria-label={label}
-                className={selectClass}
+              <CustomSelect
+                ariaLabel={label}
                 value={job?.id ?? ''}
                 disabled={!choices.length}
-                onChange={(e) => onChoose(e.target.value)}
-              >
-                {!job && <option value="">ジョブを選択</option>}
-                {choices.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.file} · {item.id}
-                  </option>
-                ))}
-              </select>
+                placeholder={pick('ジョブを選択', 'Select job')}
+                options={choices.map((item) => ({
+                  value: item.id,
+                  label: `${item.file} · ${item.id}`,
+                }))}
+                onChange={onChoose}
+              />
             </label>
           ) : (
             job && (
@@ -156,7 +165,10 @@ function ArtifactPane({ job, label, choices, onChoose }: ArtifactPaneProps) {
       {job && (
         <fieldset className="min-w-0 px-4 pt-3">
           <legend className="float-left mb-2 w-full text-sm font-bold text-science-blue">
-            成果物 <span className="ml-1 tabular-nums">{files.length}件</span>
+            {pick('成果物', 'Artifacts')}{' '}
+            <span className="ml-1 tabular-nums">
+              {pick(`${files.length}件`, `${files.length}`)}
+            </span>
           </legend>
           {files.length > 0 && (
             <ul className="clear-both divide-y divide-line border-y border-line">
@@ -188,12 +200,18 @@ function ArtifactPane({ job, label, choices, onChoose }: ArtifactPaneProps) {
       {!job ? (
         <p className="px-4 py-6 text-sm text-ink-muted">
           {choices?.length
-            ? '比較するジョブを選択してください。'
-            : 'このプロジェクトには比較できる別のジョブがありません。'}
+            ? pick('比較するジョブを選択してください。', 'Choose a job to compare.')
+            : pick(
+                'このプロジェクトには比較できる別のジョブがありません。',
+                'No other jobs in this project are available to compare.',
+              )}
         </p>
       ) : !artifact ? (
         <p className="px-4 py-6 text-sm text-ink-muted">
-          このジョブには公開済みの成果物がありません。
+          {pick(
+            'このジョブには公開済みの成果物がありません。',
+            'This job has no published artifacts.',
+          )}
         </p>
       ) : (
         <>
@@ -206,7 +224,7 @@ function ArtifactPane({ job, label, choices, onChoose }: ArtifactPaneProps) {
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 font-bold text-science-blue hover:underline"
               >
-                別タブで開く <ExternalLink size={13} />
+                {pick('別タブで開く', 'Open in new tab')} <ExternalLink size={13} />
               </a>
             ) : (
               <a
@@ -215,14 +233,14 @@ function ArtifactPane({ job, label, choices, onChoose }: ArtifactPaneProps) {
                 className="inline-flex items-center gap-1 font-bold text-science-blue hover:underline"
               >
                 <Download size={14} />
-                ダウンロード
+                {pick('ダウンロード', 'Download')}
               </a>
             )}
           </div>
           {isHtml && (
             <iframe
               key={artifact.uri}
-              title={`${job.id} の ${artifact.name}`}
+              title={pick(`${job.id} の ${artifact.name}`, `${artifact.name} from ${job.id}`)}
               src={artifact.uri}
               loading="lazy"
               sandbox=""

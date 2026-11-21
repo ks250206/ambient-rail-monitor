@@ -6,6 +6,8 @@ import { TemplatePicker, TemplateExport } from './Templates.tsx';
 import type { WorkflowTemplate } from '../../shared/templates.ts';
 import type { ProjectSpec } from '../../shared/types.ts';
 import { jsonRequest, queryClient, request } from '../api.ts';
+import { useI18n } from '../i18n.ts';
+import { confirmDialog } from './DialogHost.tsx';
 
 interface ProjectNavigationProps {
   onSelect: (id: string) => void;
@@ -49,10 +51,11 @@ function ProjectFields({
   value: ProjectInfo;
   onChange: (patch: Partial<ProjectInfo>) => void;
 }) {
+  const { pick } = useI18n();
   return (
     <>
       <label className="wf-wide">
-        プロジェクト名
+        {pick('プロジェクト名', 'Project name')}
         <input
           required
           maxLength={120}
@@ -61,7 +64,7 @@ function ProjectFields({
         />
       </label>
       <label className="wf-wide">
-        説明
+        {pick('説明', 'Description')}
         <textarea
           rows={5}
           maxLength={2000}
@@ -78,6 +81,7 @@ export function ProjectCreate({
   onCancel,
   showToast,
 }: ProjectNavigationProps & { onCancel: () => void }) {
+  const { pick } = useI18n();
   const [draft, setDraft] = useState(newProject);
   const [template, setTemplate] = useState<WorkflowTemplate | null>(null);
   const [templateBlocked, setTemplateBlocked] = useState(false);
@@ -100,12 +104,18 @@ export function ProjectCreate({
     create.mutate(undefined, {
       onSuccess: ({ project }) => {
         onSelect(project.id);
-        showToast(`「${project.name}」を作成しました。`);
+        showToast(
+          pick(`「${project.name}」を作成しました。`, `Created project "${project.name}".`),
+        );
       },
     });
   }
   return (
-    <form onSubmit={submit} aria-label="新規プロジェクト" className="max-w-3xl">
+    <form
+      onSubmit={submit}
+      aria-label={pick('新規プロジェクト', 'New project')}
+      className="max-w-3xl"
+    >
       <TemplatePicker
         onBlocked={setTemplateBlocked}
         onChange={(next) => {
@@ -124,7 +134,7 @@ export function ProjectCreate({
           onChange={(patch) => setDraft((prev) => ({ ...prev, ...patch }))}
         />
         <label className="wf-wide">
-          ディレクトリ ID（任意）
+          {pick('ディレクトリ ID（任意）', 'Directory ID (optional)')}
           <input
             maxLength={48}
             value={draft.id}
@@ -144,7 +154,7 @@ export function ProjectCreate({
           disabled={create.isPending || templateBlocked || !draft.name.trim()}
         >
           <Save size={15} />
-          作成
+          {pick('作成', 'Create')}
         </button>
         <button
           type="button"
@@ -152,7 +162,7 @@ export function ProjectCreate({
           disabled={create.isPending}
           onClick={onCancel}
         >
-          キャンセル
+          {pick('キャンセル', 'Cancel')}
         </button>
       </div>
     </form>
@@ -165,6 +175,7 @@ export function ProjectManagement({
   onDeleted,
   showToast,
 }: ProjectManagementProps) {
+  const { pick } = useI18n();
   const [edits, setEdits] = useState<Partial<ProjectInfo>>({});
   const current = { ...project, ...edits };
   const projectUrl = `/api/projects/${encodeURIComponent(project.id)}`;
@@ -194,16 +205,23 @@ export function ProjectManagement({
     save.mutate(undefined, {
       onSuccess: ({ project: saved }) => {
         setEdits({});
-        showToast(`「${saved.name}」を保存しました。`);
+        showToast(pick(`「${saved.name}」を保存しました。`, `Saved "${saved.name}".`));
       },
     });
   }
-  function deleteProject() {
+  async function deleteProject() {
     if (pending || projects.length <= 1) return;
-    if (
-      !window.confirm(`「${project.name}」を一覧から削除しますか？ 保存済みのファイルは残ります。`)
-    )
-      return;
+    const ok = await confirmDialog({
+      title: pick('プロジェクトを削除', 'Delete project'),
+      message: pick(
+        `「${project.name}」を一覧から削除しますか？ 保存済みのファイルは残ります。`,
+        `Remove "${project.name}" from the project list? Existing files on disk will be kept.`,
+      ),
+      confirmLabel: pick('削除する', 'Delete'),
+      cancelLabel: pick('キャンセル', 'Cancel'),
+      tone: 'danger',
+    });
+    if (!ok) return;
     save.reset();
     remove.mutate(undefined, {
       onSuccess: onDeleted,
@@ -213,7 +231,7 @@ export function ProjectManagement({
   return (
     <section aria-labelledby="project-info-heading">
       <div className="wf-project">
-        <h2 id="project-info-heading">プロジェクト情報</h2>
+        <h2 id="project-info-heading">{pick('プロジェクト情報', 'Project details')}</h2>
       </div>
       <div className="grid min-w-0 items-start gap-8 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <form onSubmit={submit} aria-labelledby="project-info-heading" className="min-w-0">
@@ -234,20 +252,22 @@ export function ProjectManagement({
             disabled={pending || !current.name.trim() || !changed}
           >
             <Save size={15} />
-            変更を保存
+            {pick('変更を保存', 'Save changes')}
           </button>
         </form>
         <aside
-          aria-label="保存先"
+          aria-label={pick('保存先', 'Storage paths')}
           className="min-w-0 border-t border-line pt-4 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-6"
         >
-          <h3 className="mb-4 text-sm font-bold text-science-blue">保存先</h3>
+          <h3 className="mb-4 text-sm font-bold text-science-blue">
+            {pick('保存先', 'Storage paths')}
+          </h3>
           <dl className="grid gap-3 text-sm">
             {(
               [
-                ['プロジェクト ID', project.id],
-                ['入力フォルダ', project.inboxDir],
-                ['成果物フォルダ', project.artifactsDir],
+                [pick('プロジェクト ID', 'Project ID'), project.id],
+                [pick('入力フォルダ', 'Inbox directory'), project.inboxDir],
+                [pick('成果物フォルダ', 'Artifacts directory'), project.artifactsDir],
               ] as const
             ).map(([label, value]) => (
               <div key={label}>
@@ -261,10 +281,10 @@ export function ProjectManagement({
               type="button"
               className="wf-delete mt-5"
               disabled={pending}
-              onClick={deleteProject}
+              onClick={() => void deleteProject()}
             >
               <Trash2 size={14} />
-              プロジェクトを削除
+              {pick('プロジェクトを削除', 'Delete project')}
             </button>
           )}
         </aside>

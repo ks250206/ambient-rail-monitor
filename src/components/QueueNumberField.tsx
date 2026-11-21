@@ -1,5 +1,6 @@
 import { useId } from 'react';
 import { QUEUE_LIMITS, queueRange, validQueueValue, type QueueField } from '../../shared/queue.ts';
+import { useI18n } from '../i18n.ts';
 import { NumberValue } from './NumberValue.tsx';
 
 export function QueueNumberField({
@@ -13,24 +14,26 @@ export function QueueNumberField({
   value: number;
   onChange: (next: number) => void;
 }) {
+  const { locale, pick } = useI18n();
   const id = useId();
   const invalid = !validQueueValue(field, value);
-  const range = queueRange(field);
+  const { min, max } = QUEUE_LIMITS[field];
+  const range = locale === 'en' ? `${min}–${max}` : queueRange(field);
   return (
     <div>
       <label>
-        {label}（{range}）
+        {locale === 'en' ? `${label} (${range})` : `${label}（${range}）`}
         <NumberValue
           value={value}
           integer
-          inputMode={QUEUE_LIMITS[field].min < 0 ? 'text' : 'numeric'}
+          inputMode={min < 0 ? 'text' : 'numeric'}
           onChange={onChange}
           errorId={invalid ? id : undefined}
         />
       </label>
       {invalid && (
         <p id={id} className="condition-error">
-          {range}の整数を入力してください。
+          {pick(`${range}の整数を入力してください。`, `Enter an integer between ${range}.`)}
         </p>
       )}
     </div>
