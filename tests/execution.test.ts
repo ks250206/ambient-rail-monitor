@@ -123,7 +123,7 @@ else {
       await f.json('/api/projects', {
         id: 'timeout',
         name: 'Timeout',
-        execution: { maxRetries: 0, attemptTimeoutMs: 250 },
+        execution: { maxRetries: 0, attemptTimeoutMs: 600 },
         stages,
       });
       const { job } = await f.json<{ job: WorkflowJob }>('/api/demo', { projectId: 'timeout' });

@@ -7,10 +7,10 @@ import { createInterface } from 'node:readline';
 import { expect } from 'vite-plus/test';
 import type { AppStateResponse, WorkflowJob } from '../shared/types.ts';
 
-export async function workflowFixture(existingHome?: string) {
+export async function workflowFixture(existingHome?: string, env: Record<string, string> = {}) {
   const home = existingHome ?? mkdtempSync(path.join(os.tmpdir(), 'railflow-policy-'));
   const server = spawn(process.execPath, ['server.ts'], {
-    env: { ...process.env, RAILFLOW_HOME: home, HOST: '127.0.0.1', PORT: '0' },
+    env: { ...process.env, RAILFLOW_HOME: home, HOST: '127.0.0.1', PORT: '0', ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let diagnostic = '';
@@ -64,6 +64,7 @@ export async function workflowFixture(existingHome?: string) {
     const exit = once(child, 'exit');
     let closed = false;
     const handle = {
+      kill: () => child.kill('SIGKILL'),
       close: async () => {
         if (closed) return;
         closed = true;

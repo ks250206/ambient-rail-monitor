@@ -14,15 +14,16 @@ export function MetricsGrid({ jobs, loading }: MetricsGridProps) {
     : 0;
 
   const activeCount = jobs.filter((job) => job.status === 'running').length;
-  const attentionCount = jobs.filter(
-    (job) => job.status === 'review' || job.status === 'failed',
-  ).length;
+  const reviewCount = jobs.filter((job) => job.status === 'review').length;
 
   const metrics = [
     { label: '総ジョブ数', value: jobs.length },
     { label: '実行中', value: activeCount },
-    { label: '要対応（レビュー・失敗）', value: attentionCount },
-    { label: '平均実行時間', value: completed.length ? axisTime(avgDurationMs / 1000) : '—' },
+    { label: '要承認', value: reviewCount },
+    {
+      label: '成功したジョブの平均実行時間',
+      value: completed.length ? axisTime(avgDurationMs / 1000) : '—',
+    },
   ];
 
   return (

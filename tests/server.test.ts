@@ -187,7 +187,8 @@ describe('API integration', () => {
       expect(claim.body.job?.id).toBe(id);
       expect(claim.body.project?.id).toBe('xrd-lab');
       expect(claim.body.paths?.input).toContain(path.join('data', 'inputs', id));
-      expect(claim.body.paths?.artifacts).toContain(path.join('projects', 'xrd-lab', 'artifacts'));
+      expect(claim.body.paths?.artifacts).toContain('.publications');
+      let leaseToken = claim.body.lease!.token;
 
       expect((await fetch(api + '/api/projects/xrd-lab', { method: 'DELETE' })).status).toBe(409);
       const second = await post<ClaimResponse>('/api/jobs/claim', {
@@ -206,6 +207,7 @@ describe('API integration', () => {
         if (type === 'stage.started' && stage) attempts[stage] = (attempts[stage] ?? 0) + 1;
         const response = await post(`/api/jobs/${id}/events`, {
           type,
+          leaseToken,
           stage,
           message,
           attempt: stage ? attempts[stage] : undefined,
@@ -250,16 +252,18 @@ describe('API integration', () => {
       expect(approval.status).toBe(200);
 
       const resumed = await post<ClaimResponse>('/api/jobs/claim', { agent: 'demo' });
+      leaseToken = resumed.body.lease!.token;
       expect(resumed.body.job?.id).toBe(id);
 
       await send('stage.started', 'report');
       await send('stage.executed', 'report');
       await send('stage.succeeded', 'report', 'report: 完了');
-      const out = path.join(temp, 'projects', 'xrd-lab', 'artifacts', id, 'report 100%.html');
+      const out = path.join(resumed.body.paths!.artifacts, 'report 100%.html');
       mkdirSync(path.dirname(out), { recursive: true });
       writeFileSync(out, '<h1>Hello</h1>');
 
       const artifact = await post(`/api/jobs/${id}/events`, {
+        leaseToken,
         type: 'artifact.created',
         stage: 'report',
         artifact: { name: 'report 100%.html' },

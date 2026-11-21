@@ -20,6 +20,7 @@ import type { ConditionResult } from '../../shared/conditions.ts';
 import { jsonRequest, request, useProjectJobs } from '../api.ts';
 import { ConditionBuilder, ConditionEvidence } from './ConditionBuilder.tsx';
 import { ExecutionPolicyFields } from './ExecutionPolicyFields.tsx';
+import { QueueNumberField } from './QueueNumberField.tsx';
 import { NumberValue } from './NumberValue.tsx';
 import { clockDate } from '../utils/workflow.ts';
 
@@ -33,6 +34,7 @@ export type WorkflowUpdatePayload = Pick<
   | 'jobTimeoutMs'
   | 'finalGate'
   | 'prompt'
+  | 'queue'
 >;
 
 interface WorkflowSpecSectionProps {
@@ -403,6 +405,24 @@ export function WorkflowSpecSection({
           <summary>
             実行の既定値・ジョブ全体の上限 <ChevronDown size={17} />
           </summary>
+          <div className="wf-fields">
+            <QueueNumberField
+              field="maxConcurrentJobs"
+              label="このプロジェクトの同時ジョブ数"
+              value={automation.queue!.maxConcurrentJobs}
+              onChange={(maxConcurrentJobs) =>
+                setAutomation({ ...automation, queue: { ...automation.queue!, maxConcurrentJobs } })
+              }
+            />
+            <QueueNumberField
+              field="priority"
+              label="新規ジョブの優先度"
+              value={automation.queue!.priority}
+              onChange={(priority) =>
+                setAutomation({ ...automation, queue: { ...automation.queue!, priority } })
+              }
+            />
+          </div>
           <ExecutionPolicyFields
             value={automation.execution!}
             onChange={(execution) =>

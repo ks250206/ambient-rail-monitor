@@ -54,11 +54,12 @@ function subscribeStream(notify: () => void) {
   };
   source.onmessage = (event) => {
     const change = JSON.parse(event.data);
-    if (!change.sequence && !change.inputsUpdated)
+    if (!change.sequence && !change.inputsUpdated && !change.queueUpdated)
       void queryClient.invalidateQueries({ queryKey: ['projects'] });
-    // A removed project may have been the one currently selected.
+    const targetProject = change.projectId ?? change.deletedProjectId;
+    // Queue settings and lease claims/releases (queueUpdated) affect every monitor view.
     void queryClient.invalidateQueries({
-      queryKey: ['monitor', change.projectId ?? change.deletedProjectId],
+      queryKey: change.queueUpdated || !targetProject ? ['monitor'] : ['monitor', targetProject],
     });
   };
   source.onerror = () => {

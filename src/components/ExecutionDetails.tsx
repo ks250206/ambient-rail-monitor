@@ -62,7 +62,7 @@ export function StageExecutionDetails({
     <div className="stage-execution-details">
       <div className="execution-facts">
         <span>
-          試行 {stage.attempts} / {policy.maxRetries + 1} 回（追加リトライ {policy.maxRetries} 回）
+          試行 {stage.attempts} 回 · リトライ {stage.retryCount ?? 0} / {policy.maxRetries} 回
         </span>
         <span>1回の上限 {budget(policy.attemptTimeoutMs)}</span>
         <span>工程の上限 {budget(policy.stageTimeoutMs)}</span>
@@ -123,9 +123,10 @@ export function StageExecutionDetails({
           <ConditionEvidence result={gate.result} />
         </div>
       ))}
-      {stage.status === 'review' && stage.workspace && stage.reviewSequence !== undefined && (
-        <ReviewOutputs job={job} stage={stage} />
-      )}
+      {job.status === 'review' &&
+        stage.status === 'review' &&
+        stage.workspace &&
+        stage.reviewSequence !== undefined && <ReviewOutputs job={job} stage={stage} />}
       {config?.prompt && (
         <details>
           <summary>この試行で送信したプロンプト</summary>

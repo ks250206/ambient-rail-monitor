@@ -1,3 +1,4 @@
+import { QueuePanel } from './components/QueuePanel.tsx';
 import { useMutation } from '@tanstack/react-query';
 import { RefreshCw, Search } from 'lucide-react';
 import { useRef, useState } from 'react';
@@ -20,6 +21,7 @@ export function JobsPage({ project }: { project: ProjectSpec }) {
   const matchingJobs = normalizedQuery
     ? jobs.filter((job) => jobMatchesSearch(job, normalizedQuery))
     : jobs;
+  const showBoard = Boolean(query.data) && (!normalizedQuery || matchingJobs.length > 0);
   const searchRef = useRef<HTMLInputElement>(null);
 
   function updateSearch(value: string) {
@@ -53,11 +55,22 @@ export function JobsPage({ project }: { project: ProjectSpec }) {
           <h1 className="text-3xl font-bold tracking-tight text-science-blue sm:text-4xl">
             ジョブ一覧
           </h1>
-          <button type="button" onClick={() => void query.refetch()} className="wf-secondary">
-            <RefreshCw size={15} aria-hidden="true" />
-            更新
-          </button>
+          <div className="flex flex-wrap items-center gap-4">
+            {showBoard && (
+              <a
+                href="#column-review"
+                className="text-sm font-semibold text-science-blue underline"
+              >
+                要承認の列へ
+              </a>
+            )}
+            <button type="button" onClick={() => void query.refetch()} className="wf-secondary">
+              <RefreshCw size={15} aria-hidden="true" />
+              更新
+            </button>
+          </div>
         </div>
+        {query.data?.queue && <QueuePanel queue={query.data.queue} />}
         <DatasetUpload
           projectId={project.id}
           onCreated={(job) => window.location.assign(monitorJobHref(project.id, job.id))}
@@ -169,9 +182,7 @@ export function JobsPage({ project }: { project: ProjectSpec }) {
             </span>
           )}
         </p>
-        {query.data && (!normalizedQuery || matchingJobs.length > 0) && (
-          <KanbanSection jobs={matchingJobs} />
-        )}
+        {showBoard && <KanbanSection jobs={matchingJobs} />}
       </div>
     </main>
   );

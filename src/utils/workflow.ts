@@ -7,15 +7,26 @@ import type {
   WorkflowJob,
 } from '../../shared/types.ts';
 
-export type NormalizedActionStatus = 'queued' | 'running' | 'review' | 'done' | 'failed';
+export type NormalizedActionStatus =
+  | 'queued'
+  | 'running'
+  | 'review'
+  | 'done'
+  | 'failed'
+  | 'paused'
+  | 'cancelled';
 export type LogEventLevel = 'normal' | 'success' | 'warning' | 'error';
 
 export const STATUS_LABELS: Record<JobStatus, string> = {
-  queued: 'Queued',
-  running: 'Running',
-  review: 'Needs review',
-  done: 'Completed',
-  failed: 'Failed',
+  queued: '待機中',
+  running: '実行中',
+  review: '要承認',
+  done: '成功',
+  failed: '失敗',
+  pausing: '一時停止処理中',
+  paused: '一時停止中',
+  cancelling: '中止処理中',
+  cancelled: '中止',
 };
 
 export const ACTION_STATUS_LABELS: Record<NormalizedActionStatus, string> = {
@@ -24,6 +35,8 @@ export const ACTION_STATUS_LABELS: Record<NormalizedActionStatus, string> = {
   review: 'Review needed',
   done: 'Success',
   failed: 'Failed',
+  paused: 'Paused',
+  cancelled: 'Cancelled',
 };
 
 export const STAGE_STATUS_LABELS: Record<StageStatus, string> = {
@@ -39,13 +52,29 @@ export interface KanbanColumnDef {
   id: 'queued' | 'running' | 'review' | 'done';
   label: string;
   hint: string;
+  statuses: JobStatus[];
 }
 
 export const KANBAN_COLUMNS: KanbanColumnDef[] = [
-  { id: 'queued', label: 'Queued', hint: '待機中のジョブはありません' },
-  { id: 'running', label: 'Running', hint: '実行中のジョブはありません' },
-  { id: 'review', label: 'Review / blocked', hint: '要対応のジョブはありません' },
-  { id: 'done', label: 'Completed', hint: '完了したジョブはありません' },
+  {
+    id: 'queued',
+    label: '待機・一時停止',
+    hint: '待機・一時停止中のジョブはありません',
+    statuses: ['queued', 'paused'],
+  },
+  {
+    id: 'running',
+    label: '実行中',
+    hint: '実行中のジョブはありません',
+    statuses: ['running', 'pausing', 'cancelling'],
+  },
+  { id: 'review', label: '要承認', hint: '承認待ちのジョブはありません', statuses: ['review'] },
+  {
+    id: 'done',
+    label: '終了',
+    hint: '終了したジョブはありません',
+    statuses: ['done', 'failed', 'cancelled'],
+  },
 ];
 
 export function dateMs(value: string | null | undefined): number {
@@ -119,6 +148,8 @@ export function actionDuration(
 }
 
 export function normalizeActionStatus(status: JobStatus | StageStatus): NormalizedActionStatus {
+  if (status === 'paused' || status === 'pausing') return 'paused';
+  if (status === 'cancelled' || status === 'cancelling') return 'cancelled';
   if (status === 'success' || status === 'done') return 'done';
   if (status === 'pending' || status === 'queued') return 'queued';
   if (status === 'retry' || status === 'running') return 'running';
@@ -168,7 +199,8 @@ export function getSpans(job: WorkflowJob): StageSpan[] {
     if (
       (event.type === 'stage.succeeded' ||
         event.type === 'stage.failed' ||
-        event.type === 'review.required') &&
+        event.type === 'review.required' ||
+        event.type === 'stage.interrupted') &&
       event.stage
     ) {
       const span = [...spans]
@@ -176,7 +208,10 @@ export function getSpans(job: WorkflowJob): StageSpan[] {
         .find((item) => item.stage === event.stage && item.end === null);
       if (span) {
         span.end = dateMs(event.at);
-        span.status = event.type === 'stage.failed' ? 'failed' : 'success';
+        span.status =
+          event.type === 'stage.failed' || event.type === 'stage.interrupted'
+            ? 'failed'
+            : 'success';
       }
     }
     if (event.type === 'agent.event' && event.stage) {
@@ -220,7 +255,8 @@ export function groupStageAttempts(events: WorkflowEvent[]): AttemptGroup[] {
     if (
       event.type === 'stage.succeeded' ||
       event.type === 'stage.failed' ||
-      event.type === 'review.required'
+      event.type === 'review.required' ||
+      event.type === 'stage.interrupted'
     ) {
       current.end ??= event.at;
     }

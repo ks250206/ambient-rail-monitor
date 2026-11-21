@@ -15,7 +15,6 @@ import { useMemo, useState } from 'react';
 
 import type { ProjectSpec, StageKey, WorkflowJob } from '../../shared/types.ts';
 import {
-  ACTION_STATUS_LABELS,
   actionDuration,
   actionEventLevel,
   actionMatchesSearch,
@@ -26,11 +25,12 @@ import {
   elapsed,
   getSpans,
   groupStageAttempts,
-  normalizeActionStatus,
   pageHref,
   STAGE_STATUS_LABELS,
+  STATUS_LABELS,
 } from '../utils/workflow.ts';
 import { DatasetDetails, StageExecutionDetails } from './ExecutionDetails.tsx';
+import { JobControls } from './JobControls.tsx';
 import { ConditionEvidence } from './ConditionBuilder.tsx';
 import { StatusIcon, StatusPill } from './StatusBadge.tsx';
 
@@ -182,7 +182,7 @@ export function ActionsSection({
                     <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-ink-muted">
                       <StatusIcon status={selectedJob.status} size="sm" />
                       <span className="font-semibold text-ink">
-                        {ACTION_STATUS_LABELS[normalizeActionStatus(selectedJob.status)]}
+                        {STATUS_LABELS[selectedJob.status]}
                       </span>
                       <span>·</span>
                       <span>{selectedJob.demo ? 'Manual demo' : 'File detected'}</span>
@@ -225,6 +225,7 @@ export function ActionsSection({
                   </div>
                 </div>
 
+                <JobControls key={selectedJob.id} job={selectedJob} />
                 <DatasetDetails job={selectedJob} />
                 {/* Compact Run Facts */}
                 <div className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-3.5 sm:grid-cols-4">

@@ -6,6 +6,7 @@ import {
   dateMs,
   elapsed,
   KANBAN_COLUMNS,
+  STATUS_LABELS,
   monitorJobHref,
   type KanbanColumnDef,
 } from '../utils/workflow.ts';
@@ -24,11 +25,7 @@ export function KanbanSection({ jobs }: { jobs: WorkflowJob[] }) {
         <JobColumn
           key={column.id}
           column={column}
-          jobs={jobs.filter((job) =>
-            column.id === 'review'
-              ? job.status === 'review' || job.status === 'failed'
-              : job.status === column.id,
-          )}
+          jobs={jobs.filter((job) => column.statuses.includes(job.status))}
           nowMs={nowMs}
         />
       ))}
@@ -52,15 +49,20 @@ function JobColumn({
       aria-labelledby={`column-${column.id}`}
     >
       <div className="mb-3 flex items-baseline justify-between gap-2">
-        <h2
-          id={`column-${column.id}`}
-          lang="en"
-          className="font-en text-base font-semibold text-ink"
-        >
+        <h2 id={`column-${column.id}`} tabIndex={-1} className="text-base font-semibold text-ink">
           {column.label}
         </h2>
         <span className="font-en text-sm text-ink-muted tabular-nums">{jobs.length}</span>
       </div>
+      {column.id === 'done' && jobs.length > 0 && (
+        <p className="mb-3 flex flex-wrap gap-x-3 text-sm text-ink-muted">
+          {column.statuses.map((status) => (
+            <span key={status}>
+              {STATUS_LABELS[status]} {jobs.filter((job) => job.status === status).length}件
+            </span>
+          ))}
+        </p>
+      )}
       {jobs.length === 0 ? (
         <p className="py-3 text-sm text-ink-muted">{column.hint}</p>
       ) : (
@@ -97,14 +99,9 @@ function JobCard({ job, nowMs }: { job: WorkflowJob; nowMs: number }) {
       stage.status === 'failed' ||
       stage.status === 'retry',
   );
-  const tag =
-    job.status === 'running'
-      ? activeStage?.short || 'Running'
-      : job.status === 'review'
-        ? 'Approval required'
-        : job.status === 'failed'
-          ? 'Failed'
-          : `${job.stages.length}-stage pipeline`;
+  let tag = STATUS_LABELS[job.status];
+  if (job.status === 'running' && activeStage) tag += ` · ${activeStage.short}`;
+  if (job.status === 'queued' || job.status === 'paused') tag += ` · 優先度 ${job.priority ?? 0}`;
   const start = job.startedAt || job.createdAt;
   return (
     <a
