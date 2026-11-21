@@ -1,5 +1,5 @@
 import type { WorkflowJob } from '../../shared/types.ts';
-import { axisTime, dateMs } from '../utils/workflow.ts';
+import { axisTime, dateMs, needsApproval } from '../utils/workflow.ts';
 
 interface MetricsGridProps {
   jobs: WorkflowJob[];
@@ -14,7 +14,7 @@ export function MetricsGrid({ jobs, loading }: MetricsGridProps) {
     : 0;
 
   const activeCount = jobs.filter((job) => job.status === 'running').length;
-  const reviewCount = jobs.filter((job) => job.status === 'review').length;
+  const reviewCount = jobs.filter(needsApproval).length;
 
   const metrics = [
     { label: '総ジョブ数', value: jobs.length },

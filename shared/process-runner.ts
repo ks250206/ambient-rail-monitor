@@ -33,6 +33,8 @@ export async function runCommand(
     timeoutMs: number;
     timeoutKind: FailureKind;
     signal?: AbortSignal;
+    env?: NodeJS.ProcessEnv;
+    replaceEnv?: boolean;
     onLine?: (line: string, signal: AbortSignal) => Promise<void> | void;
     graceMs?: number;
   },
@@ -45,7 +47,8 @@ export async function runCommand(
     {
       cwd: options.cwd,
       env: {
-        ...process.env,
+        ...(options.replaceEnv ? {} : process.env),
+        ...options.env,
         RAILFLOW_SUPERVISOR_GRACE_MS: String(options.graceMs ?? DEFAULT_PROCESS_GRACE_MS),
       },
       stdio: ['pipe', 'pipe', 'pipe'],

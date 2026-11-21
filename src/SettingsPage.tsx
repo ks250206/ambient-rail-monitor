@@ -166,7 +166,7 @@ function WorkflowEditor({
     mutationFn: (payload: WorkflowUpdatePayload & { expectedUpdatedAt: string }) =>
       request<ProjectResponse>(
         `/api/projects/${encodeURIComponent(project.id)}`,
-        jsonRequest('PUT', payload),
+        jsonRequest('PUT', { ...payload, graph: payload.graph ?? null }),
       ),
     onSuccess: ({ projects }) => {
       queryClient.setQueryData(['projects'], { projects });

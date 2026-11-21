@@ -1,5 +1,4 @@
 import {
-  Check,
   ChevronDown,
   ChevronRight,
   Download,
@@ -11,9 +10,10 @@ import {
   SlidersHorizontal,
   Terminal,
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { flushSync } from 'react-dom';
+import { useMemo, useRef, useState } from 'react';
 
-import type { ProjectSpec, StageKey, WorkflowJob } from '../../shared/types.ts';
+import type { ProjectSpec, StageKey, WorkflowJob, JobStage } from '../../shared/types.ts';
 import {
   actionDuration,
   actionEventLevel,
@@ -30,6 +30,8 @@ import {
   STATUS_LABELS,
 } from '../utils/workflow.ts';
 import { DatasetDetails, StageExecutionDetails } from './ExecutionDetails.tsx';
+import { WorkflowGraph } from './WorkflowGraph.tsx';
+import { RerunControls } from './RerunControls.tsx';
 import { JobControls } from './JobControls.tsx';
 import { ConditionEvidence } from './ConditionBuilder.tsx';
 import { StatusIcon, StatusPill } from './StatusBadge.tsx';
@@ -45,7 +47,7 @@ interface ActionsSectionProps {
   approving?: boolean;
   onSelectStage: (stage: StageKey) => void;
   onShowAllLogs: () => void;
-  onApproveReview: (jobId: string) => void;
+  onApproveReview: (jobId: string, stage: JobStage) => void;
 }
 
 export function ActionsSection({
@@ -139,9 +141,45 @@ export function ActionsSection({
   const customStageInstruction = executedConfig?.instruction ?? '';
   const effectiveStageLlm = executedConfig?.llm;
 
-  const reviewStage = selectedJob?.stages.find((stage) => stage.status === 'review');
+  const reviewStage =
+    activeStage?.status === 'review'
+      ? activeStage
+      : selectedJob?.stages.find((stage) => stage.status === 'review');
   const activeTab: StepDetailTab = showAllLogs ? 'logs' : detailTab;
 
+  const detailHeading = useRef<HTMLHeadingElement>(null);
+  function selectTask(key: string) {
+    flushSync(() => {
+      onSelectStage(key);
+      setDetailTab('summary');
+    });
+    detailHeading.current?.focus();
+  }
+  const stageNumbers = useMemo(
+    () => new Map(selectedJob?.stages.map((task, i) => [task.key, i + 1])),
+    [selectedJob?.stages],
+  );
+  const attemptCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const span of spans) counts.set(span.stage, (counts.get(span.stage) ?? 0) + 1);
+    return counts;
+  }, [spans]);
+  const taskGroups = useMemo(() => {
+    const groups = new Map<string, JobStage[]>();
+    for (const task of selectedJob?.stages ?? []) {
+      const key = task.stageKey ?? task.key;
+      const group = groups.get(key);
+      if (group) group.push(task);
+      else groups.set(key, [task]);
+    }
+    return [...groups].map(([key, tasks]) => ({
+      key,
+      tasks,
+      label:
+        selectedJob?.workflow?.project.stages.find((spec) => spec.key === key)?.label ??
+        tasks[0].label,
+    }));
+  }, [selectedJob]);
   return (
     <section
       id="actions"
@@ -192,19 +230,13 @@ export function ActionsSection({
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    {selectedJob.status === 'review' && (
+                    {reviewStage && ['running', 'review'].includes(selectedJob.status) && (
                       <button
                         type="button"
-                        disabled={approving}
-                        onClick={() => onApproveReview(selectedJob.id)}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-science-blue px-3 py-1.5 text-xs font-bold text-white shadow-2xs transition-colors hover:bg-navy-800 disabled:cursor-not-allowed disabled:opacity-60"
+                        onClick={() => selectTask(reviewStage.key)}
+                        className="wf-primary"
                       >
-                        <Check className="h-3.5 w-3.5" />
-                        {approving
-                          ? '承認中…'
-                          : reviewStage?.failureKind
-                            ? '失敗を確認して例外承認'
-                            : `${reviewStage?.label ?? 'レビュー'}を承認して再開`}
+                        「{reviewStage.label}」の出力を確認
                       </button>
                     )}
                     {selectedJob.artifacts.length > 0 && (
@@ -227,6 +259,16 @@ export function ActionsSection({
 
                 <JobControls key={selectedJob.id} job={selectedJob} />
                 <DatasetDetails job={selectedJob} />
+                <WorkflowGraph
+                  project={selectedJob.workflow?.project ?? project}
+                  job={selectedJob}
+                  onSelect={selectTask}
+                />
+                <RerunControls
+                  key={`${selectedJob.id}-${activeStage?.key ?? selectedStage}`}
+                  job={selectedJob}
+                  task={activeStage?.key ?? selectedStage}
+                />
                 {/* Compact Run Facts */}
                 <div className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-3.5 sm:grid-cols-4">
                   <div>
@@ -315,61 +357,97 @@ export function ActionsSection({
                 </div>
               ) : (
                 <div className="flex-1 divide-y divide-line/60">
-                  {selectedJob.stages.map((stage, index) => {
-                    const retryCount = spans.filter((span) => span.stage === stage.key).length;
-                    const active = selectedStage === stage.key && !showAllLogs;
-                    const previewSummary = stage.summary || null;
+                  <label className="block p-3 @3xl:hidden">
+                    表示するタスク
+                    <select
+                      className="w-full"
+                      value={showAllLogs ? '' : selectedStage}
+                      onChange={(e) => selectTask(e.target.value)}
+                    >
+                      <option value="" disabled>
+                        タスクを選択…
+                      </option>
+                      {taskGroups.map((group) => (
+                        <optgroup key={group.key} label={group.label}>
+                          {group.tasks.map((task) => (
+                            <option key={task.key} value={task.key}>
+                              {task.status === 'review' ? '要承認 · ' : ''}
+                              {task.item?.path ?? task.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="hidden @3xl:block">
+                    {taskGroups.map((group) => {
+                      const rows = group.tasks.map((stage) => {
+                        const retryCount = attemptCounts.get(stage.key) ?? 0;
+                        const active = selectedStage === stage.key && !showAllLogs;
+                        const previewSummary = stage.summary || null;
 
-                    return (
-                      <button
-                        key={stage.key}
-                        type="button"
-                        aria-pressed={active}
-                        onClick={() => onSelectStage(stage.key)}
-                        className={`flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors ${
-                          active
-                            ? 'border-l-[3px] border-l-science-blue bg-white pl-2.5'
-                            : 'hover:bg-bg-1/70'
-                        }`}
-                      >
-                        <span className="pt-0.5">
-                          <StatusIcon status={stage.status} size="sm" />
-                        </span>
-                        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                          <span className="flex items-baseline justify-between gap-2">
-                            <strong className="font-en text-xs font-bold text-ink">
-                              <span className="mr-1 font-mono text-[11px] font-semibold text-eyebrow">
-                                {String(index + 1).padStart(2, '0')}
-                              </span>
-                              {stage.short}
-                            </strong>
-                            <span className="shrink-0 font-mono text-[11px] text-ink-muted tabular-nums">
-                              {stage.startedAt
-                                ? actionDuration(stage.startedAt, stage.endedAt, nowMs)
-                                : '—'}
+                        return (
+                          <button
+                            key={stage.key}
+                            type="button"
+                            aria-pressed={active}
+                            onClick={() => selectTask(stage.key)}
+                            className={`flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors ${
+                              active
+                                ? 'border-l-[3px] border-l-science-blue bg-white pl-2.5'
+                                : 'hover:bg-bg-1/70'
+                            }`}
+                          >
+                            <span className="pt-0.5">
+                              <StatusIcon status={stage.status} size="sm" />
                             </span>
-                          </span>
-                          <span className="flex items-center gap-1.5 text-xs text-ink-muted">
-                            <span className="truncate">{stage.label}</span>
-                            {retryCount > 1 && (
-                              <span
-                                className="inline-flex shrink-0 items-center gap-0.5 rounded bg-st-orange-bg px-1 py-0.5 font-mono text-[10px] font-semibold text-st-orange-dark"
-                                title={`${retryCount} attempts`}
-                              >
-                                <RotateCw className="h-2.5 w-2.5" />
-                                {retryCount}
+                            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                              <span className="flex items-baseline justify-between gap-2">
+                                <strong className="font-en text-xs font-bold text-ink">
+                                  <span className="mr-1 font-mono text-[11px] font-semibold text-eyebrow">
+                                    {String(stageNumbers.get(stage.key)).padStart(2, '0')}
+                                  </span>
+                                  {stage.short}
+                                </strong>
+                                <span className="shrink-0 font-mono text-[11px] text-ink-muted tabular-nums">
+                                  {stage.startedAt
+                                    ? actionDuration(stage.startedAt, stage.endedAt, nowMs)
+                                    : '—'}
+                                </span>
                               </span>
-                            )}
-                          </span>
-                          {previewSummary && (
-                            <span className="mt-0.5 line-clamp-1 text-[11px] text-ink">
-                              {previewSummary}
+                              <span className="flex items-center gap-1.5 text-xs text-ink-muted">
+                                <span className="truncate">{stage.label}</span>
+                                {retryCount > 1 && (
+                                  <span
+                                    className="inline-flex shrink-0 items-center gap-0.5 rounded bg-st-orange-bg px-1 py-0.5 font-mono text-[10px] font-semibold text-st-orange-dark"
+                                    title={`${retryCount} attempts`}
+                                  >
+                                    <RotateCw className="h-2.5 w-2.5" />
+                                    {retryCount}
+                                  </span>
+                                )}
+                              </span>
+                              {previewSummary && (
+                                <span className="mt-0.5 line-clamp-1 text-[11px] text-ink">
+                                  {previewSummary}
+                                </span>
+                              )}
                             </span>
-                          )}
-                        </span>
-                      </button>
-                    );
-                  })}
+                          </button>
+                        );
+                      });
+                      return group.tasks.some((task) => task.item) ? (
+                        <details key={group.key} className="wf-disclosure">
+                          <summary>
+                            {group.label}（{group.tasks.length}ファイル）
+                          </summary>
+                          {rows}
+                        </details>
+                      ) : (
+                        rows
+                      );
+                    })}
+                  </div>
 
                   <button
                     type="button"
@@ -480,9 +558,13 @@ export function ActionsSection({
                   <div>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
-                        <strong className="text-sm font-bold text-science-blue">
+                        <h3
+                          ref={detailHeading}
+                          tabIndex={-1}
+                          className="text-sm font-bold text-science-blue"
+                        >
                           {activeStage.label}
-                        </strong>
+                        </h3>
                         <span className="font-mono text-xs text-ink-muted">
                           {activeStage.short} / {activeStage.key}
                         </span>
@@ -556,7 +638,13 @@ export function ActionsSection({
                       </div>
                     </dl>
 
-                    <StageExecutionDetails job={selectedJob} stage={activeStage} nowMs={nowMs} />
+                    <StageExecutionDetails
+                      job={selectedJob}
+                      stage={activeStage}
+                      nowMs={nowMs}
+                      approving={approving}
+                      onApprove={() => onApproveReview(selectedJob.id, activeStage)}
+                    />
                     {/* Custom instruction preview */}
                     {customStageInstruction && (
                       <div className="mt-3 flex items-start justify-between gap-3 rounded-md border border-dashed border-science-sub bg-bg-2/40 px-3 py-2.5">
@@ -576,22 +664,6 @@ export function ActionsSection({
                           定義ページで編集
                         </a>
                       </div>
-                    )}
-
-                    {selectedJob.status === 'review' && activeStage.status === 'review' && (
-                      <button
-                        type="button"
-                        disabled={approving}
-                        onClick={() => onApproveReview(selectedJob.id)}
-                        className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-science-blue px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-navy-800 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        <Check className="h-4 w-4" />
-                        {approving
-                          ? '承認中…'
-                          : activeStage.failureKind
-                            ? 'この試行の出力を例外承認して続行'
-                            : 'この工程を承認して続行'}
-                      </button>
                     )}
                   </div>
 

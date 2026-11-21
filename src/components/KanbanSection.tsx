@@ -8,6 +8,7 @@ import {
   KANBAN_COLUMNS,
   STATUS_LABELS,
   monitorJobHref,
+  needsApproval,
   type KanbanColumnDef,
 } from '../utils/workflow.ts';
 
@@ -25,7 +26,9 @@ export function KanbanSection({ jobs }: { jobs: WorkflowJob[] }) {
         <JobColumn
           key={column.id}
           column={column}
-          jobs={jobs.filter((job) => column.statuses.includes(job.status))}
+          jobs={jobs.filter((job) =>
+            column.id === 'review' ? needsApproval(job) : column.statuses.includes(job.status),
+          )}
           nowMs={nowMs}
         />
       ))}
@@ -101,6 +104,7 @@ function JobCard({ job, nowMs }: { job: WorkflowJob; nowMs: number }) {
   );
   let tag = STATUS_LABELS[job.status];
   if (job.status === 'running' && activeStage) tag += ` · ${activeStage.short}`;
+  if (job.status === 'running' && needsApproval(job)) tag += ' · 要承認';
   if (job.status === 'queued' || job.status === 'paused') tag += ` · 優先度 ${job.priority ?? 0}`;
   const start = job.startedAt || job.createdAt;
   return (

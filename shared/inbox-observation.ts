@@ -4,6 +4,8 @@ export interface InboxObservation {
   ingested: boolean;
   /** Set once the registered-job lookup ran for this exact signature. */
   matchChecked?: boolean;
+  failedRevision?: string;
+  failedMessage?: string;
 }
 
 /** Start a fresh observation whenever the inventory signature changes. */

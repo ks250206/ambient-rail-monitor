@@ -57,6 +57,7 @@ export function DatasetUpload({
         setProgress(`${i + 1} / ${selection.files.length} ファイルを転送中：${path}`);
         await request(`/api/uploads/${id}/files?${new URLSearchParams({ path })}`, {
           method: 'PUT',
+          headers: { 'Content-Type': 'application/octet-stream' },
           body: file,
         });
       }

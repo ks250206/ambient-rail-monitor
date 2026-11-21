@@ -77,6 +77,13 @@ export const KANBAN_COLUMNS: KanbanColumnDef[] = [
   },
 ];
 
+export function needsApproval(job: WorkflowJob) {
+  return (
+    job.status === 'review' ||
+    (job.status === 'running' && job.stages.some((task) => task.status === 'review'))
+  );
+}
+
 export function dateMs(value: string | null | undefined): number {
   return value ? new Date(value).getTime() : 0;
 }

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
+import { executeGraph } from './shared/graph-runtime.ts';
 import { prepareAttempt } from './shared/attempt-workspace.ts';
 import { failedEvidence } from './shared/conditions.ts';
 import { verifyDataset } from './shared/datasets.ts';
@@ -396,10 +397,13 @@ async function runAgent(
   llm: LlmConfig,
   timeoutMs: number,
   timeoutKind: FailureKind,
+  signal = ctx.signal,
+  engine: 'worker' | 'codex' | 'claude' = 'worker',
 ): Promise<string> {
-  const command = MODE === 'codex' ? 'codex' : 'claude';
+  const mode = engine === 'worker' ? MODE : engine;
+  const command = mode === 'codex' ? 'codex' : 'claude';
   const args =
-    MODE === 'codex'
+    mode === 'codex'
       ? [
           'exec',
           '--json',
@@ -428,7 +432,7 @@ async function runAgent(
     cwd: work,
     timeoutMs,
     timeoutKind,
-    signal: ctx.signal,
+    signal,
     onLine: (line, signal) => {
       let event: RawCliEvent;
       try {
@@ -478,6 +482,7 @@ async function generateDemoReport(
   paths: ClaimPaths,
   timeoutMs: number,
   timeoutKind: FailureKind,
+  signal = ctx.signal,
 ): Promise<void> {
   await runCommand(
     process.env.RAILFLOW_PYTHON || 'python3',
@@ -492,7 +497,7 @@ async function generateDemoReport(
       cwd: paths.work,
       timeoutMs,
       timeoutKind,
-      signal: ctx.signal,
+      signal,
     },
   );
 }
@@ -693,6 +698,9 @@ async function processJob(
             'stage.name': stage.label,
             attempt: String(stage.attempts),
             'retry.reason': reason,
+            'task.id': stage.key,
+            'input.item': '',
+            'upstream.manifest': '',
           },
           final,
         );
@@ -938,6 +946,7 @@ async function workLoop() {
         agent: MODE,
         worker: WORKER_ID,
         capacity: concurrency,
+        protocol: 2,
         ...(PROJECT_FILTER ? { projectId: PROJECT_FILTER } : {}),
       });
       if (!response.job || !response.paths || !response.lease) {
@@ -975,7 +984,25 @@ async function workLoop() {
           });
       }, lease.heartbeatMs);
       try {
-        await processJob(ctx, job, paths, project);
+        if (job.workflow?.version === 2 && project?.graph)
+          await executeGraph(job, paths, project, {
+            signal,
+            mode: MODE,
+            apiOrigin: new URL(API).origin,
+            emit: (type, task, message, more) => emit(ctx, job, type, task, message, more),
+            reload: async () => {
+              const result = await fetch(`${API}/api/jobs/${job.id}`, {
+                signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+              });
+              if (!result.ok) throw new Error('ジョブの実行状態を取得できません。');
+              return ((await result.json()) as { job: WorkflowJob }).job;
+            },
+            runAI: (task, work, prompt, llm, timeout, kind, taskSignal, engine) =>
+              runAgent(ctx, job, task, work, prompt, llm, timeout, kind, taskSignal, engine),
+            runDemo: (_task, attemptPaths, timeout, kind, taskSignal) =>
+              generateDemoReport(ctx, job, attemptPaths, timeout, kind, taskSignal),
+          });
+        else await processJob(ctx, job, paths, project);
       } catch (err) {
         if (!signal.aborted) {
           await emit(

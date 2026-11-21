@@ -1,6 +1,7 @@
 import type { Condition, ConditionResult } from './conditions.ts';
 import type { ExecutionPolicy, FailureKind } from './execution-policy.ts';
 import type { QueueSettings } from './queue.ts';
+import type { StageGraph, GraphSpec, PlannedTask } from './graph.ts';
 
 export type StageKey = string;
 
@@ -45,6 +46,8 @@ export type EventType =
   | 'stage.retry.ready'
   | 'stage.retry.paused'
   | 'stage.retry.resumed'
+  | 'job.waiting'
+  | 'stage.reused'
   | 'review.required'
   | 'review.approved'
   | 'artifact.created'
@@ -66,6 +69,7 @@ export type WorkerEventType = Exclude<
   | 'job.priority'
   | 'stage.interrupted'
   | 'stage.retry.paused'
+  | 'stage.reused'
 >;
 
 export interface StageDefinition {
@@ -74,7 +78,7 @@ export interface StageDefinition {
   short: string;
 }
 
-export interface WorkflowStageSpec extends StageDefinition {
+export interface WorkflowStageSpec extends StageDefinition, StageGraph {
   instruction: string;
   llm: LlmConfig;
   acceptanceCriteria?: string;
@@ -110,13 +114,14 @@ export interface DatasetManifest {
 }
 
 export interface WorkflowSnapshot {
-  version: 1;
+  version: 1 | 2;
   hash: string;
   project: ProjectSpec;
+  plan?: PlannedTask[];
 }
 
 export interface GateEvaluation {
-  scope: 'stage' | 'final';
+  scope: 'stage' | 'final' | 'input' | 'output';
   result: ConditionResult;
 }
 
@@ -148,9 +153,20 @@ export interface ProjectSpec {
   finalGate?: GateSpec;
   prompt?: string;
   queue?: { maxConcurrentJobs: number; priority: number };
+  graph?: GraphSpec;
 }
 
 export interface JobStage extends StageDefinition {
+  stageKey?: string;
+  dependsOn?: string[];
+  item?: { path: string; hash: string };
+  output?: OutputManifest;
+  completion?: {
+    mode: 'executed' | 'reused' | 'cached';
+    jobId?: string;
+    task?: string;
+    attempt?: number;
+  };
   status: StageStatus;
   attempts: number;
   retryCount?: number;
@@ -172,6 +188,11 @@ export interface ArtifactInfo {
   name: string;
   uri: string;
   bytes: number;
+}
+
+export interface OutputManifest {
+  hash: string;
+  files: Array<DatasetFile & { executable: boolean }>;
 }
 
 export interface WorkflowEvent {
@@ -214,6 +235,10 @@ export interface WorkflowEvent {
   retryRemainingMs?: number;
   deadlineAt?: string;
   reviewSequence?: number;
+  output?: OutputManifest;
+  completion?: JobStage['completion'];
+  parentJobId?: string;
+  jobElapsedMs?: number;
 }
 
 export interface WorkflowJob {
@@ -237,6 +262,8 @@ export interface WorkflowJob {
   lastMessage: string;
   priority?: number;
   recoveryCount?: number;
+  parentJobId?: string;
+  activeMs?: number;
   dataset?: DatasetManifest;
   workflow?: WorkflowSnapshot;
 }
