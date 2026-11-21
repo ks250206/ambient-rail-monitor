@@ -24,13 +24,17 @@ export function StageRunnerFields({
   value = defaults.ai,
   onChange,
   disableHuman = false,
+  argumentText,
+  onArgumentsChange,
 }: {
   value?: StageRunner;
   onChange: (next: StageRunner) => void;
   disableHuman?: boolean;
+  argumentText?: string;
+  onArgumentsChange: (text: string) => void;
 }) {
   return (
-    <div className="wf-fields">
+    <div id="stage-runner" className="wf-fields">
       <label>
         工程の種類
         <select
@@ -90,15 +94,8 @@ export function StageRunnerFields({
             引数（1行で1つ）
             <textarea
               rows={3}
-              value={value.args.join('\n')}
-              onChange={(event) =>
-                onChange({
-                  ...value,
-                  args: event.target.value
-                    ? event.target.value.replace(/\n+$/, '').split('\n')
-                    : [],
-                })
-              }
+              value={argumentText ?? value.args.join('\n')}
+              onChange={(event) => onArgumentsChange(event.target.value)}
             />
           </label>
           <p className="wf-help wf-wide">

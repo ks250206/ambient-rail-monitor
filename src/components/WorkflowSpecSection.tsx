@@ -1,4 +1,18 @@
-import { parseGraph, parseStageGraph, dependencies } from '../../shared/graph.ts';
+import {
+  stageForSave,
+  runnerChange,
+  settingsLostOnSave,
+  type StageDraft,
+} from '../utils/workflow-drafts.ts';
+import {
+  parseGraph,
+  parseStageGraph,
+  dependencies,
+  GraphStageError,
+  type GraphSpec,
+} from '../../shared/graph.ts';
+import { ContractFieldError, contractFieldLabels, parseContracts } from '../../shared/contracts.ts';
+import { flushSync } from 'react-dom';
 import { ContractFields } from './ContractFields.tsx';
 import { StageRunnerFields } from './StageRunnerFields.tsx';
 import { WorkflowGraph } from './WorkflowGraph.tsx';
@@ -72,7 +86,7 @@ const MODEL_SUGGESTIONS = [
   'claude-sonnet-4-6',
 ];
 
-function editableStages(stages: WorkflowStageSpec[]) {
+function editableStages(stages: WorkflowStageSpec[]): StageDraft[] {
   return stages.map((stage, rowId) => ({ ...stage, rowId }));
 }
 
@@ -83,6 +97,7 @@ export function WorkflowSpecSection({
   onDirtyChange,
 }: WorkflowSpecSectionProps) {
   const [graph, setGraph] = useState(project.graph);
+  const [otherGraphs, setOtherGraphs] = useState<Partial<Record<GraphSpec['mode'], GraphSpec>>>({});
   const [automation, setAutomation] = useState(() => projectAutomation({}, project));
   const monitor = useProjectJobs(project.id);
   const [candidate, setCandidate] = useState('');
@@ -112,14 +127,17 @@ export function WorkflowSpecSection({
   } catch (error) {
     triggerValidation = (error as Error).message;
   }
+  const converting = Object.keys(otherGraphs).length > 0;
+  const discarded = settingsLostOnSave(stages, graph, otherGraphs);
   const payload: WorkflowUpdatePayload = {
     ...automation,
     graph,
     acceptanceCriteria,
     llm,
-    stages: stages.map(({ rowId: _id, ...spec }) => spec),
+    stages: stages.map((item) => stageForSave(item, graph?.mode, converting)),
   };
   const dirty =
+    Boolean(discarded) ||
     JSON.stringify(graph) !== JSON.stringify(baseline.graph) ||
     acceptanceCriteria !== baseline.acceptanceCriteria ||
     JSON.stringify(llm) !== JSON.stringify(baseline.llm) ||
@@ -131,26 +149,42 @@ export function WorkflowSpecSection({
     return () => onDirtyChange(false);
   }, [dirty, onDirtyChange]);
   let validation = '';
+  let problemStage: StageDraft | undefined;
+  let target = 'workflow-defaults';
+  let fieldName = 'プロジェクト設定';
   let promptPreview = '';
   try {
     projectAutomation(payload);
+    target = 'workflow-prompt';
+    fieldName = '共通プロンプト';
     validateTemplate(automation.prompt ?? '');
-    if (
-      !graph &&
-      payload.stages.some(
-        (item) =>
-          (item.runner?.kind ?? 'ai') !== 'ai' ||
-          item.map ||
-          item.contracts?.inputs.length ||
-          item.contracts?.outputs.length,
-      )
-    )
-      throw new Error('工程の種類・map・入出力契約を使うにはWorkflow v2を有効にしてください。');
-    for (const item of payload.stages) {
-      stageAutomation({ ...item });
-      parseStageGraph({ ...item });
+    for (const [i, item] of payload.stages.entries()) {
+      problemStage = stages[i];
+      target = 'stage-gate';
+      fieldName = '工程の受け入れ条件';
+      stageAutomation({ gate: item.gate, acceptanceCriteria: item.acceptanceCriteria });
+      target = 'stage-policy';
+      fieldName = 'リトライ・タイムアウト';
+      stageAutomation({ execution: item.execution });
+      target = 'stage-runner';
+      fieldName = '実行設定';
+      parseStageGraph({ runner: item.runner });
+      target = 'stage-map';
+      fieldName = 'ファイルごとの実行';
+      if (item.map) parseStageGraph({ map: item.map });
+      target = 'stage-dependencies';
+      fieldName = '依存工程';
+      if (item.dependsOn) parseStageGraph({ dependsOn: item.dependsOn });
+      parseContracts(item.contracts?.inputs, 'inputs');
+      parseContracts(item.contracts?.outputs, 'outputs');
+      target = 'stage-instruction';
+      fieldName = 'カスタム指示';
       validateTemplate(item.instruction);
+      target = 'stage-acceptance';
+      fieldName = '受け入れ要件';
       validateTemplate(item.acceptanceCriteria ?? '');
+      target = 'stage-runner';
+      fieldName = '実行設定';
       if (item.runner?.kind === 'command' || item.runner?.kind === 'python')
         for (const arg of item.runner.args) validateTemplate(arg);
       if (item.runner?.kind === 'http') {
@@ -158,6 +192,9 @@ export function WorkflowSpecSection({
         validateTemplate(item.runner.body);
       }
     }
+    problemStage = undefined;
+    target = 'graph-settings';
+    fieldName = '工程の接続・並列実行';
     parseGraph(graph, payload.stages);
     const draftProject = { ...project, ...payload };
     promptPreview = buildStagePrompt(
@@ -167,7 +204,32 @@ export function WorkflowSpecSection({
       graph ? stage.key === graph.publishStage : index === stages.length - 1,
     );
   } catch (error) {
-    validation = (error as Error).message;
+    if (error instanceof ContractFieldError) {
+      target = `contract-${error.scope}-${error.index}-${error.field}`;
+      fieldName = `${error.scope === 'inputs' ? '入力契約' : '出力契約'} ${error.index + 1}・${contractFieldLabels[error.field]}`;
+    } else if (error instanceof GraphStageError) {
+      problemStage = stages.findLast((row) => row.key === error.key);
+      target = { key: 'stage-key', dependencies: 'stage-dependencies', runner: 'stage-runner' }[
+        error.field
+      ];
+      fieldName = { key: '工程キー', dependencies: '依存工程', runner: '実行設定' }[error.field];
+    }
+    validation = [problemStage?.label || problemStage?.key, fieldName, (error as Error).message]
+      .filter(Boolean)
+      .join(' ／ ');
+  }
+  function focusProblem() {
+    if (problemStage) flushSync(() => setActive(problemStage.rowId));
+    const element = document.getElementById(target) ?? document.getElementById('stage-settings');
+    const control = element?.matches('input,textarea,select,summary')
+      ? element
+      : (element?.querySelector<HTMLElement>('[aria-invalid="true"]') ??
+        element?.querySelector<HTMLElement>('input, select, textarea, summary'));
+    if (control) {
+      for (let parent = control.parentElement; parent; parent = parent.parentElement)
+        if (parent.tagName === 'DETAILS') (parent as HTMLDetailsElement).open = true;
+      (control as HTMLElement).focus();
+    }
   }
   async function testInput() {
     setTesting(true);
@@ -191,6 +253,7 @@ export function WorkflowSpecSection({
   function loadVersion(version: ProjectSpec) {
     setBaseline(version);
     setGraph(version.graph);
+    setOtherGraphs({});
     setAutomation(projectAutomation({}, version));
     setTestResult(null);
     setTestError('');
@@ -206,7 +269,16 @@ export function WorkflowSpecSection({
     setActive(rows.find((item) => item.key === stage.key)?.rowId ?? rows[0].rowId);
   }
   if (externalUpdate && !dirty) loadVersion(project);
-  function update(patch: Partial<WorkflowStageSpec>) {
+  function replacePublishStage(oldKey: string, newKey: string) {
+    if (graph?.publishStage === oldKey) setGraph({ ...graph, publishStage: newKey });
+    setOtherGraphs((previous) => {
+      const next = { ...previous };
+      for (const saved of Object.values(previous))
+        if (saved.publishStage === oldKey) next[saved.mode] = { ...saved, publishStage: newKey };
+      return next;
+    });
+  }
+  function update(patch: Partial<StageDraft>) {
     const oldKey = stage.key;
     const renaming = patch.key !== undefined;
     const newKey = patch.key;
@@ -222,7 +294,31 @@ export function WorkflowSpecSection({
         };
       }),
     );
-    if (renaming && graph?.publishStage === oldKey) setGraph({ ...graph, publishStage: newKey! });
+    if (newKey !== undefined) replacePublishStage(oldKey, newKey);
+  }
+  function switchMode(mode: GraphSpec['mode'] | 'legacy') {
+    const drafts = { ...otherGraphs };
+    if (graph) drafts[graph.mode] = graph;
+    if (mode === 'legacy') {
+      setGraph(undefined);
+    } else {
+      setGraph(
+        drafts[mode] ?? {
+          mode,
+          maxParallelTasks: graph?.maxParallelTasks ?? 2,
+          publishStage: graph?.publishStage ?? stages.at(-1)!.key,
+        },
+      );
+      delete drafts[mode];
+      if (mode === 'dag')
+        setStages((rows) =>
+          rows.map((row, i) => ({
+            ...row,
+            dependsOn: row.dependsOn ?? (i ? [rows[i - 1].key] : []),
+          })),
+        );
+    }
+    setOtherGraphs(drafts);
   }
   function add() {
     const rowId = Math.max(nextId.current, ...stages.map((item) => item.rowId + 1));
@@ -257,7 +353,7 @@ export function WorkflowSpecSection({
         dependsOn: item.dependsOn?.filter((key) => key !== stage.key),
       })),
     );
-    if (graph?.publishStage === stage.key) setGraph({ ...graph, publishStage: items.at(-1)!.key });
+    replacePublishStage(stage.key, items.at(-1)!.key);
     setActive(items[Math.min(index, items.length - 1)].rowId);
   }
   return (
@@ -284,13 +380,17 @@ export function WorkflowSpecSection({
           <button
             className="wf-primary"
             disabled={!dirty || saving || testing || Boolean(validation)}
-            onClick={() => onSave(payload, project.updatedAt, loadVersion)}
+            onClick={() => {
+              if (!discarded || window.confirm(discarded + '\nこの内容で保存しますか？'))
+                onSave(payload, project.updatedAt, loadVersion);
+            }}
           >
             <Save size={15} />
             {saving ? '保存中…' : externalUpdate ? '下書きで上書き保存' : '定義を保存'}
           </button>
         </div>
       </div>
+      {dirty && discarded && <p className="condition-error whitespace-pre-line">{discarded}</p>}
       {externalUpdate && dirty && !saving && (
         <p className="condition-error" role="alert">
           外部で更新されました。下書きを保持しています。最新版を読み込むか、現在の下書きで最新のワークフロー定義を上書きできます。
@@ -298,13 +398,15 @@ export function WorkflowSpecSection({
       )}
       {validation && (
         <p className="condition-error" role="alert">
-          {validation}
+          <button type="button" className="text-left underline" onClick={focusProblem}>
+            {validation}（設定箇所へ）
+          </button>
         </p>
       )}
       <p className="wf-help">
         保存した定義は、新しく登録されるジョブに適用されます。登録済みジョブは登録時の入力・設定を固定して実行します。
       </p>
-      <fieldset disabled={saving || testing} className="min-w-0">
+      <fieldset id="workflow-defaults" disabled={saving || testing} className="min-w-0">
         <details open className="wf-disclosure">
           <summary>
             基本設定 <ChevronDown size={17} />
@@ -324,6 +426,7 @@ export function WorkflowSpecSection({
               <textarea
                 rows={4}
                 maxLength={8000}
+                id="workflow-prompt"
                 value={automation.prompt ?? ''}
                 onChange={(e) => setAutomation({ ...automation, prompt: e.target.value })}
                 placeholder="各測定ファイルの関係を確認し、比較結果をまとめてください。"
@@ -523,40 +626,13 @@ export function WorkflowSpecSection({
           </label>
         </details>
         <details open className="wf-disclosure">
-          <summary>工程の接続・並列実行</summary>
+          <summary id="graph-settings">工程の接続・並列実行</summary>
           <div className="wf-fields">
             <label>
               実行モデル
               <select
                 value={graph?.mode ?? 'legacy'}
-                onChange={(event) => {
-                  if (event.target.value === 'legacy') {
-                    setGraph(undefined);
-                    setStages((prev) =>
-                      prev.map((item) => ({
-                        ...item,
-                        runner: undefined,
-                        dependsOn: undefined,
-                        map: null,
-                        contracts: undefined,
-                      })),
-                    );
-                    return;
-                  }
-                  const mode = event.target.value as 'sequential' | 'dag';
-                  if (mode === 'dag' && graph?.mode !== 'dag')
-                    setStages(
-                      stages.map((item, i) => ({
-                        ...item,
-                        dependsOn: i ? [stages[i - 1].key] : [],
-                      })),
-                    );
-                  setGraph({
-                    mode,
-                    maxParallelTasks: graph?.maxParallelTasks ?? 2,
-                    publishStage: graph?.publishStage ?? stages.at(-1)!.key,
-                  });
-                }}
+                onChange={(event) => switchMode(event.target.value as GraphSpec['mode'] | 'legacy')}
               >
                 <option value="legacy">従来の順次実行</option>
                 <option value="sequential">Workflow v2 · 順次接続</option>
@@ -637,7 +713,7 @@ export function WorkflowSpecSection({
               ))}
             </select>
           </label>
-          <div className="wf-stage-detail" key={stage.rowId}>
+          <div id="stage-settings" className="wf-stage-detail" key={stage.rowId}>
             <div className="wf-detail-title">
               <h3>{stage.label || '工程の編集'}</h3>
               <div className="wf-order">
@@ -672,10 +748,20 @@ export function WorkflowSpecSection({
                 <StageRunnerFields
                   value={stage.runner}
                   disableHuman={graph.publishStage === stage.key}
-                  onChange={(runner) => update({ runner })}
+                  argumentText={
+                    stage.runner?.kind === 'python' || stage.runner?.kind === 'command'
+                      ? stage.argumentText?.[stage.runner.kind]
+                      : undefined
+                  }
+                  onArgumentsChange={(text) => {
+                    const kind = stage.runner?.kind;
+                    if (kind === 'command' || kind === 'python')
+                      update({ argumentText: { ...stage.argumentText, [kind]: text } });
+                  }}
+                  onChange={(runner) => update(runnerChange(stage, runner))}
                 />
                 {graph.mode === 'dag' && (
-                  <fieldset className="wf-disclosure">
+                  <fieldset id="stage-dependencies" className="wf-disclosure">
                     <legend>この工程の開始前に合格が必要な工程</legend>
                     <div className="dependency-options">
                       {stages
@@ -707,6 +793,7 @@ export function WorkflowSpecSection({
                   <input
                     type="checkbox"
                     disabled={graph.publishStage === stage.key}
+                    id="stage-map"
                     checked={!!stage.map}
                     onChange={(event) =>
                       update({
@@ -784,13 +871,14 @@ export function WorkflowSpecSection({
                 <textarea
                   rows={4}
                   maxLength={8000}
+                  id="stage-instruction"
                   value={stage.instruction}
                   onChange={(e) => update({ instruction: e.target.value })}
                 />
               </label>
             </div>
             <details open className="wf-disclosure">
-              <summary>
+              <summary id="stage-gate">
                 この工程の受け入れ条件 <ChevronDown size={16} />
               </summary>
               <div className="wf-fields">
@@ -799,6 +887,7 @@ export function WorkflowSpecSection({
                   <textarea
                     rows={3}
                     maxLength={4000}
+                    id="stage-acceptance"
                     value={stage.acceptanceCriteria ?? ''}
                     onChange={(e) => update({ acceptanceCriteria: e.target.value })}
                   />
@@ -826,7 +915,7 @@ export function WorkflowSpecSection({
               </label>
             </details>
             <details className="wf-disclosure">
-              <summary>
+              <summary id="stage-policy">
                 この工程のリトライ・タイムアウト <ChevronDown size={16} />
               </summary>
               <ExecutionPolicyFields
@@ -857,6 +946,7 @@ export function WorkflowSpecSection({
                 <label className="wf-wide">
                   工程キー
                   <input
+                    id="stage-key"
                     value={stage.key}
                     maxLength={48}
                     onChange={(e) => update({ key: e.target.value })}

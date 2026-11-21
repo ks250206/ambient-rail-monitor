@@ -169,33 +169,66 @@ export function validateJson(value: unknown, schema: JsonSchema): string[] {
   return errors.slice(0, 20);
 }
 
+export const contractFieldLabels = {
+  pattern: 'ファイルパターン',
+  minFiles: '最低件数',
+  maxFiles: '最大件数',
+  source: '入力元',
+  schema: 'JSONの型検証',
+};
+export class ContractFieldError extends Error {
+  constructor(
+    scope: 'inputs' | 'outputs',
+    index: number,
+    field: keyof typeof contractFieldLabels,
+    message: string,
+  ) {
+    super(message);
+    this.scope = scope;
+    this.index = index;
+    this.field = field;
+  }
+  readonly scope: 'inputs' | 'outputs';
+  readonly index: number;
+  readonly field: keyof typeof contractFieldLabels;
+}
+
 export function parseContracts(
   value: unknown,
   scope: 'inputs' | 'outputs' = 'inputs',
 ): FileContract[] {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 20) throw new Error('ファイル契約は20件以内です。');
-  return value.map((item) => {
-    if (!item || typeof item !== 'object' || Array.isArray(item))
-      throw new Error('ファイル契約が不正です。');
-    const raw = item as Record<string, unknown>;
-    if (typeof raw.pattern !== 'string' || !validRelativePath(raw.pattern, true))
-      throw new Error('契約には相対パスのパターンを指定してください。');
-    const minFiles = boundedInteger(raw.minFiles ?? 1, '最小ファイル数', 5000);
-    const maxFiles = boundedInteger(raw.maxFiles ?? 5000, '最大ファイル数', 5000);
-    if (minFiles > maxFiles) throw new Error('最小ファイル数が最大値を超えています。');
-    if (scope === 'outputs' && raw.source !== undefined)
-      throw new Error('出力契約には参照元(source)を指定できません。');
-    if (raw.source !== undefined && raw.source !== 'dataset' && raw.source !== 'upstream')
-      throw new Error('入力契約の参照元が不正です。');
-    return {
-      pattern: raw.pattern,
-      minFiles,
-      maxFiles,
-      ...(raw.schema !== undefined && raw.schema !== null
-        ? { schema: parseSchema(raw.schema) }
-        : {}),
-      ...(raw.source ? { source: raw.source as 'dataset' | 'upstream' } : {}),
-    };
+  return value.map((item, index) => {
+    let field: keyof typeof contractFieldLabels = 'pattern';
+    try {
+      if (!item || typeof item !== 'object' || Array.isArray(item))
+        throw new Error('ファイル契約が不正です。');
+      const raw = item as Record<string, unknown>;
+      if (typeof raw.pattern !== 'string' || !validRelativePath(raw.pattern, true))
+        throw new Error('契約には相対パスのパターンを指定してください。');
+      field = 'minFiles';
+      const minFiles = boundedInteger(raw.minFiles ?? 1, '最小ファイル数', 5000);
+      field = 'maxFiles';
+      const maxFiles = boundedInteger(raw.maxFiles ?? 5000, '最大ファイル数', 5000);
+      if (minFiles > maxFiles) throw new Error('最小ファイル数が最大値を超えています。');
+      field = 'source';
+      if (scope === 'outputs' && raw.source !== undefined)
+        throw new Error('出力契約には参照元(source)を指定できません。');
+      if (raw.source !== undefined && raw.source !== 'dataset' && raw.source !== 'upstream')
+        throw new Error('入力契約の参照元が不正です。');
+      field = 'schema';
+      return {
+        pattern: raw.pattern,
+        minFiles,
+        maxFiles,
+        ...(raw.schema !== undefined && raw.schema !== null
+          ? { schema: parseSchema(raw.schema) }
+          : {}),
+        ...(raw.source ? { source: raw.source as 'dataset' | 'upstream' } : {}),
+      };
+    } catch (error) {
+      throw new ContractFieldError(scope, index, field, (error as Error).message);
+    }
   });
 }

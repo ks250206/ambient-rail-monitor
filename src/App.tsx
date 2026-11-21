@@ -11,7 +11,7 @@ import {
 } from './api.ts';
 import { useMemo, useState, useSyncExternalStore } from 'react';
 
-import type { ProjectSpec, StageKey } from '../shared/types.ts';
+import type { JobStage, ProjectSpec, StageKey } from '../shared/types.ts';
 import { ActionsSection } from './components/ActionsSection.tsx';
 import { AppHeader } from './components/AppHeader.tsx';
 import { BottomGrid } from './components/BottomGrid.tsx';
@@ -113,17 +113,13 @@ function Monitor({ project }: { project: ProjectSpec }) {
     window.dispatchEvent(new Event('popstate'));
   };
   const approve = useMutation({
-    mutationFn: ({ jobId, task }: { jobId: string; task?: string }) => {
-      const job = state.jobs.find((item) => item.id === jobId);
-      const stage = job?.stages.find(
-        (item) => item.status === 'review' && (!task || item.key === task),
-      );
+    mutationFn: ({ jobId, stage }: { jobId: string; stage: JobStage }) => {
       return request(
         `/api/jobs/${jobId}/approve`,
         jsonRequest('POST', {
-          stage: stage?.key,
-          attempt: stage?.attempts,
-          reviewSequence: stage?.reviewSequence,
+          stage: stage.key,
+          attempt: stage.attempts,
+          reviewSequence: stage.reviewSequence,
         }),
       );
     },
@@ -192,8 +188,8 @@ function Monitor({ project }: { project: ProjectSpec }) {
               approving={approve.isPending}
               onSelectStage={handleSelectStage}
               onShowAllLogs={() => setShowAllLogs(true)}
-              onApproveReview={(jobId, task) => {
-                if (!approve.isPending) approve.mutate({ jobId, task });
+              onApproveReview={(jobId, stage) => {
+                if (!approve.isPending) approve.mutate({ jobId, stage });
               }}
             />
 

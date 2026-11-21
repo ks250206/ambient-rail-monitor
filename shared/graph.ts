@@ -152,6 +152,16 @@ export function dependencies(
   return index > 0 ? [project.stages[index - 1].key] : [];
 }
 
+export class GraphStageError extends Error {
+  readonly key: string;
+  readonly field: 'key' | 'dependencies' | 'runner';
+  constructor(key: string, field: GraphStageError['field'], message: string) {
+    super(message);
+    this.key = key;
+    this.field = field;
+  }
+}
+
 export function parseGraph(raw: unknown, stages: WorkflowStageSpec[]): GraphSpec | undefined {
   if (raw === undefined || raw === null) return undefined;
   const value = object(raw);
@@ -164,26 +174,33 @@ export function parseGraph(raw: unknown, stages: WorkflowStageSpec[]): GraphSpec
     publishStage: text(value.publishStage ?? stages.at(-1)!.key, '公開工程', 48),
   };
   const keys = new Set(stages.map((s) => s.key));
-  if (
-    keys.size !== stages.length ||
-    stages.some((s) => !/^[a-z0-9][a-z0-9_-]{0,47}$/.test(s.key) || s.key.includes('__'))
-  )
-    throw new Error(
+  const invalidKey = stages.find(
+    (stage, i) =>
+      !/^[a-z0-9][a-z0-9_-]{0,47}$/.test(stage.key) ||
+      stage.key.includes('__') ||
+      stages.slice(0, i).some((other) => other.key === stage.key),
+  );
+  if (invalidKey)
+    throw new GraphStageError(
+      invalidKey.key,
+      'key',
       '工程キーは重複しない英小文字・数字・ハイフン・単一アンダースコアで指定してください。',
     );
   const project = { stages, graph };
   const visiting = new Set<string>();
   const visited = new Set<string>();
-  const visit = (key: string) => {
-    if (!keys.has(key)) throw new Error(`依存工程が見つかりません: ${key}`);
-    if (visiting.has(key)) throw new Error('工程の依存関係が循環しています。');
+  const visit = (key: string, parent = key) => {
+    if (!keys.has(key))
+      throw new GraphStageError(parent, 'dependencies', `依存工程が見つかりません: ${key}`);
+    if (visiting.has(key))
+      throw new GraphStageError(parent, 'dependencies', '工程の依存関係が循環しています。');
     if (visited.has(key)) return;
     visiting.add(key);
     for (const dependency of dependencies(
       project,
       stages.find((s) => s.key === key)!,
     ))
-      visit(dependency);
+      visit(dependency, key);
     visiting.delete(key);
     visited.add(key);
   };
@@ -196,14 +213,22 @@ export function parseGraph(raw: unknown, stages: WorkflowStageSpec[]): GraphSpec
   visited.clear();
   visit(publish.key);
   if (visited.size !== stages.length)
-    throw new Error('公開工程が全工程の結果を受け取るように依存関係を接続してください。');
+    throw new GraphStageError(
+      publish.key,
+      'dependencies',
+      '公開工程が全工程の結果を受け取るように依存関係を接続してください。',
+    );
   for (const stage of stages) {
     if (
       stage.runner?.kind === 'http' &&
       stage.runner.method === 'POST' &&
       !stage.runner.idempotencyKey
     )
-      throw new Error('HTTP POSTをリトライする場合はIdempotency-Keyを有効にしてください。');
+      throw new GraphStageError(
+        stage.key,
+        'runner',
+        'HTTP POSTをリトライする場合はIdempotency-Keyを有効にしてください。',
+      );
   }
   return graph;
 }

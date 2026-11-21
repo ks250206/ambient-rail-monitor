@@ -9,7 +9,7 @@ import { KanbanSection } from './components/KanbanSection.tsx';
 import { DatasetUpload } from './components/DatasetUpload.tsx';
 import { ConditionEvidence } from './components/ConditionBuilder.tsx';
 import { MetricsGrid } from './components/MetricsGrid.tsx';
-import { jobMatchesSearch, monitorJobHref } from './utils/workflow.ts';
+import { jobMatchesSearch, monitorJobHref, needsApproval } from './utils/workflow.ts';
 
 export function JobsPage({ project }: { project: ProjectSpec }) {
   const query = useProjectJobs(project.id);
@@ -61,7 +61,7 @@ export function JobsPage({ project }: { project: ProjectSpec }) {
                 href="#column-review"
                 className="text-sm font-semibold text-science-blue underline"
               >
-                要承認の列へ
+                要承認の列へ（{matchingJobs.filter(needsApproval).length}件）
               </a>
             )}
             <button type="button" onClick={() => void query.refetch()} className="wf-secondary">

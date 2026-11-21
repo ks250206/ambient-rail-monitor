@@ -11,6 +11,28 @@ const types: JsonSchema['type'][] = [
   'boolean',
   'null',
 ];
+function schemaSummary(rule: JsonSchema, path = '$'): string[] {
+  const attributes: string[] = [rule.type];
+  if (rule.minimum !== undefined) attributes.push(`最小値 ${rule.minimum}`);
+  if (rule.maximum !== undefined) attributes.push(`最大値 ${rule.maximum}`);
+  if (rule.minLength !== undefined) attributes.push(`最短 ${rule.minLength}文字`);
+  if (rule.maxLength !== undefined) attributes.push(`最長 ${rule.maxLength}文字`);
+  if (rule.minItems !== undefined) attributes.push(`最少 ${rule.minItems}要素`);
+  if (rule.maxItems !== undefined) attributes.push(`最多 ${rule.maxItems}要素`);
+  if (rule.enum)
+    attributes.push(`選択肢 ${rule.enum.map((entry) => JSON.stringify(entry)).join('、')}`);
+  if (rule.required?.length) attributes.push(`必須キー ${rule.required.join('、')}`);
+  if (rule.additionalProperties !== undefined)
+    attributes.push(`追加キー${rule.additionalProperties ? '可' : '不可'}`);
+  return [
+    `${path}：${attributes.join('／')}`,
+    ...Object.entries(rule.properties ?? {}).flatMap(([key, value]) =>
+      schemaSummary(value, `${path}[${JSON.stringify(key)}]`),
+    ),
+    ...(rule.items ? schemaSummary(rule.items, `${path}[*]`) : []),
+  ];
+}
+
 export function ContractFields({
   value,
   onChange,
@@ -23,6 +45,8 @@ export function ContractFields({
   const [keyError, setKeyError] = useState<{ contract: number; message: string } | null>(null);
   const update = (index: number, patch: Partial<FileContract>) =>
     onChange(value.map((item, i) => (i === index ? { ...item, ...patch } : item)));
+  const fieldId = (index: number, field: string) =>
+    `contract-${input ? 'inputs' : 'outputs'}-${index}-${field}`;
   return (
     <div className="contract-fields">
       <p className="wf-help">
@@ -33,9 +57,31 @@ export function ContractFields({
       {value.map((contract, index) => (
         <fieldset key={index} className="contract-row">
           <legend>契約 {index + 1}</legend>
+          <details className="wf-disclosure">
+            <summary>契約 {index + 1} の全制約</summary>
+            <p>
+              {input
+                ? contract.source === 'upstream'
+                  ? '前工程の出力'
+                  : 'データセット'
+                : 'この工程の出力'}
+              ：{contract.pattern}（{contract.minFiles}〜{contract.maxFiles}件）
+            </p>
+            {contract.schema ? (
+              <ul>
+                {schemaSummary(contract.schema).map((line) => (
+                  <li key={line}>
+                    <code>{line}</code>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>JSONの型検証なし</p>
+            )}
+          </details>
           <div className="wf-fields">
             {input && (
-              <label>
+              <label id={fieldId(index, 'source')}>
                 入力元
                 <select
                   value={contract.source ?? 'dataset'}
@@ -48,7 +94,7 @@ export function ContractFields({
                 </select>
               </label>
             )}
-            <label>
+            <label id={fieldId(index, 'pattern')}>
               ファイルパターン
               <input
                 value={contract.pattern}
@@ -56,7 +102,7 @@ export function ContractFields({
                 placeholder="**/metrics.json"
               />
             </label>
-            <label>
+            <label id={fieldId(index, 'minFiles')}>
               最低件数
               <NumberValue
                 value={contract.minFiles}
@@ -64,7 +110,7 @@ export function ContractFields({
                 onChange={(minFiles) => update(index, { minFiles })}
               />
             </label>
-            <label>
+            <label id={fieldId(index, 'maxFiles')}>
               最大件数
               <NumberValue
                 value={contract.maxFiles}
@@ -72,7 +118,7 @@ export function ContractFields({
                 onChange={(maxFiles) => update(index, { maxFiles })}
               />
             </label>
-            <label>
+            <label id={fieldId(index, 'schema')}>
               JSONの型検証
               <select
                 value={contract.schema?.type ?? ''}

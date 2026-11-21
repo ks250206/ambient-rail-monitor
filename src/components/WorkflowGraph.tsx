@@ -1,10 +1,18 @@
 import { dependencies } from '../../shared/graph.ts';
 import type { ProjectSpec, WorkflowJob } from '../../shared/types.ts';
 
-export function WorkflowGraph({ project, job }: { project: ProjectSpec; job?: WorkflowJob }) {
+export function WorkflowGraph({
+  project,
+  job,
+  onSelect,
+}: {
+  project: ProjectSpec;
+  job?: WorkflowJob;
+  onSelect?: (key: string) => void;
+}) {
   if (!project.graph) return null;
   return (
-    <details className="wf-disclosure" open>
+    <details className="wf-disclosure" open={!job}>
       <summary>
         工程の接続 · {project.stages.length} 工程{job ? ` / ${job.stages.length} タスク` : ''} ·
         最大 {project.graph.maxParallelTasks} タスク並列
@@ -30,6 +38,28 @@ export function WorkflowGraph({ project, job }: { project: ProjectSpec; job?: Wo
                 {stage.runner?.kind ?? 'ai'}
                 {stage.map ? ` · ファイルごと: ${stage.map.pattern}` : ''}
               </span>
+              {tasks?.length && onSelect ? (
+                tasks.length === 1 ? (
+                  <button className="wf-secondary" onClick={() => onSelect(tasks[0].key)}>
+                    「{stage.label}」の詳細を開く
+                  </button>
+                ) : (
+                  <label>
+                    {stage.label}のタスク
+                    <select className="w-full" value="" onChange={(e) => onSelect(e.target.value)}>
+                      <option value="" disabled>
+                        ファイルを選択…
+                      </option>
+                      {tasks.map((task) => (
+                        <option key={task.key} value={task.key}>
+                          {task.status === 'review' ? '要承認 · ' : ''}
+                          {task.item?.path ?? task.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )
+              ) : null}
               {tasks && (
                 <span>
                   {tasks.filter((task) => task.status === 'success').length} / {tasks.length} 合格

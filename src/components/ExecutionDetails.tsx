@@ -52,10 +52,14 @@ export function StageExecutionDetails({
   job,
   stage,
   nowMs,
+  approving,
+  onApprove,
 }: {
   job: WorkflowJob;
   stage: JobStage;
   nowMs: number;
+  approving: boolean;
+  onApprove: () => void;
 }) {
   const spec = job.workflow?.project.stages.find(
     (item) => item.key === (stage.stageKey ?? stage.key),
@@ -171,10 +175,9 @@ export function StageExecutionDetails({
           <ConditionEvidence result={gate.result} />
         </div>
       ))}
-      {job.status === 'review' &&
-        stage.status === 'review' &&
-        stage.workspace &&
-        stage.reviewSequence !== undefined && <ReviewOutputs job={job} stage={stage} />}
+      {['running', 'review'].includes(job.status) && stage.status === 'review' && (
+        <ReviewOutputs job={job} stage={stage} approving={approving} onApprove={onApprove} />
+      )}
       {config?.prompt && (
         <details>
           <summary>
@@ -189,17 +192,32 @@ export function StageExecutionDetails({
   );
 }
 
-function ReviewOutputs({ job, stage }: { job: WorkflowJob; stage: JobStage }) {
+function ReviewOutputs({
+  job,
+  stage,
+  approving,
+  onApprove,
+}: {
+  job: WorkflowJob;
+  stage: JobStage;
+  approving: boolean;
+  onApprove: () => void;
+}) {
+  const hasInventory = Boolean(stage.workspace && stage.reviewSequence !== undefined);
   const query = useQuery({
-    queryKey: ['review-outputs', job.id, stage.reviewSequence],
+    queryKey: ['review-outputs', job.id, stage.key, stage.reviewSequence],
+    enabled: hasInventory,
     queryFn: ({ signal }) =>
-      request<{ files: Array<{ path: string; bytes: number }> }>(
+      request<{ reviewSequence: number; files: Array<{ path: string; bytes: number }> }>(
         `/api/jobs/${job.id}/review?task=${encodeURIComponent(stage.key)}`,
         {
           signal,
         },
       ),
   });
+  const current =
+    hasInventory && query.isSuccess && query.data.reviewSequence === stage.reviewSequence;
+  const legacy = !hasInventory && !job.workflow;
   return (
     <div className="review-outputs">
       <h4>承認前の出力を確認</h4>
@@ -209,9 +227,38 @@ function ReviewOutputs({ job, stage }: { job: WorkflowJob; stage: JobStage }) {
           ? '自動処理が失敗しています。例外承認すると、この試行の出力を採用して続行します。'
           : 'この工程を承認すると、後続工程または成果物の公開へ進みます。'}
       </p>
-      {query.isPending && <p role="status">出力を読み込み中…</p>}
-      {query.isError && <p className="condition-error">{query.error.message}</p>}
-      {query.data && (
+      <p>対象：{stage.item?.path ?? job.file}</p>
+      {stage.failureKind && (
+        <p className="condition-error">
+          失敗理由：
+          {job.events.findLast(
+            (event) =>
+              event.stage === stage.key &&
+              event.attempt === stage.attempts &&
+              event.type === 'stage.failed',
+          )?.message ||
+            stage.summary ||
+            stage.failureKind}
+        </p>
+      )}
+      {!hasInventory && (
+        <p>
+          {legacy
+            ? '旧形式のジョブには出力一覧の記録がありません。工程のログを確認してください。'
+            : 'この試行の出力一覧を確認できません。'}
+        </p>
+      )}
+      {hasInventory && query.isPending && <p role="status">出力を読み込み中…</p>}
+      {hasInventory && (query.isError || (query.isSuccess && !current)) && (
+        <p role="alert">
+          {query.error?.message ?? 'レビュー対象が更新されました。'}{' '}
+          <button className="wf-secondary" onClick={() => void query.refetch()}>
+            出力を再取得
+          </button>
+        </p>
+      )}
+      {current && query.data.files.length === 0 && <p>この試行に出力ファイルはありません。</p>}
+      {current && query.data.files.length > 0 && (
         <ul className="upload-file-list">
           {query.data.files.map((file) => (
             <li key={file.path}>
@@ -227,6 +274,18 @@ function ReviewOutputs({ job, stage }: { job: WorkflowJob; stage: JobStage }) {
           ))}
         </ul>
       )}
+      <button
+        type="button"
+        className="wf-primary"
+        disabled={approving || (!current && !legacy)}
+        onClick={onApprove}
+      >
+        {approving
+          ? '承認中…'
+          : stage.failureKind
+            ? 'この試行の出力を例外承認して続行'
+            : 'この工程を承認して続行'}
+      </button>
     </div>
   );
 }
