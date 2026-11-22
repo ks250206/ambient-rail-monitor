@@ -130,7 +130,9 @@ it('sends the actual unsaved save payload for an explicitly selected input and d
     sourceJobId: 'A',
     draft: JSON.parse(JSON.stringify(save.mock.calls[0][0])),
   });
+  expect(init.signal?.aborted).toBe(false);
   await selectSource('B');
+  expect(init.signal?.aborted).toBe(true);
   await click(button('実行計画を確認'));
   await settle(() => pending[1](Response.json(plan('B', 'new-hash', 'fail'))));
   expect(contents()).toContain('new-hash');
@@ -141,6 +143,7 @@ it('sends the actual unsaved save payload for an explicitly selected input and d
   expect(contents()).toBeUndefined();
   await click(button('実行計画を確認'));
   await enter(prompt, 'final draft');
+  expect(fetcher.mock.calls[2][1].signal?.aborted).toBe(true);
   await enter(prompt, 'another draft');
   await settle(() => pending[2](Response.json({ error: 'obsolete-error' }, { status: 409 })));
   expect(contents()).toBeUndefined();
@@ -151,6 +154,23 @@ it('sends the actual unsaved save payload for an explicitly selected input and d
   expect(document.querySelector('[role="alert"]')?.textContent).toBe('snapshot changed');
   await selectSource('A');
   expect(document.body.textContent).not.toContain('snapshot changed');
+});
+
+it('explains how to enable the preview for an invalid draft with a selected source', async () => {
+  await editor();
+  const prompt = document.querySelector<HTMLTextAreaElement>('#workflow-prompt')!;
+  await enter(prompt, '{{unknown_variable}}');
+  expect(button('実行計画を確認').getAttribute('aria-describedby')).toBeNull();
+  await selectSource('A');
+  const preview = button('実行計画を確認');
+  expect(preview.disabled).toBe(true);
+  const guide = document.getElementById(preview.getAttribute('aria-describedby')!);
+  expect(guide?.textContent).toContain('下書きのエラーを修正');
+  await act(async () => setLocale('en'));
+  expect(guide?.textContent).toContain('Fix the errors in the draft');
+  await enter(prompt, 'valid prompt');
+  expect(button('Preview task plan').disabled).toBe(false);
+  expect(guide?.isConnected).toBe(false);
 });
 
 it.each([

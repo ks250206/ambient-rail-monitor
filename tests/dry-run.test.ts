@@ -220,6 +220,18 @@ it('isolates projects and distinguishes invalid drafts, missing manifests, and d
     const source = await upload(f);
     const body = { sourceJobId: source.id, draft };
     const before = homeContents(home);
+    // A missing project must be rejected even before parsing malformed JSON.
+    const missing = await fetch(f.url + '/api/projects/missing-project/dry-run', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{',
+    });
+    expect(missing.status).toBe(404);
+    const unsupported = await fetch(f.url + route);
+    expect(unsupported.status).toBe(405);
+    expect(unsupported.headers.get('Allow')).toBe('POST');
+    for (const sourceJobId of ['', '  '])
+      expect((await f.response(route, { ...body, sourceJobId })).status).toBe(400);
     expect((await f.response('/api/projects/other/dry-run', body)).status).toBe(404);
     expect((await f.response(route, { ...body, sourceJobId: 'missing' })).status).toBe(404);
     expect((await f.response(route, { ...body, sourceJobId: 'run_11111111' })).status).toBe(422);
@@ -239,6 +251,9 @@ it('isolates projects and distinguishes invalid drafts, missing manifests, and d
     expect((await f.response(route, body)).status).toBe(422);
     writeFileSync(manifest, JSON.stringify({ ...source.dataset, name: 'altered' }));
     expect((await f.response(route, body)).status).toBe(409);
+    // Valid JSON padded with whitespace would otherwise match the journal manifest.
+    writeFileSync(manifest, saved.toString().padEnd(10_000_001, ' '));
+    expect((await f.response(route, body)).status).toBe(409);
     writeFileSync(manifest, saved);
     const input = path.join(home, 'data/inputs', source.id, 'B/data.csv');
     chmodSync(input, 0o600);
@@ -247,6 +262,8 @@ it('isolates projects and distinguishes invalid drafts, missing manifests, and d
     expect((await f.response(route, body)).status).toBe(409);
     expect(homeContents(home)).toEqual(changed);
     rmSync(input);
+    expect((await f.response(route, body)).status).toBe(409);
+    rmSync(path.join(home, 'data/inputs', source.id), { recursive: true });
     expect((await f.response(route, body)).status).toBe(409);
   } finally {
     await f.close();

@@ -1,6 +1,6 @@
 import { useMutation } from '@tanstack/react-query';
 import { ChevronDown } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { DryRunResult, WorkflowJob } from '../../shared/types.ts';
 import { jsonRequest, request } from '../api.ts';
 import { useI18n } from '../i18n.ts';
@@ -63,12 +63,16 @@ function DryRunRequest({
   sourceJobId,
 }: DraftProps & { sourceJobId: string }) {
   const { pick } = useI18n();
+  const controller = useRef<AbortController | null>(null);
+  useEffect(() => () => controller.current?.abort(), []);
+  const guideId = useId();
+  const showGuide = Boolean(sourceJobId) && !valid;
   const preview = useMutation({
-    mutationFn: () =>
-      request<DryRunResult>(
-        `/api/projects/${encodeURIComponent(projectId)}/dry-run`,
-        jsonRequest('POST', { sourceJobId, draft }),
-      ),
+    mutationFn: (signal: AbortSignal) =>
+      request<DryRunResult>(`/api/projects/${encodeURIComponent(projectId)}/dry-run`, {
+        ...jsonRequest('POST', { sourceJobId, draft }),
+        signal,
+      }),
   });
   return (
     <>
@@ -76,12 +80,25 @@ function DryRunRequest({
         type="button"
         className="wf-secondary"
         disabled={!sourceJobId || !valid || preview.isPending}
-        onClick={() => preview.mutate()}
+        aria-describedby={showGuide ? guideId : undefined}
+        onClick={() => {
+          controller.current?.abort();
+          controller.current = new AbortController();
+          preview.mutate(controller.current.signal);
+        }}
       >
         {preview.isPending
           ? pick('計画を確認中…', 'Checking plan…')
           : pick('実行計画を確認', 'Preview task plan')}
       </button>
+      {showGuide && (
+        <p id={guideId} className="wf-help">
+          {pick(
+            '下書きのエラーを修正すると、実行計画を確認できます。',
+            'Fix the errors in the draft to preview the task plan.',
+          )}
+        </p>
+      )}
       {preview.isError && (
         <p role="alert" className="condition-error">
           {preview.error.message}

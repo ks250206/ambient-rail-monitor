@@ -1362,7 +1362,8 @@ function verifySavedManifest(jobId: string, manifest: DatasetManifest, jobHash: 
   try {
     fd = openSync(manifestPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.nlink !== 1) throw new Error('Invalid manifest file');
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 10_000_000)
+      throw new Error('Invalid manifest file');
     saved = JSON.parse(readFileSync(fd, 'utf8'));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT')
@@ -1376,7 +1377,7 @@ function verifySavedManifest(jobId: string, manifest: DatasetManifest, jobHash: 
 }
 
 function dryRun(project: ProjectSpec, body: Record<string, unknown>): DryRunResult {
-  if (typeof body.sourceJobId !== 'string')
+  if (typeof body.sourceJobId !== 'string' || !body.sourceJobId.trim())
     throw new HttpError(400, '入力元のジョブを指定してください。');
   const job = jobs.get(body.sourceJobId);
   if (!job || job.projectId !== project.id) throw new HttpError(404, 'Job not found');
@@ -2169,10 +2170,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     const dryRunMatch = pathname.match(/^\/api\/projects\/([a-z0-9_-]+)\/dry-run$/);
-    if (dryRunMatch && req.method === 'POST') {
-      const body = await readJSON(req, 4_000_000);
+    if (dryRunMatch) {
+      if (req.method !== 'POST') {
+        res.setHeader('Allow', 'POST');
+        throw new HttpError(405, 'Method not allowed');
+      }
       const project = projects.get(dryRunMatch[1]);
       if (!project) throw new HttpError(404, 'Project not found');
+      const body = await readJSON(req, 4_000_000);
       return deliverJSON(res, dryRun(project, body));
     }
 
