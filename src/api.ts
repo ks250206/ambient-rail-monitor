@@ -2,6 +2,8 @@ import { QueryClient, useQuery } from '@tanstack/react-query';
 import { useState, useRef, useSyncExternalStore } from 'react';
 
 import type { AppStateResponse, ProjectSpec } from '../shared/types.ts';
+import type { ReviewInspection } from '../client/review.ts';
+import { QC_FILENAME, QC_MAX_BYTES, parseQcV1Bytes } from '../shared/qc.ts';
 import type { ConditionResult } from '../shared/conditions.ts';
 
 export class ApiError extends Error {
@@ -25,6 +27,77 @@ export async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function jsonRequest(method: string, data: unknown): RequestInit {
   return { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) };
+}
+
+export type InspectedOutput = Omit<ReviewInspection, 'ref'> &
+  Omit<ReviewInspection['ref'], 'jobId'>;
+
+export type ReviewApproval = {
+  jobId: string;
+  stage: string;
+  attempt: number;
+  reviewSequence?: number;
+} & (
+  | { mode: 'exact'; receipt: string; reviewSequence: number; exception: boolean }
+  | { mode: 'legacy' }
+);
+
+export function approveReviewedOutput({ jobId, mode, ...body }: ReviewApproval) {
+  return request(
+    `/api/jobs/${jobId}/${mode === 'exact' ? 'approve-exact' : 'approve'}`,
+    jsonRequest('POST', body),
+  );
+}
+
+export async function fetchReviewQc(
+  jobId: string,
+  task: string,
+  sequence: number,
+  size: number,
+  signal: AbortSignal,
+  sha256: string,
+) {
+  if (!Number.isSafeInteger(size) || size < 0) throw new Error('Invalid qc.json size');
+  const params = new URLSearchParams({
+    task,
+    sequence: String(sequence),
+    path: QC_FILENAME,
+    sha256,
+  });
+  const response = await fetch(`/api/jobs/${jobId}/review/file?${params}`, {
+    signal,
+    headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) {
+    const result = await response.json().catch(() => null);
+    const message =
+      typeof result?.error === 'string' && result.error ? result.error : `HTTP ${response.status}`;
+    throw new ApiError(message, response.status);
+  }
+  if (size > QC_MAX_BYTES) {
+    await response.body?.cancel();
+    throw new ApiError('qc.json exceeds 2 MiB', 422);
+  }
+  if (!response.body) throw new Error('Missing qc.json data');
+  const reader = response.body.getReader();
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (offset + value.byteLength > size) {
+        await reader.cancel();
+        throw new ApiError('qc.json size changed', 409);
+      }
+      bytes.set(value, offset);
+      offset += value.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (offset !== size) throw new ApiError('qc.json size changed', 409);
+  return parseQcV1Bytes(bytes);
 }
 
 export function useProjects() {

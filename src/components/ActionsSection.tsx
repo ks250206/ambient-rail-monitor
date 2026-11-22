@@ -1,3 +1,4 @@
+import type { ReviewApproval } from '../api.ts';
 import {
   ChevronDown,
   ChevronRight,
@@ -49,7 +50,7 @@ interface ActionsSectionProps {
   approving?: boolean;
   onSelectStage: (stage: StageKey) => void;
   onShowAllLogs: () => void;
-  onApproveReview: (jobId: string, stage: JobStage) => void;
+  onApproveReview: (target: ReviewApproval) => Promise<unknown> | void;
 }
 
 export function ActionsSection({
@@ -241,18 +242,22 @@ export function ActionsSection({
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    {reviewStage && ['running', 'review'].includes(selectedJob.status) && (
-                      <button
-                        type="button"
-                        onClick={() => selectTask(reviewStage.key)}
-                        className="wf-primary"
-                      >
-                        {pick(
-                          `「${reviewStage.label}」の出力を確認`,
-                          `Review "${reviewStage.label}" outputs`,
-                        )}
-                      </button>
-                    )}
+                    {reviewStage &&
+                      (selectedJob.status === 'review' ||
+                        selectedJob.status === 'running' ||
+                        (selectedJob.workflow?.version === 2 &&
+                          selectedJob.status === 'queued')) && (
+                        <button
+                          type="button"
+                          onClick={() => selectTask(reviewStage.key)}
+                          className="wf-primary"
+                        >
+                          {pick(
+                            `「${reviewStage.label}」の出力を確認`,
+                            `Review "${reviewStage.label}" outputs`,
+                          )}
+                        </button>
+                      )}
                     {selectedJob.artifacts.length > 0 && (
                       <a
                         href="#artifacts"
@@ -695,7 +700,7 @@ export function ActionsSection({
                       stage={activeStage}
                       nowMs={nowMs}
                       approving={approving}
-                      onApprove={() => onApproveReview(selectedJob.id, activeStage)}
+                      onApprove={onApproveReview}
                     />
                     {/* Custom instruction preview */}
                     {customStageInstruction && (

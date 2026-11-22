@@ -8,8 +8,12 @@ export interface ReviewInspection {
   failureKind: string | null;
   summary: string | null;
   files: FileHead[];
+  fileHashes?: Readonly<Record<string, string>>;
 }
 
+// Keep existing ref-only callers bound to the inspection that returned that ref.
+// A serialized ref can carry its file digest separately in openReviewFile options.
+const inspectedHashes = new WeakMap<ReviewRef, Readonly<Record<string, string>>>();
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -70,6 +74,7 @@ export function createReviewOperations(client: RailflowHttpClient) {
             attempt,
             reviewSequence,
             files,
+            fileHashes,
             failureKind,
             summary,
             receipt = null,
@@ -95,8 +100,35 @@ export function createReviewOperations(client: RailflowHttpClient) {
               kind: 'protocol',
               message: 'Invalid review inspection response',
             });
+          const ref = { jobId, stageKey, attempt, reviewSequence };
+          let hashes: Readonly<Record<string, string>> | undefined;
+          if (fileHashes !== undefined || receipt !== null) {
+            if (!isRecord(fileHashes))
+              throw new RailflowError({
+                ...context,
+                kind: 'protocol',
+                message: 'Missing review file hashes',
+              });
+            const entries = files.map((file) => {
+              const hash = fileHashes[file.path];
+              if (
+                !Object.hasOwn(fileHashes, file.path) ||
+                typeof hash !== 'string' ||
+                !/^[a-f0-9]{64}$/.test(hash)
+              )
+                throw new RailflowError({
+                  ...context,
+                  kind: 'protocol',
+                  message: 'Invalid review file digest',
+                });
+              return [file.path, hash] as const;
+            });
+            hashes = Object.freeze(Object.fromEntries(entries));
+            inspectedHashes.set(ref, hashes);
+          }
           return {
-            ref: { jobId, stageKey, attempt, reviewSequence },
+            ref,
+            ...(hashes ? { fileHashes: hashes } : {}),
             receipt,
             failureKind,
             summary,
@@ -110,7 +142,7 @@ export function createReviewOperations(client: RailflowHttpClient) {
   async function openReviewFile(
     ref: ReviewRef,
     relPath: string,
-    { signal }: { signal?: AbortSignal } = {},
+    { signal, sha256 }: { signal?: AbortSignal; sha256?: string } = {},
   ): Promise<BytesResponse> {
     const operation = 'review.open_file';
     assertReviewRef(ref, operation);
@@ -122,6 +154,34 @@ export function createReviewOperations(client: RailflowHttpClient) {
         jobId,
         message: 'Invalid relative review file path',
       });
+    if (sha256 !== undefined && !/^[a-f0-9]{64}$/.test(sha256))
+      throw new RailflowError({ kind: 'usage', operation, jobId, message: 'Invalid file SHA-256' });
+    const hashes = inspectedHashes.get(ref);
+    if (hashes && !Object.hasOwn(hashes, relPath))
+      throw new RailflowError({
+        kind: 'http',
+        status: sha256 === undefined ? 404 : 409,
+        operation,
+        jobId,
+        message: 'No such file in the inspected review',
+      });
+    const inspected = hashes?.[relPath];
+    if (sha256 !== undefined && inspected !== undefined && sha256 !== inspected)
+      throw new RailflowError({
+        kind: 'http',
+        status: 409,
+        operation,
+        jobId,
+        message: 'The inspected review file has changed',
+      });
+    const digest = sha256 ?? inspected;
+    if (digest === undefined)
+      throw new RailflowError({
+        kind: 'usage',
+        operation,
+        jobId,
+        message: 'Pass the file SHA-256 from the original review inspection.',
+      });
     const current = await inspectReview(jobId, stageKey, { signal });
     if (current.ref.attempt !== attempt || current.ref.reviewSequence !== reviewSequence)
       throw new RailflowError({
@@ -131,10 +191,17 @@ export function createReviewOperations(client: RailflowHttpClient) {
         jobId,
         message: 'The review target has changed',
       });
-    return client.openBytes(
-      `/api/jobs/${encodeURIComponent(jobId)}/review/file?task=${encodeURIComponent(stageKey)}&sequence=${reviewSequence}&path=${encodeURIComponent(relPath)}`,
-      { operation, signal },
-    );
+
+    const params = new URLSearchParams({
+      task: stageKey,
+      sequence: String(reviewSequence),
+      path: relPath,
+      sha256: digest,
+    });
+    return client.openBytes(`/api/jobs/${encodeURIComponent(jobId)}/review/file?${params}`, {
+      operation,
+      signal,
+    });
   }
 
   async function approveExact(

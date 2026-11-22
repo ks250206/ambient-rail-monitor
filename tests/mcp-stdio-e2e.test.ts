@@ -250,7 +250,13 @@ it('submits, reviews and reads a live workflow over the supported MCP stdio entr
       expect(review.receipt).toMatch(/^[a-f0-9]{64}$/);
       const file = { path: 'report.html', bytes: Buffer.byteLength(report) };
       expect(review.files.items).toContainEqual(file);
-      expect(await tool('railflow_review_read', { ...review.ref, path: file.path })).toEqual({
+      expect(
+        await tool('railflow_review_read', {
+          ...review.ref,
+          path: file.path,
+          sha256: review.fileHashes![file.path],
+        }),
+      ).toEqual({
         ref: review.ref,
         file,
         preview: { text: report, offsetBytes: 0, nextOffsetBytes: null, truncated: false },

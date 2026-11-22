@@ -206,19 +206,37 @@ it('opens the selected review evidence before approving its exact attempt; graph
   expect(button('この試行の出力を例外承認して続行').disabled).toBe(true);
   expect(document.querySelector('.review-outputs a')).toBeNull();
   await act(async () => {
-    client.setQueryData(key, { reviewSequence: 17, files: [{ path: 'new.txt', bytes: 1 }] });
+    client.setQueryData(key, {
+      stageKey: 'scan_b',
+      attempt: 2,
+      receipt: 'b'.repeat(64),
+      failureKind: 'acceptance_failed',
+      summary: '閾値を下回りました',
+      reviewSequence: 17,
+      files: [{ path: 'new.txt', bytes: 1 }],
+      fileHashes: { 'new.txt': 'a'.repeat(64) },
+    });
     await new Promise((r) => setTimeout(r, 5));
   });
   const review = document.querySelector('.review-outputs')!;
   expect(review.textContent).toMatch(/scan_b・試行 2[\s\S]*b.csv[\s\S]*閾値を下回りました/);
   const link = new URL(review.querySelector('a')!.href);
   expect(Object.fromEntries(link.searchParams)).toEqual({
+    sha256: 'a'.repeat(64),
     path: 'new.txt',
     task: 'scan_b',
     sequence: '17',
   });
   await click(button('この試行の出力を例外承認して続行'));
-  expect(approve).toHaveBeenCalledWith(run.id, run.stages[1]);
+  expect(approve).toHaveBeenCalledWith({
+    mode: 'exact',
+    jobId: run.id,
+    stage: 'scan_b',
+    attempt: 2,
+    reviewSequence: 17,
+    receipt: 'b'.repeat(64),
+    exception: true,
+  });
   await enter(document.querySelector<HTMLElement>('.graph-node [role="combobox"]')!, 'scan_a');
   expect(document.activeElement?.textContent).toBe('scan_a');
   const picker = document.querySelector<HTMLElement>(

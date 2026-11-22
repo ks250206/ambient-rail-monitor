@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { text } from 'node:stream/consumers';
@@ -254,6 +255,104 @@ it('rejects an approval when reviewed output bytes change', async () => {
   }
 });
 
+it.each([1, 2])(
+  'binds all files shown in a v%s inspection to its exact receipt',
+  async (version) => {
+    const f = await workflowFixture();
+    try {
+      const human = version === 2;
+      await f.json('/api/projects', {
+        id: 'exact',
+        name: 'Review evidence',
+        ...(human ? { graph: { mode: 'dag', publishStage: 'publish' } } : {}),
+        stages: human
+          ? [
+              { key: 'source', runner: reportRunner },
+              { key: 'inspect', dependsOn: ['source'], runner: { kind: 'human' } },
+              { key: 'publish', dependsOn: ['inspect'], runner: reportRunner },
+            ]
+          : [{ key: 'inspect', gate: { requireReview: true } }],
+      });
+      const id = await enqueue(f);
+      f.worker(
+        "const fs=require('node:fs');fs.writeFileSync('report.html','review output');fs.writeFileSync('large.bin',Buffer.alloc(3*1024*1024,65))",
+      );
+      const job = await f.until(id, 'review');
+      expect(job.workflow?.version).toBe(version);
+      const stage = job.stages.find((s) => s.key === 'inspect')!;
+      const client = operations(f);
+      const review = await client.inspectReview(id, stage.key);
+      const receipt = receiptFor(review);
+      for (const relative of human
+        ? ['_inputs/source/report.html', '_railflow/review.md']
+        : ['report.html']) {
+        const file = path.join(f.home, 'projects/exact/work', id, stage.workspace!, relative);
+        const original = readFileSync(file);
+        expect(review.files).toContainEqual({ path: relative, bytes: original.length });
+        const digest = createHash('sha256').update(original).digest('hex');
+        expect(review.fileHashes?.[relative]).toBe(digest);
+        const opened = await client.openReviewFile(review.ref, relative);
+        try {
+          expect(await text(opened.stream)).toBe(original.toString());
+        } finally {
+          opened.close();
+        }
+        chmodSync(file, 0o600);
+        writeFileSync(file, Buffer.alloc(original.length, 88));
+        const params = new URLSearchParams({
+          task: stage.key,
+          sequence: String(review.ref.reviewSequence),
+          path: relative,
+        });
+        const url = f.url + `/api/jobs/${id}/review/file?`;
+        expect((await fetch(url + params)).status).toBe(400);
+        params.set('sha256', 'invalid');
+        expect((await fetch(url + params)).status).toBe(400);
+        await expect(client.openReviewFile({ ...review.ref }, relative)).rejects.toMatchObject({
+          kind: 'usage',
+        });
+        params.set('sha256', digest);
+        expect((await fetch(f.url + `/api/jobs/${id}/review/file?${params}`)).status).toBe(409);
+        await expect(client.openReviewFile(review.ref, relative)).rejects.toMatchObject({
+          status: 409,
+        });
+        await expect(
+          client.openReviewFile({ ...review.ref }, relative, { sha256: digest }),
+        ).rejects.toMatchObject({ status: 409 });
+        expect(receiptFor(await client.inspectReview(id, stage.key))).not.toBe(receipt);
+        await expect(client.approveExact(review.ref, receipt, false)).rejects.toMatchObject({
+          status: 409,
+        });
+        expect(approvals(await f.job(id))).toHaveLength(0);
+        writeFileSync(file, original);
+        const restored = await fetch(f.url + `/api/jobs/${id}/review/file?${params}`);
+        expect(restored.status).toBe(200);
+        expect(Buffer.from(await restored.arrayBuffer())).toEqual(original);
+      }
+      if (!human) {
+        const name = 'large.bin';
+        const large = path.join(f.home, 'projects/exact/work', id, stage.workspace!, name);
+        const original = readFileSync(large);
+        const response = await client.openReviewFile(review.ref, name);
+        try {
+          writeFileSync(large, Buffer.alloc(original.length, 66));
+          const digest = createHash('sha256');
+          for await (const chunk of response.stream) digest.update(chunk);
+          expect(digest.digest('hex')).toBe(review.fileHashes?.[name]);
+        } finally {
+          response.close();
+        }
+        writeFileSync(large, original);
+      }
+      await expect(client.approveExact(review.ref, receipt, false)).resolves.toMatchObject({
+        ok: true,
+      });
+    } finally {
+      await f.close();
+    }
+  },
+);
+
 it('writes exactly one approval event for concurrent requests using the same receipt', async () => {
   const f = await workflowFixture();
   try {
@@ -319,6 +418,12 @@ it('previews legacy review files without an exact receipt and preserves UI appro
     expect(review.receipt).toBeNull();
     expect(review.summary).toBe('Legacy review');
     expect(review.files).toEqual([{ path: 'report.html', bytes: 6 }]);
+    const file = await fetch(
+      f.url +
+        `/api/jobs/${id}/review/file?task=validate&sequence=${review.ref.reviewSequence}&path=report.html`,
+    );
+    expect(file.status).toBe(200);
+    expect(await file.text()).toBe('legacy');
     await expect(client.approveExact(review.ref, 'placeholder', false)).rejects.toMatchObject({
       status: 409,
     });
@@ -344,12 +449,15 @@ it('opens the requested review bytes and refuses a stale reference or invalid pa
       stream.close();
     }
     await expect(
-      client.openReviewFile({ ...review.ref, attempt: 2 }, 'report.html'),
+      client.openReviewFile({ ...review.ref, attempt: 2 }, 'report.html', {
+        sha256: review.fileHashes!['report.html'],
+      }),
     ).rejects.toMatchObject({ status: 409 });
     await expect(
       client.openReviewFile(
         { ...review.ref, reviewSequence: review.ref.reviewSequence + 1 },
         'report.html',
+        { sha256: review.fileHashes!['report.html'] },
       ),
     ).rejects.toMatchObject({ status: 409 });
     await expect(client.openReviewFile(review.ref, '../report.html')).rejects.toMatchObject({

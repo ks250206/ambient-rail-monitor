@@ -1,10 +1,19 @@
 import { RunMetrics, RuntimeDetails } from './RunMetrics.tsx';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { resolveExecution, RETRY_LABELS } from '../../shared/execution-policy.ts';
 import type { JobStage, WorkflowJob } from '../../shared/types.ts';
 import { useI18n } from '../i18n.ts';
 import { monitorJobHref } from '../utils/workflow.ts';
-import { request } from '../api.ts';
+import { useEffect, useState } from 'react';
+import { QcReviewPanel } from './QcReviewPanel.tsx';
+import { QC_FILENAME } from '../../shared/qc.ts';
+import {
+  ApiError,
+  fetchReviewQc,
+  request,
+  type ReviewApproval,
+  type InspectedOutput,
+} from '../api.ts';
 import { ConditionEvidence } from './ConditionBuilder.tsx';
 
 const RETRY_LABELS_EN: Record<string, string> = {
@@ -79,7 +88,7 @@ export function StageExecutionDetails({
   stage: JobStage;
   nowMs: number;
   approving: boolean;
-  onApprove: () => void;
+  onApprove: (target: ReviewApproval) => Promise<unknown> | void;
 }) {
   const { locale, pick } = useI18n();
   const spec = job.workflow?.project.stages.find(
@@ -230,9 +239,18 @@ export function StageExecutionDetails({
           <ConditionEvidence result={gate.result} />
         </div>
       ))}
-      {['running', 'review'].includes(job.status) && stage.status === 'review' && (
-        <ReviewOutputs job={job} stage={stage} approving={approving} onApprove={onApprove} />
-      )}
+      {(job.status === 'review' ||
+        job.status === 'running' ||
+        (job.workflow?.version === 2 && job.status === 'queued')) &&
+        stage.status === 'review' && (
+          <ReviewOutputs
+            key={JSON.stringify([job.id, stage.key, stage.reviewSequence])}
+            job={job}
+            stage={stage}
+            approving={approving}
+            onApprove={onApprove}
+          />
+        )}
       {config?.prompt && (
         <details>
           <summary>
@@ -256,24 +274,101 @@ function ReviewOutputs({
   job: WorkflowJob;
   stage: JobStage;
   approving: boolean;
-  onApprove: () => void;
+  onApprove: (target: ReviewApproval) => Promise<unknown> | void;
 }) {
   const { pick } = useI18n();
+  const client = useQueryClient();
+  const [recheck, setRecheck] = useState(false);
+  const [inspection, setInspection] = useState(0);
   const hasInventory = Boolean(stage.workspace && stage.reviewSequence !== undefined);
   const query = useQuery({
     queryKey: ['review-outputs', job.id, stage.key, stage.reviewSequence],
     enabled: hasInventory,
+    gcTime: 0,
+    retry: false,
+    staleTime: Infinity,
     queryFn: ({ signal }) =>
-      request<{ reviewSequence: number; files: Array<{ path: string; bytes: number }> }>(
-        `/api/jobs/${job.id}/review?task=${encodeURIComponent(stage.key)}`,
-        {
-          signal,
-        },
+      request<InspectedOutput>(`/api/jobs/${job.id}/review?task=${encodeURIComponent(stage.key)}`, {
+        signal,
+      }),
+  });
+  const data = query.data;
+  const current =
+    hasInventory &&
+    !recheck &&
+    query.isSuccess &&
+    !query.isFetching &&
+    data !== undefined &&
+    data.stageKey === stage.key &&
+    data.attempt === stage.attempts &&
+    data.reviewSequence === stage.reviewSequence &&
+    (data.failureKind === null ||
+      (typeof data.failureKind === 'string' && data.failureKind.length > 0)) &&
+    Array.isArray(data.files) &&
+    (!data.receipt ||
+      data.files.every(
+        (file) =>
+          typeof data.fileHashes?.[file.path] === 'string' &&
+          /^[a-f0-9]{64}$/.test(data.fileHashes[file.path]),
+      ));
+  const showQc = current && job.workflow?.version === 2 && stage.key === 'qc';
+  const qcFile = showQc ? stage.output?.files.find((file) => file.path === QC_FILENAME) : undefined;
+  const currentQc = useQuery({
+    queryKey: ['review-qc', job.id, stage.key, stage.reviewSequence, inspection],
+    enabled: !!qcFile,
+    retry: false,
+    queryFn: ({ signal }) =>
+      fetchReviewQc(
+        job.id,
+        stage.key,
+        data!.reviewSequence,
+        qcFile!.bytes,
+        signal,
+        data!.fileHashes?.[QC_FILENAME] ?? qcFile!.hash,
       ),
   });
-  const current =
-    hasInventory && query.isSuccess && query.data.reviewSequence === stage.reviewSequence;
-  const legacy = !hasInventory && !job.workflow;
+  const qcChanged =
+    !!qcFile && currentQc.error instanceof ApiError && currentQc.error.status === 409;
+  const checkingQc = !!qcFile && (currentQc.isPending || currentQc.isFetching);
+  useEffect(() => {
+    if (qcChanged) setRecheck(true);
+  }, [qcChanged]);
+  const receipt = data?.receipt;
+  const exact = current && typeof receipt === 'string' && receipt.trim().length > 0;
+  const legacy = !job.workflow && (!hasInventory || (current && data.receipt === null));
+  const failureKind = current ? data.failureKind : stage.failureKind;
+  async function reload() {
+    setRecheck(true);
+    await Promise.all([
+      query.refetch(),
+      client.invalidateQueries({ queryKey: ['monitor', job.projectId] }),
+    ]);
+    setInspection((i) => i + 1);
+    setRecheck(false);
+  }
+  async function approve() {
+    const coords = {
+      jobId: job.id,
+      stage: stage.key,
+      attempt: stage.attempts,
+      reviewSequence: stage.reviewSequence,
+    };
+    try {
+      if (exact)
+        await onApprove({
+          mode: 'exact',
+          jobId: job.id,
+          stage: data.stageKey,
+          attempt: data.attempt,
+          reviewSequence: data.reviewSequence,
+          receipt,
+          exception: data.failureKind !== null,
+        });
+      else if (legacy) await onApprove({ mode: 'legacy', ...coords });
+    } catch {
+      if (hasInventory) setRecheck(true);
+    }
+  }
   return (
     <div className="review-outputs">
       <h4>{pick('承認前の出力を確認', 'Review outputs before approval')}</h4>
@@ -282,7 +377,7 @@ function ReviewOutputs({
           `工程 ${stage.label}・試行 ${stage.attempts} の出力です。`,
           `Outputs from stage ${stage.label}, attempt ${stage.attempts}. `,
         )}
-        {stage.failureKind
+        {failureKind
           ? pick(
               '自動処理が失敗しています。例外承認すると、この試行の出力を採用して続行します。',
               'Automated checks failed. Exception approval accepts this attempt output and continues.',
@@ -296,7 +391,7 @@ function ReviewOutputs({
         {pick('対象：', 'Target: ')}
         {stage.item?.path ?? job.file}
       </p>
-      {stage.failureKind && (
+      {failureKind && (
         <p className="condition-error">
           {pick('失敗理由：', 'Failure reason: ')}
           {job.events.findLast(
@@ -305,8 +400,8 @@ function ReviewOutputs({
               event.attempt === stage.attempts &&
               event.type === 'stage.failed',
           )?.message ||
-            stage.summary ||
-            stage.failureKind}
+            (current ? data.summary : stage.summary) ||
+            failureKind}
         </p>
       )}
       {!hasInventory && (
@@ -325,14 +420,31 @@ function ReviewOutputs({
       {hasInventory && query.isPending && (
         <p role="status">{pick('出力を読み込み中…', 'Loading outputs…')}</p>
       )}
-      {hasInventory && (query.isError || (query.isSuccess && !current)) && (
-        <p role="alert">
-          {query.error?.message ??
-            pick('レビュー対象が更新されました。', 'Review target has changed.')}{' '}
-          <button className="wf-secondary" onClick={() => void query.refetch()}>
-            {pick('出力を再取得', 'Reload outputs')}
-          </button>
-        </p>
+      {hasInventory &&
+        (recheck ||
+          query.isError ||
+          (query.isSuccess && !query.isFetching && (!current || (!legacy && !exact)))) && (
+          <p role="alert">
+            {query.error?.message ??
+              pick(
+                '出力を再取得し、承認対象を確認してください。',
+                'Reload the outputs and inspect the review target again.',
+              )}{' '}
+            <button className="wf-secondary" onClick={() => void reload()}>
+              {pick('出力を再取得', 'Reload outputs')}
+            </button>
+          </p>
+        )}
+      {showQc && (
+        <QcReviewPanel
+          key={inspection}
+          job={job}
+          inspection={inspection}
+          review={data}
+          onReload={reload}
+          current={currentQc}
+          hasFile={!!qcFile}
+        />
       )}
       {current && query.data.files.length === 0 && (
         <p>{pick('この試行に出力ファイルはありません。', 'No output files in this attempt.')}</p>
@@ -344,7 +456,7 @@ function ReviewOutputs({
               <a
                 target="_blank"
                 rel="noreferrer"
-                href={`/api/jobs/${job.id}/review/file?${new URLSearchParams({ path: file.path, sequence: String(stage.reviewSequence), task: stage.key })}`}
+                href={`/api/jobs/${job.id}/review/file?${new URLSearchParams({ path: file.path, sequence: String(stage.reviewSequence), task: stage.key, ...(data.fileHashes?.[file.path] ? { sha256: data.fileHashes[file.path] } : {}) })}`}
               >
                 {file.path}
               </a>
@@ -356,12 +468,12 @@ function ReviewOutputs({
       <button
         type="button"
         className="wf-primary"
-        disabled={approving || (!current && !legacy)}
-        onClick={onApprove}
+        disabled={approving || recheck || checkingQc || qcChanged || (!exact && !legacy)}
+        onClick={() => void approve()}
       >
         {approving
           ? pick('承認中…', 'Approving…')
-          : stage.failureKind
+          : failureKind
             ? pick('この試行の出力を例外承認して続行', 'Exception-approve this output & continue')
             : pick('この工程を承認して続行', 'Approve stage & continue')}
       </button>

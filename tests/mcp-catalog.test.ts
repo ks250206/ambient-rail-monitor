@@ -715,17 +715,20 @@ it('returns the exact review file head with a binary preview', async () => {
           summary: null,
           failureKind: null,
           files: [file],
+          fileHashes: { [path]: 'a'.repeat(64) },
         });
       expect(url.pathname).toBe('/api/jobs/' + jobId + '/review/file');
       expect(url.searchParams.get('sequence')).toBe('2');
       expect(url.searchParams.get('path')).toBe(path);
+      expect(url.searchParams.get('sha256')).toBe('a'.repeat(64));
       res
         .writeHead(200, { 'content-type': 'application/pdf', 'content-length': '42' })
         .end(Buffer.alloc(42));
     }),
   });
   await mcp.ready();
-  const result = await mcp.tool('review_read', { ...ref, path });
+  expect((await mcp.tool('review_read', { ...ref, path })).isError).toBe(true);
+  const result = await mcp.tool('review_read', { ...ref, path, sha256: 'a'.repeat(64) });
   expect(result.structuredContent).toEqual({
     ok: true,
     data: { ref, file, preview: { binary: true, mimeType: 'application/pdf', bytes: 42 } },
