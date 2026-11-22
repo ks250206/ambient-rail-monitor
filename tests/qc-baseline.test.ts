@@ -196,6 +196,10 @@ it.each([
     const endpoint =
       fixture.url + '/api/jobs/' + ids[0] + '/qc-baseline?task=qc&sequence=2&baselineJobId=';
     expect((await fetch(endpoint + ids[1])).status).toBe(422);
+    const changed = Buffer.from(raw);
+    changed[changed.length - 1] ^= 1;
+    writeFileSync(path.join(root, 'qc.json'), changed);
+    expect((await fetch(endpoint + ids[1])).status).toBe(409);
     writeFileSync(path.join(root, 'qc.json'), '');
     expect((await fetch(endpoint + ids[1])).status).toBe(409);
     expect((await fetch(endpoint + ids[2])).status).toBe(404);
@@ -233,7 +237,7 @@ it.each(['absent', 'oversized', 'unknown version'])(
       });
       const { job } = await f.json<{ job: WorkflowJob }>('/api/demo', { projectId: 'manual' });
       f.worker('process.exit(99)');
-      await f.until(job.id, 'review');
+      const waiting = await f.until(job.id, 'review');
       const client = createReviewOperations(
         createClient({ origin: new URL(f.url), requestTimeoutMs: 5000 }),
       );
@@ -251,6 +255,21 @@ it.each(['absent', 'oversized', 'unknown version'])(
         expect(await qc.text()).toBe(json);
       } else {
         expect(qc.status).toBe(kind === 'absent' ? 404 : 422);
+      }
+      if (kind === 'oversized') {
+        const pathToQc = path.join(
+          f.home,
+          'projects/manual/work',
+          job.id,
+          waiting.stages[0].workspace!,
+          'qc.json',
+        );
+        const original = readFileSync(pathToQc);
+        const changed = Buffer.from(original);
+        changed[changed.length - 1] ^= 1;
+        writeFileSync(pathToQc, changed);
+        expect((await file('qc.json')).status).toBe(409);
+        writeFileSync(pathToQc, original);
       }
       await expect(
         client.approveExact(current.ref, current.receipt!, false),

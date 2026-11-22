@@ -19,6 +19,7 @@ import {
   watch,
   writeFileSync,
   writeSync,
+  unlinkSync,
 } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
@@ -945,21 +946,22 @@ function reviewInventory(job: WorkflowJob, stage: JobStage): Inventory {
   }
 }
 
+function reviewManifest(list: Inventory) {
+  try {
+    return outputManifest(list);
+  } catch {
+    throw new HttpError(409, 'The reviewed files have changed.');
+  }
+}
+
 function reviewReceipt(
   jobId: string,
   stageKey: string,
   attempt: number,
   reviewSequence: number,
   failureKind: string | null,
-  list: Inventory,
+  filesHash: string,
 ): string {
-  // Bind every file shown in the inspection, including upstream and runtime evidence.
-  let filesHash: string;
-  try {
-    filesHash = outputManifest(list).hash;
-  } catch {
-    throw new HttpError(409, 'The reviewed files have changed.');
-  }
   return createHmac('sha256', RECEIPT_KEY)
     .update(JSON.stringify([jobId, stageKey, attempt, reviewSequence, failureKind, filesHash]))
     .digest('hex');
@@ -1330,36 +1332,104 @@ function jobWorkspace(job: WorkflowJob): string {
   return path.join(projectWorkPath(job.projectId), job.id);
 }
 
-/** Read and authenticate the same bounded buffer that will be decoded for the response. */
-function readRecordedQcBytes(job: WorkflowJob, stage: JobStage) {
-  const entry = stage.output?.files.find((file) => file.path === QC_FILENAME);
-  if (!entry || !stage.workspace) throw new HttpError(404, 'No recorded QC output.');
+/** Hash the bytes copied to a private snapshot before any of them reach the response. */
+function verifyReviewFile(
+  root: string,
+  relative: string,
+  size: number,
+  expectedHash: string,
+  copy?: (chunk: Buffer, offset: number) => void,
+) {
   let fd: number | undefined;
-  let bytes: Buffer;
   try {
-    const relative = path.relative(HOME, jobWorkspace(job)).split(path.sep).join('/');
-    const filename = safeFile(HOME, relative + '/' + stage.workspace + '/' + QC_FILENAME);
-    fd = openSync(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    fd = openSync(
+      safeFile(root, relative),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
     const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size !== entry.bytes) throw new Error();
-    if (entry.bytes > QC_MAX_BYTES) throw new HttpError(422, 'qc.json exceeds 2 MiB.');
-    const buffer = Buffer.alloc(entry.bytes + 1);
-    let size = 0;
-    while (size < buffer.length) {
-      const n = readSync(fd, buffer, size, buffer.length - size, null);
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size !== size) throw new Error();
+    const buffer = Buffer.alloc(Math.min(size + 1, 256 * 1024));
+    const digest = createHash('sha256');
+    let offset = 0;
+    for (;;) {
+      const n = readSync(fd, buffer, 0, buffer.length, null);
       if (!n) break;
-      size += n;
+      if (offset + n > size) throw new Error();
+      const chunk = buffer.subarray(0, n);
+      digest.update(chunk);
+      copy?.(chunk, offset);
+      offset += n;
     }
-    bytes = buffer.subarray(0, size);
-    if (size !== entry.bytes || createHash('sha256').update(bytes).digest('hex') !== entry.hash)
-      throw new Error();
-  } catch (error) {
-    if (error instanceof HttpError) throw error;
-    throw new HttpError(409, 'The recorded QC output has changed.');
+    if (offset !== size || digest.digest('hex') !== expectedHash) throw new Error();
+  } catch {
+    throw new HttpError(409, 'The reviewed file has changed.');
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+function readRecordedQcBytes(job: WorkflowJob, stage: JobStage, inspectedHash?: string | null) {
+  const entry = stage.output?.files.find((file) => file.path === QC_FILENAME);
+  if (!entry || !stage.workspace) throw new HttpError(404, 'No recorded QC output.');
+  if (inspectedHash && entry.hash !== inspectedHash)
+    throw new HttpError(409, 'The inspected QC output has changed.');
+  const workspace = path.relative(HOME, jobWorkspace(job)).split(path.sep).join('/');
+  const bytes = entry.bytes <= QC_MAX_BYTES ? Buffer.alloc(entry.bytes) : null;
+  verifyReviewFile(
+    HOME,
+    workspace + '/' + stage.workspace + '/' + QC_FILENAME,
+    entry.bytes,
+    entry.hash,
+    bytes ? (chunk, offset) => chunk.copy(bytes, offset) : undefined,
+  );
+  if (!bytes) throw new HttpError(422, 'qc.json exceeds 2 MiB.');
   return bytes;
+}
+
+/** Large general review outputs can exceed the QC memory limit. Stream a verified private copy. */
+function serveVerifiedReview(
+  res: ServerResponse,
+  root: string,
+  relative: string,
+  size: number,
+  hash: string,
+  contentType: string,
+) {
+  const headers = {
+    'content-type': contentType,
+    'content-length': size,
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'content-security-policy':
+      "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'",
+  };
+  if (size <= QC_MAX_BYTES) {
+    const bytes = Buffer.alloc(size);
+    verifyReviewFile(root, relative, size, hash, (chunk, offset) => chunk.copy(bytes, offset));
+    res.writeHead(200, headers);
+    res.end(bytes);
+    return;
+  }
+  const temporary = path.join(os.tmpdir(), 'railflow-review-' + randomUUID());
+  const fd = openSync(temporary, 'wx+', 0o600);
+  let streamOwnsFd = false;
+  try {
+    // Only this descriptor can access the snapshot, including while a slow client reads it.
+    unlinkSync(temporary);
+    verifyReviewFile(root, relative, size, hash, (chunk) => {
+      let written = 0;
+      while (written < chunk.length)
+        written += writeSync(fd, chunk, written, chunk.length - written);
+    });
+    const stream = createReadStream('', { fd, start: 0, autoClose: true });
+    streamOwnsFd = true;
+    res.once('close', () => stream.destroy());
+    stream.once('error', (error) => res.destroy(error));
+    res.writeHead(200, headers);
+    stream.pipe(res);
+  } finally {
+    if (!streamOwnsFd) closeSync(fd);
+  }
 }
 
 function inputSnapshot(id: string, file: string): string {
@@ -3216,6 +3286,7 @@ const server = http.createServer(async (req, res) => {
       const root = path.join(jobWorkspace(job), stage.workspace);
       if (!previewMatch[2]) {
         const list = reviewInventory(job, stage);
+        const manifest = reviewManifest(list);
         const { key: stageKey, attempts: attempt, reviewSequence } = stage;
         const failureKind = stage.failureKind ?? null;
         const receipt =
@@ -3225,10 +3296,11 @@ const server = http.createServer(async (req, res) => {
           reviewSequence !== undefined &&
           Number.isSafeInteger(reviewSequence) &&
           reviewSequence > 0
-            ? reviewReceipt(job.id, stageKey, attempt, reviewSequence, failureKind, list)
+            ? reviewReceipt(job.id, stageKey, attempt, reviewSequence, failureKind, manifest.hash)
             : null;
         return deliverJSON(res, {
           files: list.files,
+          fileHashes: Object.fromEntries(manifest.files.map((file) => [file.path, file.hash])),
           reviewSequence,
           stageKey,
           attempt,
@@ -3240,13 +3312,16 @@ const server = http.createServer(async (req, res) => {
       if (Number(url.searchParams.get('sequence')) !== stage.reviewSequence)
         throw new HttpError(409, 'レビュー対象が更新されています。');
       const relative = url.searchParams.get('path') ?? '';
+      const expectedHash = url.searchParams.get('sha256');
+      if (expectedHash !== null && !/^[a-f0-9]{64}$/.test(expectedHash))
+        throw new HttpError(400, 'Invalid file SHA-256.');
       if (
         job.workflow?.version === 2 &&
         stage.key === 'qc' &&
         relative === QC_FILENAME &&
         stage.output?.files.some((file) => file.path === QC_FILENAME)
       ) {
-        const bytes = readRecordedQcBytes(job, stage);
+        const bytes = readRecordedQcBytes(job, stage, expectedHash);
         res.writeHead(200, {
           'content-type': 'application/json',
           'content-length': bytes.length,
@@ -3257,15 +3332,13 @@ const server = http.createServer(async (req, res) => {
         return res.end(bytes);
       }
       const list = reviewInventory(job, stage);
-      if (!list.files.some((file) => file.path === relative))
-        throw new HttpError(404, '出力が見つかりません。');
-      return serveFile(
-        res,
-        safeFile(root, relative),
-        MIME_TYPES[path.extname(relative).toLowerCase()] ?? 'application/octet-stream',
-        'GET',
-        true,
-      );
+      const file = list.files.find((item) => item.path === relative);
+      if (!file) throw new HttpError(expectedHash ? 409 : 404, '出力が見つかりません。');
+      const contentType =
+        MIME_TYPES[path.extname(relative).toLowerCase()] ?? 'application/octet-stream';
+      if (expectedHash)
+        return serveVerifiedReview(res, root, relative, file.bytes, expectedHash, contentType);
+      return serveFile(res, safeFile(root, relative), contentType, 'GET', true);
     }
 
     const exactReviewMatch = pathname.match(/^\/api\/jobs\/(run_[a-f0-9]{8})\/approve-exact$/);
@@ -3307,7 +3380,7 @@ const server = http.createServer(async (req, res) => {
           attempt,
           reviewSequence,
           step.failureKind ?? null,
-          reviewInventory(job, step),
+          reviewManifest(reviewInventory(job, step)).hash,
         ),
       );
       const supplied = Buffer.from(receipt);

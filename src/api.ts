@@ -55,9 +55,15 @@ export async function fetchReviewQc(
   sequence: number,
   size: number,
   signal: AbortSignal,
+  sha256: string,
 ) {
   if (!Number.isSafeInteger(size) || size < 0) throw new Error('Invalid qc.json size');
-  const params = new URLSearchParams({ task, sequence: String(sequence), path: QC_FILENAME });
+  const params = new URLSearchParams({
+    task,
+    sequence: String(sequence),
+    path: QC_FILENAME,
+    sha256,
+  });
   const response = await fetch(`/api/jobs/${jobId}/review/file?${params}`, {
     signal,
     headers: { Accept: 'application/json' },

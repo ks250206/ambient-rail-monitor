@@ -35,6 +35,7 @@ const inspection: InspectedOutput = {
   failureKind: null,
   receipt,
   summary: null,
+  fileHashes: { 'qc.json': 'd'.repeat(64) },
   files: [{ path: 'qc.json', bytes: raw.length }],
 };
 const key = ['review-outputs', run.id, stage.key, 12];
@@ -47,7 +48,10 @@ function show(
   recordedFiles = data.files,
 ) {
   setLocale('en');
-  client.setQueryData(key, data);
+  client.setQueryData(key, {
+    ...data,
+    fileHashes: Object.fromEntries(data.files.map((file) => [file.path, 'd'.repeat(64)])),
+  });
   client.setQueryData(['monitor', project.id], {
     jobs: ['A', 'B'].map((id) => ({
       ...run,
@@ -264,7 +268,7 @@ it.each([
     await show({ ...inspection, files: [...liveFiles] }, approval, run, inspection.files);
     await settle();
     expect(fetcher).toHaveBeenCalledWith(
-      '/api/jobs/current/review/file?task=qc&sequence=12&path=qc.json',
+      '/api/jobs/current/review/file?task=qc&sequence=12&path=qc.json&sha256=' + 'd'.repeat(64),
       expect.anything(),
     );
     expect(button('Reload outputs')).toBeTruthy();

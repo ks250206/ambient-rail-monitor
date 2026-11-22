@@ -330,6 +330,7 @@ it('inspects, reads and approves the exact review coordinates', async () => {
           failureKind: 'timeout',
           receipt: 'receipt',
           files: [{ path: 'out.txt', bytes: 4 }],
+          fileHashes: { 'out.txt': 'a'.repeat(64) },
         }
       : { ok: true, stageKey: 'run', ...(body as object) },
   );
@@ -347,7 +348,7 @@ it('inspects, reads and approves the exact review coordinates', async () => {
     out: 'test',
   });
   expect(open).toHaveBeenCalledWith(
-    expect.stringContaining('sequence=4&path=out.txt'),
+    expect.stringContaining('sequence=4&path=out.txt&sha256=' + 'a'.repeat(64)),
     expect.anything(),
   );
   for (const exception of [true, false]) {
@@ -382,7 +383,8 @@ it('rejects binary stdout in JSON or a terminal and allows raw redirected output
           summary: null,
           failureKind: null,
           receipt: 'token',
-          files: [],
+          files: [{ path: 'image.png', bytes: 3 }],
+          fileHashes: { 'image.png': 'a'.repeat(64) },
         }
       : { job: job() },
   );

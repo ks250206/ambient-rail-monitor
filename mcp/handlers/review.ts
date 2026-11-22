@@ -7,8 +7,21 @@ export const reviewHandlers = {
     args: ToolArgs<'railflow_review_list'>,
     { review, page }: ToolHandlerContext,
   ) {
-    const { files, ...inspection } = await review.inspectReview(args.jobId, args.stageKey);
-    return page(files, args, (files) => ({ ...inspection, files }));
+    const { files, fileHashes, ...inspection } = await review.inspectReview(
+      args.jobId,
+      args.stageKey,
+    );
+    return page(files, args, (files) => ({
+      ...inspection,
+      files,
+      ...(fileHashes
+        ? {
+            fileHashes: Object.fromEntries(
+              files.items.map((file) => [file.path, fileHashes[file.path]]),
+            ),
+          }
+        : {}),
+    }));
   },
   railflow_review_read(
     args: ToolArgs<'railflow_review_read'>,
@@ -37,7 +50,7 @@ export const reviewHandlers = {
             message: 'Review file not found',
           });
         file = entry;
-        return review.openReviewFile(ref, path);
+        return review.openReviewFile(inspection.ref, path, { sha256: args.sha256 });
       },
       (preview) => ({ ref, file, preview }),
     );

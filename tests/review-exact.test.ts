@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -273,7 +274,9 @@ it.each([1, 2])(
           : [{ key: 'inspect', gate: { requireReview: true } }],
       });
       const id = await enqueue(f);
-      f.worker("require('node:fs').writeFileSync('report.html','review output')");
+      f.worker(
+        "const fs=require('node:fs');fs.writeFileSync('report.html','review output');fs.writeFileSync('large.bin',Buffer.alloc(3*1024*1024,65))",
+      );
       const job = await f.until(id, 'review');
       expect(job.workflow?.version).toBe(version);
       const stage = job.stages.find((s) => s.key === 'inspect')!;
@@ -286,6 +289,8 @@ it.each([1, 2])(
         const file = path.join(f.home, 'projects/exact/work', id, stage.workspace!, relative);
         const original = readFileSync(file);
         expect(review.files).toContainEqual({ path: relative, bytes: original.length });
+        const digest = createHash('sha256').update(original).digest('hex');
+        expect(review.fileHashes?.[relative]).toBe(digest);
         const opened = await client.openReviewFile(review.ref, relative);
         try {
           expect(await text(opened.stream)).toBe(original.toString());
@@ -294,12 +299,43 @@ it.each([1, 2])(
         }
         chmodSync(file, 0o600);
         writeFileSync(file, Buffer.alloc(original.length, 88));
+        const params = new URLSearchParams({
+          task: stage.key,
+          sequence: String(review.ref.reviewSequence),
+          path: relative,
+          sha256: digest,
+        });
+        expect((await fetch(f.url + `/api/jobs/${id}/review/file?${params}`)).status).toBe(409);
+        await expect(client.openReviewFile(review.ref, relative)).rejects.toMatchObject({
+          status: 409,
+        });
+        await expect(
+          client.openReviewFile({ ...review.ref }, relative, { sha256: digest }),
+        ).rejects.toMatchObject({ status: 409 });
         expect(receiptFor(await client.inspectReview(id, stage.key))).not.toBe(receipt);
         await expect(client.approveExact(review.ref, receipt, false)).rejects.toMatchObject({
           status: 409,
         });
         expect(approvals(await f.job(id))).toHaveLength(0);
         writeFileSync(file, original);
+        const restored = await fetch(f.url + `/api/jobs/${id}/review/file?${params}`);
+        expect(restored.status).toBe(200);
+        expect(Buffer.from(await restored.arrayBuffer())).toEqual(original);
+      }
+      if (!human) {
+        const name = 'large.bin';
+        const large = path.join(f.home, 'projects/exact/work', id, stage.workspace!, name);
+        const original = readFileSync(large);
+        const response = await client.openReviewFile(review.ref, name);
+        try {
+          writeFileSync(large, Buffer.alloc(original.length, 66));
+          const digest = createHash('sha256');
+          for await (const chunk of response.stream) digest.update(chunk);
+          expect(digest.digest('hex')).toBe(review.fileHashes?.[name]);
+        } finally {
+          response.close();
+        }
+        writeFileSync(large, original);
       }
       await expect(client.approveExact(review.ref, receipt, false)).resolves.toMatchObject({
         ok: true,

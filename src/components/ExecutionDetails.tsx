@@ -304,7 +304,13 @@ function ReviewOutputs({
     data.reviewSequence === stage.reviewSequence &&
     (data.failureKind === null ||
       (typeof data.failureKind === 'string' && data.failureKind.length > 0)) &&
-    Array.isArray(data.files);
+    Array.isArray(data.files) &&
+    (!data.receipt ||
+      data.files.every(
+        (file) =>
+          typeof data.fileHashes?.[file.path] === 'string' &&
+          /^[a-f0-9]{64}$/.test(data.fileHashes[file.path]),
+      ));
   const showQc = current && job.workflow?.version === 2 && stage.key === 'qc';
   const qcFile = showQc ? stage.output?.files.find((file) => file.path === QC_FILENAME) : undefined;
   const currentQc = useQuery({
@@ -312,7 +318,14 @@ function ReviewOutputs({
     enabled: !!qcFile,
     retry: false,
     queryFn: ({ signal }) =>
-      fetchReviewQc(job.id, stage.key, data!.reviewSequence, qcFile!.bytes, signal),
+      fetchReviewQc(
+        job.id,
+        stage.key,
+        data!.reviewSequence,
+        qcFile!.bytes,
+        signal,
+        data!.fileHashes?.[QC_FILENAME] ?? qcFile!.hash,
+      ),
   });
   const qcChanged =
     !!qcFile && currentQc.error instanceof ApiError && currentQc.error.status === 409;
@@ -443,7 +456,7 @@ function ReviewOutputs({
               <a
                 target="_blank"
                 rel="noreferrer"
-                href={`/api/jobs/${job.id}/review/file?${new URLSearchParams({ path: file.path, sequence: String(stage.reviewSequence), task: stage.key })}`}
+                href={`/api/jobs/${job.id}/review/file?${new URLSearchParams({ path: file.path, sequence: String(stage.reviewSequence), task: stage.key, ...(data.fileHashes?.[file.path] ? { sha256: data.fileHashes[file.path] } : {}) })}`}
               >
                 {file.path}
               </a>

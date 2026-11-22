@@ -214,6 +214,7 @@ it('opens the selected review evidence before approving its exact attempt; graph
       summary: '閾値を下回りました',
       reviewSequence: 17,
       files: [{ path: 'new.txt', bytes: 1 }],
+      fileHashes: { 'new.txt': 'a'.repeat(64) },
     });
     await new Promise((r) => setTimeout(r, 5));
   });
@@ -221,6 +222,7 @@ it('opens the selected review evidence before approving its exact attempt; graph
   expect(review.textContent).toMatch(/scan_b・試行 2[\s\S]*b.csv[\s\S]*閾値を下回りました/);
   const link = new URL(review.querySelector('a')!.href);
   expect(Object.fromEntries(link.searchParams)).toEqual({
+    sha256: 'a'.repeat(64),
     path: 'new.txt',
     task: 'scan_b',
     sequence: '17',

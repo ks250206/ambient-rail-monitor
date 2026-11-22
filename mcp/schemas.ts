@@ -663,16 +663,20 @@ export const toolSchemas = {
   railflow_rerun_execute: tool(rerun, object({ parentJobId: jobId, job: jobHead })),
   railflow_review_list: tool(
     object({ jobId, stageKey: taskKey, ...page }, pageKeys),
-    object({
-      ref: reviewRef,
-      receipt: nullable(string),
-      failureKind: nullable(string),
-      summary: nullable(string),
-      files: list(fileHead),
-    }),
+    object(
+      {
+        ref: reviewRef,
+        receipt: nullable(string),
+        failureKind: nullable(string),
+        summary: nullable(string),
+        files: list(fileHead),
+        fileHashes: dictionary(hash),
+      },
+      ['fileHashes'],
+    ),
   ),
   railflow_review_read: tool(
-    object({ ...reviewRefFields, path: rel, ...window }, windowKeys),
+    object({ ...reviewRefFields, path: rel, sha256: hash, ...window }, [...windowKeys, 'sha256']),
     object({ ref: reviewRef, file: fileHead, preview }),
   ),
   railflow_review_approve: tool(

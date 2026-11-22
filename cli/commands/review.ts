@@ -19,8 +19,8 @@ export const reviewCommands = {
     );
   }),
   'review read': command(
-    'review read JOB --stage STAGE --attempt N --sequence N --path REL [--out FILE]',
-    ['stage', 'attempt', 'sequence', 'path', 'out'],
+    'review read JOB --stage STAGE --attempt N --sequence N --path REL [--sha256 HASH] [--out FILE]',
+    ['stage', 'attempt', 'sequence', 'path', 'sha256', 'out'],
     1,
     async (ctx) => {
       const destination = ctx.option('out');
@@ -28,6 +28,7 @@ export const reviewCommands = {
       const review = createReviewOperations(ctx.client);
       const response = await review.openReviewFile(exactRef(ctx), ctx.required('path'), {
         signal: ctx.signal,
+        sha256: ctx.option('sha256'),
       });
       await ctx.output.stream(response, destination);
     },
