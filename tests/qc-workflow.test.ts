@@ -121,6 +121,7 @@ it('rejects malformed CSVs and mismatched inputs before writing evidence, with a
       [predictedCsv.replace('mV', 'V'), /sample_id or unit/],
       [predictedCsv.replace('1.0', 'NaN'), /Non-finite/],
       [predictedCsv.replace('1.0', 'inf'), /Non-finite/],
+      [predictedCsv.replace('1.0', '1_0'), /Underscore in numeric cell/],
       [predictedCsv.replace(',01,', ',_01,'), /invalid sample_id or point_id/],
       [predictedCsv.replace('predicted,unit', 'predicted,predicted'), /unique CSV columns/],
       [predictedCsv.replace(',predicted', ''), /unique CSV columns/],
@@ -142,6 +143,7 @@ it('rejects malformed CSVs and mismatched inputs before writing evidence, with a
     for (const [data, reason] of [
       [observedCsv().replace('x,observed', 'x,x'), /unique CSV columns/],
       [observedCsv().replace('1.5', 'Infinity'), /Non-finite/],
+      [observedCsv().replace('1.5', '1_0'), /Underscore in numeric cell/],
       [observedCsv().replace('S-01,A', 'other,A'), /sample_id or unit/],
       [observedCsv().replace('mV', 'K'), /sample_id or unit/],
       ['sample_id,point_id,x,observed,unit\nS,1,1,4,V\nS,2,1,8,V', /all x values are equal/],
@@ -155,14 +157,48 @@ it('rejects malformed CSVs and mismatched inputs before writing evidence, with a
   }
 });
 
+it('leaves no partial predictions on overflow or failed replacement', () => {
+  const f = pythonFixture();
+  try {
+    const observed = path.join(f.root, 'observed.csv');
+    const predicted = path.join(f.root, 'predicted.csv');
+    // The fitted value at x=2 is 4/3 of the largest finite float.
+    const rows = [-Number.MAX_VALUE, Number.MAX_VALUE, Number.MAX_VALUE].map((value, x) =>
+      ['S', x, x, value, 'V'].join(','),
+    );
+    writeFileSync(observed, ['sample_id,point_id,x,observed,unit', ...rows].join('\n'));
+    const overflow = f.run('fit');
+    expect(overflow.status).toBe(1);
+    expect(overflow.stderr).toMatch(/OverflowError|Non-finite fitted prediction/);
+    expect(existsSync(predicted)).toBe(false);
+    expect(existsSync(predicted + '.tmp')).toBe(false);
+
+    writeFileSync(observed, observedCsv());
+    mkdirSync(predicted);
+    expect(f.run('fit').status).toBe(1);
+    expect(existsSync(predicted + '.tmp')).toBe(false);
+  } finally {
+    f.close();
+  }
+});
+
 it('stops publication on missing, malformed or internally inconsistent evidence', () => {
   const f = pythonFixture();
   try {
     f.upstream('qc', 'other.json', '{}');
     expect(f.run('publish').stderr).toMatch(/Missing or duplicate/);
     const qc = qcFixture();
+    const serialized = JSON.stringify(qc);
+    for (const token of ['NaN', 'Infinity', '-Infinity']) {
+      f.upstream('qc', 'qc.json', serialized.replace('"value":0.5', '"value":' + token));
+      const result = f.run('publish');
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Invalid JSON constant: ' + token);
+      expect(existsSync(path.join(f.root, 'report.html'))).toBe(false);
+    }
     for (const data of [
       '{',
+      serialized.replace('"formatVersion":1', '"formatVersion":1.0'),
       ' '.repeat(QC_MAX_BYTES + 1),
       ...[
         { formatVersion: 2 },

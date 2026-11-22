@@ -80,6 +80,7 @@ export function parseQcV1(input: unknown): QcV1 {
       ? 0
       : scale *
         Math.sqrt(qc.residuals.reduce((sum, p) => sum + (p.residual / scale) ** 2, 0) / seen.size);
+  if (!Number.isFinite(rmse)) throw new Error('Non-finite RMSE');
   if (Math.abs(qc.value - rmse) > QC_RMSE_TOLERANCE * Math.max(1, Math.abs(qc.value)))
     throw new Error('RMSE does not match residuals');
   const passed = qc.value <= qc.threshold;

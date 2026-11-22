@@ -41,6 +41,8 @@ def read_points(raw, measurements):
             raise ValueError(f'Duplicate point_id: {pid}')
         if u not in ('mV', 'V') or (points and (sid, u) != (sample, unit)):
             raise ValueError(f'Inconsistent sample_id or unit at {pid}')
+        if any('_' in row[name] for name in measurements):
+            raise ValueError(f'Underscore in numeric cell at {pid}')
         values = tuple(float(row[name]) for name in measurements)
         if not all(map(math.isfinite, values)):
             raise ValueError(f'Non-finite measurement at {pid}')
@@ -90,10 +92,17 @@ if not variance:
     raise ValueError('Cannot fit a line when all x values are equal')
 slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / variance
 predictions = [float(mean_y + slope * (x - mean_x)) for x in xs]
-with Path('predicted.csv').open('w', encoding='utf-8', newline='') as f:
-    writer = csv.writer(f)
-    writer.writerow(['sample_id', 'point_id', 'predicted', 'unit'])
-    writer.writerows((sample, pid, value, unit) for pid, value in zip(observed, predictions))
+if not all(map(math.isfinite, predictions)):
+    raise ValueError('Non-finite fitted prediction')
+temporary = Path('predicted.csv.tmp')
+try:
+    with temporary.open('w', encoding='utf-8', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['sample_id', 'point_id', 'predicted', 'unit'])
+        writer.writerows((sample, pid, value, unit) for pid, value in zip(observed, predictions))
+    temporary.replace('predicted.csv')
+finally:
+    temporary.unlink(missing_ok=True)
 `;
 
 const rmseCode = `
@@ -154,10 +163,14 @@ def finite(value):
 def identifier(value):
     return isinstance(value, str) and re.fullmatch(r'${QC_ID_PATTERN}', value)
 
-qc = json.loads(upstream_bytes('qc', '${QC_FILENAME}', ${QC_MAX_BYTES}).decode('utf-8'))
+def reject_constant(token):
+    raise ValueError(f'Invalid JSON constant: {token}')
+
+qc = json.loads(upstream_bytes('qc', '${QC_FILENAME}', ${QC_MAX_BYTES}).decode('utf-8'),
+                parse_constant=reject_constant)
 if not isinstance(qc, dict) or set(qc) != set(${JSON.stringify(QC_V1_SCHEMA.required)}):
     raise ValueError('Invalid QC fields')
-if (qc['format'] != 'railflow.qc' or not finite(qc['formatVersion']) or qc['formatVersion'] != 1
+if (qc['format'] != 'railflow.qc' or type(qc['formatVersion']) is not int or qc['formatVersion'] != 1
         or qc['metricId'] != 'rmse' or qc['validatorVersion'] != '${QC_VALIDATOR_VERSION}'
         or qc['unit'] not in ('mV', 'V') or not identifier(qc['sampleId'])):
     raise ValueError('Invalid QC version, metric, sample or unit')

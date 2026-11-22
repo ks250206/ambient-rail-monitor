@@ -8,6 +8,8 @@ it('parses versioned evidence from UTF-8 bytes and enforces the file limit befor
   expect(parseQcV1Bytes(Buffer.from(serialized.padEnd(QC_MAX_BYTES)))).toEqual(qc);
   expect(() => parseQcV1Bytes(Buffer.from(serialized.padEnd(QC_MAX_BYTES + 1)))).toThrow();
   expect(() => parseQcV1Bytes(Uint8Array.of(0xff))).toThrow();
+  const withBom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(serialized)]);
+  expect(() => parseQcV1Bytes(withBom)).toThrow();
 });
 
 it('rejects malformed or inconsistent QC evidence', () => {
