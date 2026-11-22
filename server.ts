@@ -1317,7 +1317,6 @@ function jobWorkspace(job: WorkflowJob): string {
 function readRecordedQcBytes(job: WorkflowJob, stage: JobStage) {
   const entry = stage.output?.files.find((file) => file.path === QC_FILENAME);
   if (!entry || !stage.workspace) throw new HttpError(404, 'No recorded QC output.');
-  if (entry.bytes > QC_MAX_BYTES) throw new HttpError(422, 'qc.json exceeds 2 MiB.');
   let fd: number | undefined;
   let bytes: Buffer;
   try {
@@ -1325,9 +1324,8 @@ function readRecordedQcBytes(job: WorkflowJob, stage: JobStage) {
     const filename = safeFile(HOME, relative + '/' + stage.workspace + '/' + QC_FILENAME);
     fd = openSync(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.nlink !== 1) throw new Error();
-    if (stat.size > QC_MAX_BYTES) throw new HttpError(422, 'qc.json exceeds 2 MiB.');
-    if (stat.size !== entry.bytes) throw new Error();
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size !== entry.bytes) throw new Error();
+    if (entry.bytes > QC_MAX_BYTES) throw new HttpError(422, 'qc.json exceeds 2 MiB.');
     const buffer = Buffer.alloc(entry.bytes + 1);
     let size = 0;
     while (size < buffer.length) {
@@ -3140,7 +3138,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     const baselineMatch = pathname.match(/^\/api\/jobs\/(run_[a-f0-9]{8})\/qc-baseline$/);
-    if (baselineMatch && req.method === 'GET') {
+    if (baselineMatch) {
+      if (req.method !== 'GET') {
+        res.setHeader('Allow', 'GET');
+        throw new HttpError(405, 'Method not allowed');
+      }
       const query = url.searchParams;
       const baselineId = query.get('baselineJobId');
       const sequence = Number(query.get('sequence'));
@@ -3227,7 +3229,9 @@ const server = http.createServer(async (req, res) => {
         job.workflow?.version === 2 &&
         stage.key === 'qc' &&
         relative === QC_FILENAME &&
-        req.headers.accept === 'application/json'
+        (req.headers.accept ?? '')
+          .split(',')
+          .some((part) => part.split(';')[0].trim().toLowerCase() === 'application/json')
       ) {
         const bytes = readRecordedQcBytes(job, stage);
         res.writeHead(200, {

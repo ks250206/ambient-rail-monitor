@@ -1,10 +1,12 @@
-import { useQuery } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
-import { QC_FILENAME, parseQcV1, sameQcComparisonKey, type QcV1 } from '../../shared/qc.ts';
+import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import { useState } from 'react';
+import { QC_HASH_PATTERN, parseQcV1, sameQcComparisonKey, type QcV1 } from '../../shared/qc.ts';
 import type { WorkflowJob } from '../../shared/types.ts';
-import { ApiError, fetchReviewQc, request, useProjectJobs, type InspectedOutput } from '../api.ts';
+import { ApiError, request, useProjectJobs, type InspectedOutput } from '../api.ts';
 import { useI18n } from '../i18n.ts';
 import { CustomSelect } from './CustomSelect.tsx';
+
+const outputHashPattern = new RegExp('^' + QC_HASH_PATTERN + '$');
 
 function QcSummary({ qc, label }: { qc: QcV1; label: string }) {
   const { pick } = useI18n();
@@ -67,7 +69,11 @@ function QcComparison({ current, baseline }: { current: QcV1; baseline: QcV1 }) 
       values: current.residuals.map((p) => byId.get(p.pointId)!),
     },
   ];
-  const peak = Math.max(...series.flatMap((s) => s.values.map(Math.abs))) || 1;
+  let maxMagnitude = 0;
+  for (const { values } of series) {
+    for (const value of values) maxMagnitude = Math.max(maxMagnitude, Math.abs(value));
+  }
+  const peak = maxMagnitude || 1;
   const yAxis = pick('符号付き残差', 'Signed residual') + ' (' + current.unit + ')';
   const xAxis = pick('測定点（今回の観測行順）', 'Measurement point (current observation order)');
   return (
@@ -129,13 +135,15 @@ export function QcReviewPanel({
   review,
   inspection,
   onReload,
-  onTargetChanged,
+  current,
+  hasFile,
 }: {
   job: WorkflowJob;
   review: InspectedOutput;
   inspection: number;
   onReload: () => Promise<void>;
-  onTargetChanged: () => void;
+  current: UseQueryResult<QcV1>;
+  hasFile: boolean;
 }) {
   const { pick } = useI18n();
   const [selected, setSelected] = useState('');
@@ -149,18 +157,7 @@ export function QcReviewPanel({
       j.stages.some((s) => s.key === 'qc' && s.status === 'success'),
   );
   const baselineJobId = candidates.find((j) => j.id === selected)?.id;
-  const file = review.files.find((f) => f.path === QC_FILENAME);
   const key = [job.id, review.stageKey, review.reviewSequence, inspection];
-  const current = useQuery({
-    queryKey: ['review-qc', ...key],
-    enabled: !!file,
-    retry: false,
-    queryFn: ({ signal }) =>
-      fetchReviewQc(job.id, review.stageKey, review.reviewSequence, file!.bytes, signal),
-  });
-  useEffect(() => {
-    if (current.error instanceof ApiError && current.error.status === 409) onTargetChanged();
-  }, [current.error, onTargetChanged]);
   const baseline = useQuery({
     queryKey: ['review-qc-baseline', ...key, baselineJobId],
     enabled: !!baselineJobId && current.isSuccess,
@@ -171,12 +168,16 @@ export function QcReviewPanel({
         sequence: String(review.reviewSequence),
         baselineJobId: baselineJobId!,
       });
-      const result = await request<{ baselineJobId: string; stageKey: string; qc: unknown }>(
-        `/api/jobs/${job.id}/qc-baseline?${params}`,
-        { signal },
-      );
+      const result = await request<{
+        baselineJobId: string;
+        stageKey: string;
+        outputHash: unknown;
+        qc: unknown;
+      }>(`/api/jobs/${job.id}/qc-baseline?${params}`, { signal });
       if (result.baselineJobId !== baselineJobId || result.stageKey !== review.stageKey)
         throw new Error('Unexpected baseline job or task');
+      if (typeof result.outputHash !== 'string' || !outputHashPattern.test(result.outputHash))
+        throw new Error('Invalid baseline outputHash');
       return parseQcV1(result.qc);
     },
   });
@@ -202,7 +203,7 @@ export function QcReviewPanel({
   return (
     <section className="my-3 space-y-3 border-l-2 border-science-blue pl-3">
       <h4>{pick('承認前のQC比較', 'Pre-approval QC comparison')}</h4>
-      {!file ? (
+      {!hasFile ? (
         <p>
           {pick('この試行のルートに qc.json がありません。', 'This attempt has no root qc.json.')}
         </p>

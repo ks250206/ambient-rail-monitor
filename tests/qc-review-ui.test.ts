@@ -156,6 +156,62 @@ it.each([
   expect(button(approveLabel).disabled).toBe(false);
 });
 
+it.each([undefined, 'A'.repeat(64), 'b'.repeat(63)])(
+  'rejects an invalid baseline outputHash (%s)',
+  async (outputHash) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        url.includes('/review/file?')
+          ? new Response(raw)
+          : Response.json({ baselineJobId: 'B', stageKey: 'qc', outputHash, qc: qcFixture() }),
+      ),
+    );
+    await show();
+    await settle();
+    await choose('B');
+    await settle();
+    expect(document.body.textContent).toContain('Invalid baseline outputHash');
+    expect(document.querySelector('polyline')).toBeNull();
+    expect(button(approveLabel).disabled).toBe(false);
+  },
+);
+
+it('holds approval during initial QC and reinspection, then allows manual review of a 422', async () => {
+  let answerQc!: (response: Response) => void;
+  const approve = vi.fn(approveReviewedOutput);
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      if (url.includes('/review/file?'))
+        return new Promise<Response>((resolve) => {
+          answerQc = resolve;
+        });
+      if (url.includes('/review?')) return Response.json(inspection);
+      return Response.json({ jobs: [] });
+    }),
+  );
+  await show(inspection, approve);
+  expect(button(approveLabel).disabled).toBe(true);
+  await click(approveLabel);
+  expect(approve).not.toHaveBeenCalled();
+  await act(async () => answerQc(Response.json({ error: 'Changed' }, { status: 409 })));
+  await settle();
+  expect(button(approveLabel).disabled).toBe(true);
+  await click('Reload outputs');
+  await settle();
+  expect(document.body.textContent).toContain('Loading current QC');
+  expect(button(approveLabel).disabled).toBe(true);
+  await click(approveLabel);
+  expect(approve).not.toHaveBeenCalled();
+  await act(async () =>
+    answerQc(Response.json({ error: 'Recorded QC is too large' }, { status: 422 })),
+  );
+  await settle();
+  expect(document.body.textContent).toContain('Recorded QC is too large');
+  expect(button(approveLabel).disabled).toBe(false);
+});
+
 it.each([
   ['nested/qc.json', raw.length, raw, 'no root qc.json'],
   ['qc.json', QC_MAX_BYTES + 1, raw, 'exceeds 2 MiB'],

@@ -91,7 +91,13 @@ it('compares real reviewed outputs without changing either job or its evidence',
     );
     const currentBytes = readFileSync(currentFile);
     writeFileSync(currentFile, currentBytes.toString().replace('S-01', 'S-02'));
-    expect((await fetch(raw.url, { headers: { Accept: 'application/json' } })).status).toBe(409);
+    for (const accept of [
+      'application/json',
+      'application/json, */*',
+      'text/plain, Application/JSON ; charset=utf-8',
+    ]) {
+      expect((await fetch(raw.url, { headers: { Accept: accept } })).status).toBe(409);
+    }
     await expect(review.approveExact(current.ref, current.receipt!, false)).rejects.toMatchObject({
       status: 409,
     });
@@ -99,6 +105,9 @@ it('compares real reviewed outputs without changing either job or its evidence',
     expect((await get({ baselineJobId: id })).status).toBe(400);
     expect((await get({ path: 'other.json' })).status).toBe(400);
     expect((await fetch(endpoint)).status).toBe(400);
+    const post = await fetch(endpoint + '?' + params, { method: 'POST' });
+    expect(post.status).toBe(405);
+    expect(post.headers.get('Allow')).toBe('GET');
     expect((await get({ sequence: String(current.ref.reviewSequence + 1) })).status).toBe(409);
     const foreign = await f.json<{ job: WorkflowJob }>('/api/demo', { projectId: 'default' });
     expect((await get({ baselineJobId: foreign.job.id })).status).toBe(404);
@@ -107,7 +116,7 @@ it('compares real reviewed outputs without changing either job or its evidence',
     writeFileSync(file, Buffer.alloc(original.length, 32));
     expect((await get()).status).toBe(409);
     writeFileSync(file, Buffer.alloc(QC_MAX_BYTES + 1));
-    expect((await get()).status).toBe(422);
+    expect((await get()).status).toBe(409);
     renameSync(file, file + '.saved');
     writeFileSync(file + '.saved', original);
     for (const link of [symlinkSync, linkSync]) {
@@ -125,11 +134,13 @@ it('compares real reviewed outputs without changing either job or its evidence',
   }
 });
 
-it('rejects archived unknown QC versions after hash verification and jobs with no QC', async () => {
+it.each([
+  ['unknown format version', JSON.stringify({ ...qcFixture(), formatVersion: 2 })],
+  ['oversized recorded file', JSON.stringify(qcFixture()).padEnd(QC_MAX_BYTES + 1)],
+])('rejects a baseline with %s and preserves legacy 404', async (_reason, raw) => {
   const home = mkdtempSync(path.join(os.tmpdir(), 'railflow-qc-baseline-'));
   let fixture: Awaited<ReturnType<typeof workflowFixture>> | undefined;
   try {
-    const raw = JSON.stringify({ ...qcFixture(), formatVersion: 2 });
     const files = [
       { path: 'qc.json', bytes: Buffer.byteLength(raw), hash: sha256(raw), executable: false },
     ];
@@ -172,6 +183,8 @@ it('rejects archived unknown QC versions after hash verification and jobs with n
     const endpoint =
       fixture.url + '/api/jobs/' + ids[0] + '/qc-baseline?task=qc&sequence=2&baselineJobId=';
     expect((await fetch(endpoint + ids[1])).status).toBe(422);
+    writeFileSync(path.join(root, 'qc.json'), '');
+    expect((await fetch(endpoint + ids[1])).status).toBe(409);
     expect((await fetch(endpoint + ids[2])).status).toBe(404);
   } finally {
     if (fixture) await fixture.close();

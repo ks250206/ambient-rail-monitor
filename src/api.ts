@@ -63,7 +63,12 @@ export async function fetchReviewQc(
     signal,
     headers: { Accept: 'application/json' },
   });
-  if (!response.ok) throw new ApiError(`HTTP ${response.status}`, response.status);
+  if (!response.ok) {
+    const result = await response.json().catch(() => null);
+    const message =
+      typeof result?.error === 'string' && result.error ? result.error : `HTTP ${response.status}`;
+    throw new ApiError(message, response.status);
+  }
   if (!response.body) throw new Error('Missing qc.json data');
   const reader = response.body.getReader();
   const bytes = new Uint8Array(size);

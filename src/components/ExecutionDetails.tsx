@@ -4,9 +4,16 @@ import { resolveExecution, RETRY_LABELS } from '../../shared/execution-policy.ts
 import type { JobStage, WorkflowJob } from '../../shared/types.ts';
 import { useI18n } from '../i18n.ts';
 import { monitorJobHref } from '../utils/workflow.ts';
-import { useCallback, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { QcReviewPanel } from './QcReviewPanel.tsx';
-import { request, type ReviewApproval, type InspectedOutput } from '../api.ts';
+import { QC_FILENAME } from '../../shared/qc.ts';
+import {
+  ApiError,
+  fetchReviewQc,
+  request,
+  type ReviewApproval,
+  type InspectedOutput,
+} from '../api.ts';
 import { ConditionEvidence } from './ConditionBuilder.tsx';
 
 const RETRY_LABELS_EN: Record<string, string> = {
@@ -272,7 +279,6 @@ function ReviewOutputs({
   const { pick } = useI18n();
   const client = useQueryClient();
   const [recheck, setRecheck] = useState(false);
-  const targetChanged = useCallback(() => setRecheck(true), []);
   const [inspection, setInspection] = useState(0);
   const hasInventory = Boolean(stage.workspace && stage.reviewSequence !== undefined);
   const query = useQuery({
@@ -299,11 +305,27 @@ function ReviewOutputs({
     (data.failureKind === null ||
       (typeof data.failureKind === 'string' && data.failureKind.length > 0)) &&
     Array.isArray(data.files);
+  const showQc = current && job.workflow?.version === 2 && stage.key === 'qc';
+  const qcFile = showQc ? data.files.find((file) => file.path === QC_FILENAME) : undefined;
+  const currentQc = useQuery({
+    queryKey: ['review-qc', job.id, stage.key, stage.reviewSequence, inspection],
+    enabled: !!qcFile,
+    retry: false,
+    queryFn: ({ signal }) =>
+      fetchReviewQc(job.id, stage.key, data!.reviewSequence, qcFile!.bytes, signal),
+  });
+  const qcChanged =
+    !!qcFile && currentQc.error instanceof ApiError && currentQc.error.status === 409;
+  const checkingQc = !!qcFile && (currentQc.isPending || currentQc.isFetching);
+  useEffect(() => {
+    if (qcChanged) setRecheck(true);
+  }, [qcChanged]);
   const receipt = data?.receipt;
   const exact = current && typeof receipt === 'string' && receipt.trim().length > 0;
   const legacy = !job.workflow && (!hasInventory || (current && data.receipt === null));
   const failureKind = current ? data.failureKind : stage.failureKind;
   async function reload() {
+    setRecheck(true);
     await Promise.all([
       query.refetch(),
       client.invalidateQueries({ queryKey: ['monitor', job.projectId] }),
@@ -400,14 +422,15 @@ function ReviewOutputs({
             </button>
           </p>
         )}
-      {current && job.workflow?.version === 2 && stage.key === 'qc' && (
+      {showQc && (
         <QcReviewPanel
           key={inspection}
           job={job}
           inspection={inspection}
           review={data}
           onReload={reload}
-          onTargetChanged={targetChanged}
+          current={currentQc}
+          hasFile={!!qcFile}
         />
       )}
       {current && query.data.files.length === 0 && (
@@ -432,7 +455,7 @@ function ReviewOutputs({
       <button
         type="button"
         className="wf-primary"
-        disabled={approving || recheck || (!exact && !legacy)}
+        disabled={approving || recheck || checkingQc || qcChanged || (!exact && !legacy)}
         onClick={() => void approve()}
       >
         {approving
