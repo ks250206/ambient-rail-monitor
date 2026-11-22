@@ -20,6 +20,7 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,6 +31,8 @@ import { failedEvidence, parseCondition, validRelativePath } from './shared/cond
 import type { ConditionResult } from './shared/conditions.ts';
 import {
   checkCondition,
+  checkFrozenTrigger,
+  isManualInput,
   INPUT_LIMITS,
   inventory,
   safeFile,
@@ -48,7 +51,14 @@ import type { FailureKind } from './shared/execution-policy.ts';
 import { findRegisteredOnce, observeInput } from './shared/inbox-observation.ts';
 import type { InboxObservation } from './shared/inbox-observation.ts';
 import { validateTemplate } from './shared/prompts.ts';
-import { parseStageGraph, parseGraph, taskSpec, readyTask, downstream } from './shared/graph.ts';
+import {
+  object,
+  parseStageGraph,
+  parseGraph,
+  taskSpec,
+  readyTask,
+  downstream,
+} from './shared/graph.ts';
 import { planWorkflow } from './shared/plan.ts';
 import {
   checkContracts,
@@ -76,6 +86,8 @@ import { DEFAULT_QUEUE, parseQueue, parsePriority, type QueueSettings } from './
 
 import type {
   ArtifactInfo,
+  DatasetManifest,
+  DryRunResult,
   InputCandidate,
   EventType,
   JobStage,
@@ -1343,6 +1355,73 @@ function findJobArtifactFile(job: WorkflowJob, artifactName: string): string {
   return path.join(LEGACY_ARTIFACTS, job.id, artifactName);
 }
 
+function verifySavedManifest(jobId: string, manifest: DatasetManifest, jobHash: string): void {
+  const manifestPath = path.join(DATA, 'manifests', `${jobId}.json`);
+  let saved: unknown;
+  let fd: number | undefined;
+  try {
+    fd = openSync(manifestPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1) throw new Error('Invalid manifest file');
+    saved = JSON.parse(readFileSync(fd, 'utf8'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+      throw new HttpError(422, 'このジョブには保存済みの入力マニフェストがありません。');
+    throw new HttpError(409, '保存済みの入力マニフェストを読み取れません。');
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+  if (manifest.hash !== jobHash || !isDeepStrictEqual(saved, manifest))
+    throw new HttpError(409, '入力マニフェストが登録時の記録と一致しません。');
+}
+
+function dryRun(project: ProjectSpec, body: Record<string, unknown>): DryRunResult {
+  if (typeof body.sourceJobId !== 'string')
+    throw new HttpError(400, '入力元のジョブを指定してください。');
+  const job = jobs.get(body.sourceJobId);
+  if (!job || job.projectId !== project.id) throw new HttpError(404, 'Job not found');
+  const draft = validate(() => object(body.draft));
+  if (!draft.graph) throw new HttpError(400, 'Dry Run には Workflow v2 の下書きが必要です。');
+  const spec = buildProjectSpec(project.id, draft, project, { prepareDirs: false });
+  const graph = spec.graph!;
+  const manifest = job.dataset;
+  if (!manifest) throw new HttpError(422, 'このジョブには保存済みの入力マニフェストがありません。');
+  verifySavedManifest(job.id, manifest, job.hash);
+  const trigger = checkFrozenTrigger(
+    path.join(DATA, 'inputs', job.id),
+    manifest,
+    spec.input?.condition ?? null,
+  );
+  if (!trigger) throw new HttpError(409, '固定入力が変更または削除されています。');
+  let tasks: DryRunResult['tasks'];
+  try {
+    tasks = planWorkflow(spec, manifest);
+  } catch (error) {
+    throw new HttpError(422, (error as Error).message);
+  }
+  const reviewStages = new Set(
+    spec.stages
+      .filter(
+        (stage) =>
+          stage.runner?.kind === 'human' ||
+          stage.gate?.requireReview ||
+          (stage.key === graph.publishStage && spec.finalGate?.requireReview),
+      )
+      .map((stage) => stage.key),
+  );
+  return {
+    sourceJobId: job.id,
+    datasetHash: manifest.hash,
+    tasks,
+    taskCount: tasks.length,
+    maxParallelTasks: graph.maxParallelTasks,
+    publishStage: graph.publishStage,
+    reviewTaskKeys: tasks.filter((task) => reviewStages.has(task.stageKey)).map((task) => task.key),
+    runtimeRequirements: spec.runtime!,
+    trigger,
+  };
+}
+
 function enqueueInventory(
   project: ProjectSpec,
   list: Inventory,
@@ -1380,8 +1459,7 @@ function enqueueInventory(
           result,
         );
     }
-    const manual = source.startsWith('upload:') || source.startsWith('demo:');
-    const existing = manual
+    const existing = isManualInput(source)
       ? undefined
       : [...jobs.values()].find(
           (job) =>
@@ -2088,6 +2166,14 @@ const server = http.createServer(async (req, res) => {
         return deliverJSON(res, { job }, 201);
       }
       throw new HttpError(405, 'Method not allowed');
+    }
+
+    const dryRunMatch = pathname.match(/^\/api\/projects\/([a-z0-9_-]+)\/dry-run$/);
+    if (dryRunMatch && req.method === 'POST') {
+      const body = await readJSON(req, 4_000_000);
+      const project = projects.get(dryRunMatch[1]);
+      if (!project) throw new HttpError(404, 'Project not found');
+      return deliverJSON(res, dryRun(project, body));
     }
 
     const checkMatch = pathname.match(/^\/api\/projects\/([a-z0-9_-]+)\/check-input$/);
