@@ -166,8 +166,9 @@ def identifier(value):
 def reject_constant(token):
     raise ValueError(f'Invalid JSON constant: {token}')
 
+# Match the binary64 interpretation of all JSON numbers in the TypeScript QC reader.
 qc = json.loads(upstream_bytes('qc', '${QC_FILENAME}', ${QC_MAX_BYTES}).decode('utf-8'),
-                parse_constant=reject_constant)
+                parse_constant=reject_constant, parse_int=float)
 if not isinstance(qc, dict) or set(qc) != set(${JSON.stringify(QC_V1_SCHEMA.required)}):
     raise ValueError('Invalid QC fields')
 if (qc['format'] != 'railflow.qc' or not finite(qc['formatVersion']) or qc['formatVersion'] != 1

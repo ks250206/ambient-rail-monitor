@@ -213,6 +213,56 @@ it.each([
   },
 );
 
+it.each([false, true])(
+  'checks the binary64 threshold tie with passed=%s in both readers',
+  (passed) => {
+    const f = pythonFixture();
+    try {
+      const qc = qcFixture();
+      // Substitute the literal after serialization to preserve 2^53 + 1 in the actual bytes.
+      const raw = JSON.stringify({
+        ...qc,
+        value: 'measurement',
+        threshold: 2 ** 53,
+        passed,
+        residuals: qc.residuals.map((p) => ({ ...p, residual: 'measurement' })),
+      }).replaceAll('"measurement"', '9007199254740993');
+      f.upstream('qc', 'qc.json', raw);
+      const bytes = readFileSync(path.join(f.root, 'qc', 'qc.json'));
+      if (passed)
+        expect(parseQcV1Bytes(bytes)).toMatchObject({
+          value: 2 ** 53,
+          threshold: 2 ** 53,
+          passed: true,
+        });
+      else expect(() => parseQcV1Bytes(bytes)).toThrow(/decision/);
+      const result = f.run('publish');
+      expect(result.status, result.stderr).toBe(passed ? 0 : 1);
+      expect(existsSync(path.join(f.root, 'report.html'))).toBe(passed);
+    } finally {
+      f.close();
+    }
+  },
+);
+
+it('rejects overflowing integer and exponent literals during QC validation in both readers', () => {
+  const f = pythonFixture();
+  try {
+    const serialized = JSON.stringify(qcFixture());
+    for (const literal of ['1' + '0'.repeat(400), '1e400']) {
+      f.upstream('qc', 'qc.json', serialized.replace('"value":0.5', '"value":' + literal));
+      const bytes = readFileSync(path.join(f.root, 'qc', 'qc.json'));
+      expect(() => parseQcV1Bytes(bytes)).toThrow();
+      const result = f.run('publish');
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('ValueError: Invalid QC value, threshold or decision');
+      expect(existsSync(path.join(f.root, 'report.html'))).toBe(false);
+    }
+  } finally {
+    f.close();
+  }
+});
+
 it('stops publication on missing, malformed or internally inconsistent evidence', () => {
   const f = pythonFixture();
   try {
