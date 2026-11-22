@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { act, createElement as h } from 'react';
 import { expect, it, vi } from 'vite-plus/test';
+import { evaluateCondition, type Condition, type ConditionFacts } from '../shared/conditions.ts';
 import type { DryRunResult, ProjectSpec } from '../shared/types.ts';
 import { WorkflowSpecSection } from '../src/components/WorkflowSpecSection.tsx';
 import { setLocale } from '../src/i18n.ts';
@@ -46,10 +47,25 @@ async function editor() {
   );
   return save;
 }
+const facts: ConditionFacts = {
+  name: 'run-A',
+  quietMs: Infinity,
+  files: [
+    { path: 'summary.json', bytes: 12 },
+    { path: 'bad.json', bytes: 1 },
+  ],
+  texts: { 'summary.json': { text: '{"score":42}' }, 'bad.json': { text: '{' } },
+};
+
+function evaluated(condition: Condition | null): DryRunResult['trigger'] {
+  const result = evaluateCondition(condition, facts);
+  return { status: result.status, message: result.message, evidence: { condition, result } };
+}
+
 function plan(
   sourceJobId: string,
   datasetHash: string,
-  status: DryRunResult['trigger']['status'],
+  trigger: DryRunResult['trigger'],
 ): DryRunResult {
   return {
     sourceJobId,
@@ -81,7 +97,7 @@ function plan(
       expected: { node: '26' },
       packages: { numpy: '2' },
     },
-    trigger: { status, message: 'Evidence' },
+    trigger,
   };
 }
 const click = (el: HTMLElement) => act(async () => el.click());
@@ -134,9 +150,15 @@ it('sends the actual unsaved save payload for an explicitly selected input and d
   await selectSource('B');
   expect(init.signal?.aborted).toBe(true);
   await click(button('実行計画を確認'));
-  await settle(() => pending[1](Response.json(plan('B', 'new-hash', 'fail'))));
+  await settle(() =>
+    pending[1](
+      Response.json(
+        plan('B', 'new-hash', evaluated({ op: 'file.exists', pattern: 'missing.csv' })),
+      ),
+    ),
+  );
   expect(contents()).toContain('new-hash');
-  await settle(() => pending[0](Response.json(plan('A', 'obsolete-hash', 'pass'))));
+  await settle(() => pending[0](Response.json(plan('A', 'obsolete-hash', evaluated(null)))));
   expect(contents()).toContain('new-hash');
   expect(contents()).not.toContain('obsolete-hash');
   await enter(prompt, 'another draft');
@@ -173,14 +195,44 @@ it('explains how to enable the preview for an invalid draft with a selected sour
   expect(guide?.isConnected).toBe(false);
 });
 
+const score: Condition = {
+  op: 'json.value',
+  path: 'summary.json',
+  field: 'score',
+  compare: 'gte',
+  value: 50,
+};
 it.each([
-  ['pass', 'Trigger passed'],
-  ['fail', 'Trigger not met'],
-  ['error', 'Trigger evaluation error'],
-  ['unknown', 'Trigger unknown'],
-] as const)(
-  'shows the %s trigger verdict with the structural plan and configured requirements in English',
-  async (status, title) => {
+  [evaluated(null), 'Trigger passed', ['No additional trigger condition']],
+  [
+    evaluated({ op: 'file.exists', pattern: '*.csv' }),
+    'Trigger not met',
+    ['Files matching *.csv: 0'],
+  ],
+  [evaluated(score), 'Trigger not met', ['summary.json', 'score', 'expected ≥ 50', 'observed 42']],
+  [
+    evaluated({ ...score, path: 'bad.json' }),
+    'Trigger evaluation error',
+    ['bad.json is not valid JSON'],
+  ],
+  [
+    evaluated({ ...score, path: 'missing.json' }),
+    'Trigger evaluation error',
+    ['File not found: missing.json'],
+  ],
+  [
+    evaluated({ op: 'any', children: [score, { ...score, field: 'absent' }] }),
+    'Trigger evaluation error',
+    ['At least one', 'observed 42', 'JSON field not found: summary.json · absent'],
+  ],
+  [
+    { status: 'unknown', message: '監視時の無変更時間は固定入力から復元できません。' },
+    'Trigger unknown',
+    ['quiet time was not recorded'],
+  ],
+] satisfies [DryRunResult['trigger'], string, string[]][])(
+  'localizes the reason for $1 using frozen evidence',
+  async (trigger, title, reasons) => {
     setLocale('en');
     let finish!: (value: Response) => void;
     vi.stubGlobal(
@@ -195,10 +247,11 @@ it.each([
     await editor();
     await enter(document.querySelector<HTMLElement>('[aria-label="Source job"]')!, 'A');
     await click(button('Preview task plan'));
-    await settle(() => finish(Response.json(plan('A', 'digest', status))));
+    await settle(() => finish(Response.json(plan('A', 'digest', trigger))));
     const result = document.querySelector('[aria-label="Dry run result"]')?.textContent;
     for (const label of [
       title,
+      ...reasons,
       'Parallel limit 4',
       'Publish stage report',
       'Map items: 1',
@@ -213,5 +266,9 @@ it.each([
     ]) {
       expect(result).toContain(label);
     }
+    const reason = document.querySelector('.condition-evidence')!;
+    expect(reason.textContent).not.toMatch(/[ぁ-んァ-ヶ一-龠]/u);
+    await act(async () => setLocale('ja'));
+    expect(reason.textContent).toContain(trigger.message);
   },
 );

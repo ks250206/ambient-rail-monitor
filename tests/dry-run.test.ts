@@ -161,6 +161,10 @@ it('evaluates file conditions and completed transfers against verified bytes and
         draft: { ...draft, input: { condition } },
       });
       expect(result.trigger.status).toBe(status);
+      expect(result.trigger.evidence).toMatchObject({
+        condition,
+        result: { status, message: result.trigger.message },
+      });
       expect(result.taskCount).toBe(5);
     }
     expect(homeContents(f.home)).toEqual(before);

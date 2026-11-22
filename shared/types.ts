@@ -129,7 +129,11 @@ export interface DryRunResult {
   publishStage: string;
   reviewTaskKeys: string[];
   runtimeRequirements: RuntimeProfile;
-  trigger: { status: ConditionResult['status'] | 'unknown'; message: string };
+  trigger: {
+    status: ConditionResult['status'] | 'unknown';
+    message: string;
+    evidence?: { condition: Condition | null; result: ConditionResult };
+  };
 }
 
 export interface WorkflowSnapshot {

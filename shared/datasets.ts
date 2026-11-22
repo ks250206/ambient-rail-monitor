@@ -264,7 +264,10 @@ function readVerifiedTexts(
         if (referenced) {
           texts[file.path] = content
             ? { text: content.toString('utf8') }
-            : { error: `テキスト判定は2MB以下の通常ファイルが対象です: ${file.path}` };
+            : {
+                error: `テキスト判定は2MB以下の通常ファイルが対象です: ${file.path}`,
+                code: 'text_too_large',
+              };
         }
         const after = fstatSync(fd);
         return (
@@ -302,13 +305,13 @@ export function checkFrozenTrigger(
   if (!texts) return null;
   if (unknown)
     return { status: 'unknown', message: '監視時の無変更時間は固定入力から復元できません。' };
-  const { status, message } = evaluateCondition(condition, {
+  const result = evaluateCondition(condition, {
     name: manifest.name,
     files: manifest.files,
     quietMs: manual ? Infinity : 0,
     texts,
   });
-  return { status, message };
+  return { status: result.status, message: result.message, evidence: { condition, result } };
 }
 
 export function isManualInput(source: string): boolean {

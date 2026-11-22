@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { DryRunResult, WorkflowJob } from '../../shared/types.ts';
 import { jsonRequest, request } from '../api.ts';
 import { useI18n } from '../i18n.ts';
+import { DryRunTriggerEvidence } from './DryRunTriggerEvidence.tsx';
 import { CustomSelect } from './CustomSelect.tsx';
 import type { WorkflowUpdatePayload } from './WorkflowSpecSection.tsx';
 
@@ -132,14 +133,7 @@ function PlanDetails({ result }: { result: DryRunResult }) {
         <div>
           <strong>{title}</strong>
         </div>
-        <p>
-          {trigger.status === 'unknown'
-            ? pick(
-                trigger.message,
-                'The watch folder’s quiet time was not recorded with this input.',
-              )
-            : trigger.message}
-        </p>
+        <DryRunTriggerEvidence trigger={trigger} />
       </div>
       <p>
         {pick(`固定入力 ${result.sourceJobId}`, `Frozen input ${result.sourceJobId}`)} · SHA-256{' '}

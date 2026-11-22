@@ -16,6 +16,14 @@ export interface ConditionResult {
   status: ConditionStatus;
   label: string;
   message: string;
+  /** Machine-readable cause for a failed evidence read or JSON lookup. */
+  errorCode?:
+    | 'missing_file'
+    | 'read_error'
+    | 'text_too_large'
+    | 'invalid_json'
+    | 'missing_field'
+    | 'wrong_type';
   actual?: Scalar;
   children?: ConditionResult[];
 }
@@ -24,7 +32,7 @@ export interface ConditionFacts {
   files: Array<{ path: string; bytes: number }>;
   quietMs: number;
   /** Only files explicitly referenced by text/JSON conditions need to be read. */
-  texts: Record<string, { text: string } | { error: string }>;
+  texts: Record<string, { text: string } | { error: string; code?: 'text_too_large' }>;
 }
 
 export const COMPARE_LABELS: Record<Compare, string> = {
@@ -251,7 +259,12 @@ export function evaluateCondition(
     message: message ?? `実測値: ${JSON.stringify(actual)}`,
     ...(actual !== undefined ? { actual } : {}),
   });
-  const error = (message: string): ConditionResult => ({ status: 'error', label, message });
+  const error = (message: string, errorCode?: ConditionResult['errorCode']): ConditionResult => ({
+    status: 'error',
+    label,
+    message,
+    ...(errorCode && { errorCode }),
+  });
   if (condition.op === 'all' || condition.op === 'any' || condition.op === 'not') {
     const children = (condition.op === 'not' ? [condition.child] : condition.children).map(
       (child) => evaluateCondition(child, facts),
@@ -305,8 +318,8 @@ export function evaluateCondition(
     case 'file.contains':
     case 'json.value': {
       const source = facts.texts[condition.path];
-      if (!source) return error(`ファイルが見つかりません: ${condition.path}`);
-      if ('error' in source) return error(source.error);
+      if (!source) return error(`ファイルが見つかりません: ${condition.path}`, 'missing_file');
+      if ('error' in source) return error(source.error, source.code ?? 'read_error');
       if (condition.op === 'file.contains')
         return result(
           source.text.includes(condition.text),
@@ -319,18 +332,18 @@ export function evaluateCondition(
       try {
         actual = JSON.parse(source.text);
       } catch {
-        return error(`${condition.path} は有効なJSONではありません。`);
+        return error(`${condition.path} は有効なJSONではありません。`, 'invalid_json');
       }
       for (const key of condition.field.split('.')) {
         if (actual === null || typeof actual !== 'object' || !Object.hasOwn(actual, key))
-          return error(`JSONキーがありません: ${condition.field}`);
+          return error(`JSONキーがありません: ${condition.field}`, 'missing_field');
         actual = (actual as Record<string, unknown>)[key];
       }
       if (
         typeof actual !== typeof condition.value ||
         (typeof actual === 'number' && !Number.isFinite(actual))
       )
-        return error('JSON値の型が条件と一致しません。値の型は自動変換しません。');
+        return error('JSON値の型が条件と一致しません。値の型は自動変換しません。', 'wrong_type');
       return result(
         compareValues(actual as Scalar, condition.value, condition.compare),
         actual as Scalar,
