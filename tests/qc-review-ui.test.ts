@@ -40,7 +40,12 @@ const inspection: InspectedOutput = {
 const key = ['review-outputs', run.id, stage.key, 12];
 const result = (id: string, qc: unknown) =>
   Response.json({ baselineJobId: id, stageKey: 'qc', outputHash: 'b'.repeat(64), qc });
-function show(data = inspection, approval = approveReviewedOutput, target = run) {
+function show(
+  data = inspection,
+  approval = approveReviewedOutput,
+  target = run,
+  recordedFiles = data.files,
+) {
   setLocale('en');
   client.setQueryData(key, data);
   client.setQueryData(['monitor', project.id], {
@@ -54,7 +59,17 @@ function show(data = inspection, approval = approveReviewedOutput, target = run)
   return render(
     h(StageExecutionDetails, {
       job: target,
-      stage,
+      stage: {
+        ...stage,
+        output: {
+          hash: 'c'.repeat(64),
+          files: recordedFiles.map((file) => ({
+            ...file,
+            hash: 'd'.repeat(64),
+            executable: false,
+          })),
+        },
+      },
       nowMs: 0,
       approving: false,
       onApprove: approval,
@@ -219,14 +234,43 @@ it.each([
 ])(
   'preserves file access and manual review for %s, %s bytes',
   async (path, bytes, contents, message) => {
-    const fetcher = vi.fn(async () => new Response(contents));
+    const fetcher = vi.fn(async () =>
+      bytes > QC_MAX_BYTES
+        ? Response.json({ error: 'Recorded qc.json exceeds 2 MiB' }, { status: 422 })
+        : new Response(contents),
+    );
     vi.stubGlobal('fetch', fetcher);
     await show({ ...inspection, files: [{ path, bytes }] });
     await settle();
     expect(document.body.textContent).toContain(message);
     expect(document.querySelector('.review-outputs a')?.textContent).toBe(path);
     expect(button(approveLabel).disabled).toBe(false);
-    if (path !== 'qc.json' || bytes > QC_MAX_BYTES) expect(fetcher).not.toHaveBeenCalled();
+    if (path !== 'qc.json') expect(fetcher).not.toHaveBeenCalled();
+    else expect(fetcher).toHaveBeenCalledTimes(1);
+  },
+);
+
+it.each([
+  ['deleted', []],
+  ['enlarged', [{ path: 'qc.json', bytes: QC_MAX_BYTES + 1 }]],
+] as const)(
+  'checks the recorded QC before enabling approval when the inventory shows it was %s',
+  async (_change, liveFiles) => {
+    const fetcher = vi.fn(async () =>
+      Response.json({ error: 'The recorded QC output has changed.' }, { status: 409 }),
+    );
+    vi.stubGlobal('fetch', fetcher);
+    const approval = vi.fn(approveReviewedOutput);
+    await show({ ...inspection, files: [...liveFiles] }, approval, run, inspection.files);
+    await settle();
+    expect(fetcher).toHaveBeenCalledWith(
+      '/api/jobs/current/review/file?task=qc&sequence=12&path=qc.json',
+      expect.anything(),
+    );
+    expect(button('Reload outputs')).toBeTruthy();
+    expect(button(approveLabel).disabled).toBe(true);
+    await click(approveLabel);
+    expect(approval).not.toHaveBeenCalled();
   },
 );
 

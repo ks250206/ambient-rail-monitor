@@ -306,7 +306,7 @@ function ReviewOutputs({
       (typeof data.failureKind === 'string' && data.failureKind.length > 0)) &&
     Array.isArray(data.files);
   const showQc = current && job.workflow?.version === 2 && stage.key === 'qc';
-  const qcFile = showQc ? data.files.find((file) => file.path === QC_FILENAME) : undefined;
+  const qcFile = showQc ? stage.output?.files.find((file) => file.path === QC_FILENAME) : undefined;
   const currentQc = useQuery({
     queryKey: ['review-qc', job.id, stage.key, stage.reviewSequence, inspection],
     enabled: !!qcFile,

@@ -57,7 +57,6 @@ export async function fetchReviewQc(
   signal: AbortSignal,
 ) {
   if (!Number.isSafeInteger(size) || size < 0) throw new Error('Invalid qc.json size');
-  if (size > QC_MAX_BYTES) throw new Error('qc.json exceeds 2 MiB');
   const params = new URLSearchParams({ task, sequence: String(sequence), path: QC_FILENAME });
   const response = await fetch(`/api/jobs/${jobId}/review/file?${params}`, {
     signal,
@@ -68,6 +67,10 @@ export async function fetchReviewQc(
     const message =
       typeof result?.error === 'string' && result.error ? result.error : `HTTP ${response.status}`;
     throw new ApiError(message, response.status);
+  }
+  if (size > QC_MAX_BYTES) {
+    await response.body?.cancel();
+    throw new ApiError('qc.json exceeds 2 MiB', 422);
   }
   if (!response.body) throw new Error('Missing qc.json data');
   const reader = response.body.getReader();

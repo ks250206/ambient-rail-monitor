@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { text } from 'node:stream/consumers';
@@ -253,6 +253,62 @@ it('rejects an approval when reviewed output bytes change', async () => {
     await f.close();
   }
 });
+
+it.each([1, 2])(
+  'binds all files shown in a v%s inspection to its exact receipt',
+  async (version) => {
+    const f = await workflowFixture();
+    try {
+      const human = version === 2;
+      await f.json('/api/projects', {
+        id: 'exact',
+        name: 'Review evidence',
+        ...(human ? { graph: { mode: 'dag', publishStage: 'publish' } } : {}),
+        stages: human
+          ? [
+              { key: 'source', runner: reportRunner },
+              { key: 'inspect', dependsOn: ['source'], runner: { kind: 'human' } },
+              { key: 'publish', dependsOn: ['inspect'], runner: reportRunner },
+            ]
+          : [{ key: 'inspect', gate: { requireReview: true } }],
+      });
+      const id = await enqueue(f);
+      f.worker("require('node:fs').writeFileSync('report.html','review output')");
+      const job = await f.until(id, 'review');
+      expect(job.workflow?.version).toBe(version);
+      const stage = job.stages.find((s) => s.key === 'inspect')!;
+      const client = operations(f);
+      const review = await client.inspectReview(id, stage.key);
+      const receipt = receiptFor(review);
+      for (const relative of human
+        ? ['_inputs/source/report.html', '_railflow/review.md']
+        : ['report.html']) {
+        const file = path.join(f.home, 'projects/exact/work', id, stage.workspace!, relative);
+        const original = readFileSync(file);
+        expect(review.files).toContainEqual({ path: relative, bytes: original.length });
+        const opened = await client.openReviewFile(review.ref, relative);
+        try {
+          expect(await text(opened.stream)).toBe(original.toString());
+        } finally {
+          opened.close();
+        }
+        chmodSync(file, 0o600);
+        writeFileSync(file, Buffer.alloc(original.length, 88));
+        expect(receiptFor(await client.inspectReview(id, stage.key))).not.toBe(receipt);
+        await expect(client.approveExact(review.ref, receipt, false)).rejects.toMatchObject({
+          status: 409,
+        });
+        expect(approvals(await f.job(id))).toHaveLength(0);
+        writeFileSync(file, original);
+      }
+      await expect(client.approveExact(review.ref, receipt, false)).resolves.toMatchObject({
+        ok: true,
+      });
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 it('writes exactly one approval event for concurrent requests using the same receipt', async () => {
   const f = await workflowFixture();

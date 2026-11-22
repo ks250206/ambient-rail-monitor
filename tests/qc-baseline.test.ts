@@ -94,6 +94,7 @@ it('compares real reviewed outputs without changing either job or its evidence',
     for (const accept of [
       'application/json',
       'application/json, */*',
+      'text/html,application/xhtml+xml,*/*',
       'text/plain, Application/JSON ; charset=utf-8',
     ]) {
       expect((await fetch(raw.url, { headers: { Accept: accept } })).status).toBe(409);
@@ -101,6 +102,18 @@ it('compares real reviewed outputs without changing either job or its evidence',
     await expect(review.approveExact(current.ref, current.receipt!, false)).rejects.toMatchObject({
       status: 409,
     });
+    for (const replacement of [null, Buffer.alloc(QC_MAX_BYTES + 1)]) {
+      if (replacement) writeFileSync(currentFile, replacement);
+      else unlinkSync(currentFile);
+      const refreshed = await review.inspectReview(id, 'qc');
+      expect(refreshed.files.find((file) => file.path === 'qc.json')?.bytes).toBe(
+        replacement?.length,
+      );
+      expect((await fetch(raw.url)).status).toBe(409);
+      await expect(
+        review.approveExact(refreshed.ref, refreshed.receipt!, false),
+      ).rejects.toMatchObject({ status: 409 });
+    }
     writeFileSync(currentFile, currentBytes);
     expect((await get({ baselineJobId: id })).status).toBe(400);
     expect((await get({ path: 'other.json' })).status).toBe(400);
@@ -191,3 +204,59 @@ it.each([
     else rmSync(home, { recursive: true, force: true });
   }
 });
+
+it.each(['absent', 'oversized', 'unknown version'])(
+  'allows manual review when the recorded QC is %s',
+  async (kind) => {
+    const f = await workflowFixture();
+    try {
+      const json = JSON.stringify({ ...qcFixture(), formatVersion: 2 });
+      let code = "require('node:fs').writeFileSync('notes.txt','review notes');";
+      if (kind !== 'absent')
+        code += `require('node:fs').writeFileSync('qc.json',${JSON.stringify(json)}.padEnd(${kind === 'oversized' ? QC_MAX_BYTES + 1 : json.length}));`;
+      const runner = { kind: 'command', program: process.execPath, args: ['-e', code] };
+      await f.json('/api/projects', {
+        id: 'manual',
+        name: 'Manual QC review',
+        graph: { mode: 'dag', publishStage: 'publish' },
+        stages: [
+          { key: 'qc', runner, gate: { requireReview: true } },
+          {
+            key: 'publish',
+            dependsOn: ['qc'],
+            runner: {
+              ...runner,
+              args: ['-e', "require('node:fs').writeFileSync('report.html','done')"],
+            },
+          },
+        ],
+      });
+      const { job } = await f.json<{ job: WorkflowJob }>('/api/demo', { projectId: 'manual' });
+      f.worker('process.exit(99)');
+      await f.until(job.id, 'review');
+      const client = createReviewOperations(
+        createClient({ origin: new URL(f.url), requestTimeoutMs: 5000 }),
+      );
+      const current = await client.inspectReview(job.id, 'qc');
+      const file = (name: string) =>
+        fetch(
+          f.url +
+            `/api/jobs/${job.id}/review/file?task=qc&sequence=${current.ref.reviewSequence}&path=${name}`,
+          { headers: { Accept: 'text/html,application/xhtml+xml,*/*' } },
+        );
+      expect(await (await file('notes.txt')).text()).toBe('review notes');
+      const qc = await file('qc.json');
+      if (kind === 'unknown version') {
+        expect(qc.status).toBe(200);
+        expect(await qc.text()).toBe(json);
+      } else {
+        expect(qc.status).toBe(kind === 'absent' ? 404 : 422);
+      }
+      await expect(
+        client.approveExact(current.ref, current.receipt!, false),
+      ).resolves.toMatchObject({ ok: true });
+    } finally {
+      await f.close();
+    }
+  },
+);

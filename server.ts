@@ -936,15 +936,32 @@ function allowsStageReview(job: WorkflowJob): boolean {
   );
 }
 
+function reviewInventory(job: WorkflowJob, stage: JobStage): Inventory {
+  if (!stage.workspace) throw new HttpError(409, 'The review workspace is unavailable.');
+  try {
+    return inventory(path.join(jobWorkspace(job), stage.workspace), undefined, true);
+  } catch {
+    throw new HttpError(409, 'The review workspace has changed.');
+  }
+}
+
 function reviewReceipt(
   jobId: string,
   stageKey: string,
   attempt: number,
   reviewSequence: number,
   failureKind: string | null,
+  list: Inventory,
 ): string {
+  // Bind every file shown in the inspection, including upstream and runtime evidence.
+  let filesHash: string;
+  try {
+    filesHash = outputManifest(list).hash;
+  } catch {
+    throw new HttpError(409, 'The reviewed files have changed.');
+  }
   return createHmac('sha256', RECEIPT_KEY)
-    .update(JSON.stringify([jobId, stageKey, attempt, reviewSequence, failureKind]))
+    .update(JSON.stringify([jobId, stageKey, attempt, reviewSequence, failureKind, filesHash]))
     .digest('hex');
 }
 
@@ -3197,8 +3214,8 @@ const server = http.createServer(async (req, res) => {
       if (!job || !stage?.workspace || !allowsStageReview(job))
         throw new HttpError(404, 'レビュー中の出力がありません。');
       const root = path.join(jobWorkspace(job), stage.workspace);
-      const list = validate(() => inventory(root, undefined, true));
       if (!previewMatch[2]) {
+        const list = reviewInventory(job, stage);
         const { key: stageKey, attempts: attempt, reviewSequence } = stage;
         const failureKind = stage.failureKind ?? null;
         const receipt =
@@ -3208,7 +3225,7 @@ const server = http.createServer(async (req, res) => {
           reviewSequence !== undefined &&
           Number.isSafeInteger(reviewSequence) &&
           reviewSequence > 0
-            ? reviewReceipt(job.id, stageKey, attempt, reviewSequence, failureKind)
+            ? reviewReceipt(job.id, stageKey, attempt, reviewSequence, failureKind, list)
             : null;
         return deliverJSON(res, {
           files: list.files,
@@ -3223,24 +3240,25 @@ const server = http.createServer(async (req, res) => {
       if (Number(url.searchParams.get('sequence')) !== stage.reviewSequence)
         throw new HttpError(409, 'レビュー対象が更新されています。');
       const relative = url.searchParams.get('path') ?? '';
-      if (!list.files.some((file) => file.path === relative))
-        throw new HttpError(404, '出力が見つかりません。');
       if (
         job.workflow?.version === 2 &&
         stage.key === 'qc' &&
         relative === QC_FILENAME &&
-        (req.headers.accept ?? '')
-          .split(',')
-          .some((part) => part.split(';')[0].trim().toLowerCase() === 'application/json')
+        stage.output?.files.some((file) => file.path === QC_FILENAME)
       ) {
         const bytes = readRecordedQcBytes(job, stage);
         res.writeHead(200, {
           'content-type': 'application/json',
           'content-length': bytes.length,
           'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff',
+          'content-security-policy': "sandbox; default-src 'none'",
         });
         return res.end(bytes);
       }
+      const list = reviewInventory(job, stage);
+      if (!list.files.some((file) => file.path === relative))
+        throw new HttpError(404, '出力が見つかりません。');
       return serveFile(
         res,
         safeFile(root, relative),
@@ -3283,7 +3301,14 @@ const server = http.createServer(async (req, res) => {
             : 'A normal review requires approval without an exception.',
         );
       const expected = Buffer.from(
-        reviewReceipt(job.id, step.key, attempt, reviewSequence, step.failureKind ?? null),
+        reviewReceipt(
+          job.id,
+          step.key,
+          attempt,
+          reviewSequence,
+          step.failureKind ?? null,
+          reviewInventory(job, step),
+        ),
       );
       const supplied = Buffer.from(receipt);
       if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
