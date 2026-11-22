@@ -3331,6 +3331,8 @@ const server = http.createServer(async (req, res) => {
         });
         return res.end(bytes);
       }
+      if (job.workflow && expectedHash === null)
+        throw new HttpError(400, 'Provide the file SHA-256 from the review inspection.');
       const list = reviewInventory(job, stage);
       const file = list.files.find((item) => item.path === relative);
       if (!file) throw new HttpError(expectedHash ? 409 : 404, '出力が見つかりません。');

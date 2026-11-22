@@ -342,8 +342,15 @@ it('inspects, reads and approves the exact review coordinates', async () => {
   expect(JSON.parse(listed.out)).toMatchObject({
     ref: { jobId, stageKey: 'run', attempt: 2, reviewSequence: 4 },
     receipt: 'receipt',
+    fileHashes: { 'out.txt': 'a'.repeat(64) },
   });
-  expect(await cli(['review', 'read', ...exact, '--path', 'out.txt'], { client })).toMatchObject({
+  const read = ['review', 'read', ...exact, '--path', 'out.txt'];
+  expect(await cli(read, { client })).toMatchObject({
+    code: 2,
+    err: expect.stringContaining('--sha256'),
+  });
+  expect(open).not.toHaveBeenCalled();
+  expect(await cli([...read, '--sha256', 'a'.repeat(64)], { client })).toMatchObject({
     code: 0,
     out: 'test',
   });
@@ -402,6 +409,8 @@ it('rejects binary stdout in JSON or a terminal and allows raw redirected output
     '2',
     '--path',
     'image.png',
+    '--sha256',
+    'a'.repeat(64),
   ];
   for (const args of [artifact, review]) {
     expect(await cli([...args, '--json'], { client })).toMatchObject({ code: 2, out: '' });

@@ -727,7 +727,8 @@ it('returns the exact review file head with a binary preview', async () => {
     }),
   });
   await mcp.ready();
-  const result = await mcp.tool('review_read', { ...ref, path });
+  expect((await mcp.tool('review_read', { ...ref, path })).isError).toBe(true);
+  const result = await mcp.tool('review_read', { ...ref, path, sha256: 'a'.repeat(64) });
   expect(result.structuredContent).toEqual({
     ok: true,
     data: { ref, file, preview: { binary: true, mimeType: 'application/pdf', bytes: 42 } },

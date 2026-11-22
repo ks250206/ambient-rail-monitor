@@ -170,13 +170,13 @@ const metadata: Record<
   ],
   railflow_review_list: [
     'read',
-    'Inspect the current review target, receipt, failure kind, summary, and files.',
+    'Inspect the current review target, receipt, failure kind, summary, files, and file hashes.',
     'railflow review list JOB_ID --stage STAGE',
   ],
   railflow_review_read: [
     'read',
-    'Read a bounded preview of a file from the exact review attempt.',
-    'railflow review read JOB_ID --stage STAGE --attempt N --sequence N --path REL --out FILE',
+    'Read a bounded preview using the SHA-256 for this path from railflow_review_list.',
+    'railflow review read JOB_ID --stage STAGE --attempt N --sequence N --path REL --sha256 HASH --out FILE',
   ],
   railflow_review_approve: [
     'external',

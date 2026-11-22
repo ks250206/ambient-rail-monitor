@@ -189,7 +189,15 @@ it('submits a directory, approves the exact reviewed output and downloads publis
       ['report.html', Buffer.from(report)],
       ['report.pptx', binary],
     ] as const) {
-      const result = await cli(['review', 'read', ...target, '--path', name]);
+      const result = await cli([
+        'review',
+        'read',
+        ...target,
+        '--path',
+        name,
+        '--sha256',
+        inspection.fileHashes![name],
+      ]);
       expect(result.stdout).toEqual(bytes);
       expect(result.stderr).toBe('');
     }

@@ -164,7 +164,7 @@ RAILFLOW_SERVER=http://127.0.0.1:4310 node cli.ts submit ./samples/run1 --projec
 
 # レビュー待ちの工程を確認し、取得したレシートで厳密承認する
 node cli.ts review list JOB_ID --stage analysis
-node cli.ts review read JOB_ID --stage analysis --attempt 1 --sequence 1 --path summary.json
+node cli.ts review read JOB_ID --stage analysis --attempt 1 --sequence 1 --path summary.json --sha256 HASH
 node cli.ts review approve JOB_ID --stage analysis --attempt 1 --sequence 1 --receipt TOKEN --yes
 
 # 成果物と実行記録を保存する（既存ファイルは上書きしない）
@@ -176,6 +176,7 @@ node cli.ts jobs provenance JOB_ID --out ./provenance.json
 
 - `RAILFLOW_PROJECT` は参照系コマンド（`projects get`、`jobs list` など）の既定プロジェクトとして使えます。既存プロジェクトの更新・削除・データ投入では位置引数または `--project` を明示します。
 - `projects update` と `workflow set` は `--expected-updated-at` による楽観ロックを要求し、別経路の更新と競合した場合は終了コード `5`（HTTP 409）を返します。
+- `review read` の `HASH` には、承認用のレシートを取得した同じ `review list` 応答の `fileHashes["summary.json"]` を指定します。
 - `review approve` は `review list` が返した試行番号・レビュー番号・レシートと `--yes` を必須とします。失敗した工程を例外承認する場合は `--exception` も明示します。
 - 端末への直接出力ではバイナリ応答を検出し、`--out FILE` を要求します。ファイル保存時は既存ファイルを上書きしません。
 - `jobs wait` や `--watch` に `SIGINT` を送ると CLI だけが終了コード `130` で終了し、サーバー側のジョブとワーカーは継続します。

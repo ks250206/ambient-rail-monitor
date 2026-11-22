@@ -242,19 +242,21 @@ it.each(['absent', 'oversized', 'unknown version'])(
         createClient({ origin: new URL(f.url), requestTimeoutMs: 5000 }),
       );
       const current = await client.inspectReview(job.id, 'qc');
-      const file = (name: string) =>
+      const file = (name: string, sha256?: string) =>
         fetch(
           f.url +
-            `/api/jobs/${job.id}/review/file?task=qc&sequence=${current.ref.reviewSequence}&path=${name}`,
+            `/api/jobs/${job.id}/review/file?task=qc&sequence=${current.ref.reviewSequence}&path=${name}${sha256 ? '&sha256=' + sha256 : ''}`,
           { headers: { Accept: 'text/html,application/xhtml+xml,*/*' } },
         );
-      expect(await (await file('notes.txt')).text()).toBe('review notes');
+      expect(await (await file('notes.txt', current.fileHashes!['notes.txt'])).text()).toBe(
+        'review notes',
+      );
       const qc = await file('qc.json');
       if (kind === 'unknown version') {
         expect(qc.status).toBe(200);
         expect(await qc.text()).toBe(json);
       } else {
-        expect(qc.status).toBe(kind === 'absent' ? 404 : 422);
+        expect(qc.status).toBe(kind === 'absent' ? 400 : 422);
       }
       if (kind === 'oversized') {
         const pathToQc = path.join(

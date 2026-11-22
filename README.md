@@ -164,7 +164,7 @@ RAILFLOW_SERVER=http://127.0.0.1:4310 node cli.ts submit ./samples/run1 --projec
 
 # Inspect a review-waiting stage and approve it with its exact server receipt
 node cli.ts review list JOB_ID --stage analysis
-node cli.ts review read JOB_ID --stage analysis --attempt 1 --sequence 1 --path summary.json
+node cli.ts review read JOB_ID --stage analysis --attempt 1 --sequence 1 --path summary.json --sha256 HASH
 node cli.ts review approve JOB_ID --stage analysis --attempt 1 --sequence 1 --receipt TOKEN --yes
 
 # Download artifacts and provenance (existing files are never overwritten)
@@ -176,6 +176,7 @@ Run `node cli.ts --help` to list all commands. Key safety guarantees:
 
 - `RAILFLOW_PROJECT` sets the default project for read commands (`projects get`, `jobs list`, etc.), while mutating commands targeting an existing project require an explicit positional project ID or `--project`.
 - `projects update` and `workflow set` require `--expected-updated-at` for optimistic concurrency and exit with code `5` (HTTP 409) on conflict.
+- For `review read`, replace `HASH` with `fileHashes["summary.json"]` from the same `review list` response as the receipt.
 - `review approve` requires the exact `--attempt`, `--sequence`, and `--receipt` from `review list` plus `--yes` (and `--exception` when approving a failed stage as an exception).
 - Binary responses are blocked from writing raw bytes to a TTY (`--out FILE` is required), and file downloads never overwrite an existing file.
 - Sending `SIGINT` to `jobs wait` or `--watch` exits the CLI with code `130` while leaving the job and workers running on the server.

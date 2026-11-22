@@ -140,7 +140,7 @@ Each review stores its stage, attempt and event sequence. Approval accepts that 
 | `POST /api/projects/:id/check-input`                  | Test `{name, origin: "project" or "legacy", condition}` against a watched input without registering it |
 | `GET /api/state?project=...`                          | Includes input candidates/status, dataset/config snapshots, budgets and gate evidence                  |
 | `GET /api/jobs/:id/review`                            | List output files for the current review                                                               |
-| `GET /api/jobs/:id/review/file?path=...&sequence=...` | Open the exact reviewed output                                                                         |
+| `GET /api/jobs/:id/review/file?path=...&sequence=...` | Pass the additional `sha256` query parameter from the inspection for the selected file                 |
 | `POST /api/jobs/:id/approve`                          | `{stage, attempt, reviewSequence}`; stale/mismatched approvals return 409                              |
 
 The legacy single-file `/api/upload` and `/api/workflow` APIs remain available. Old event logs without snapshots retain their old stage definitions and input/workspace recovery. They cannot reconstruct a historical full workflow definition and are labeled accordingly. This prototype does not automatically reclaim jobs after an abruptly killed worker or machine; it does durably resume explicit review checkpoints.

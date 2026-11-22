@@ -303,8 +303,15 @@ it.each([1, 2])(
           task: stage.key,
           sequence: String(review.ref.reviewSequence),
           path: relative,
-          sha256: digest,
         });
+        const url = f.url + `/api/jobs/${id}/review/file?`;
+        expect((await fetch(url + params)).status).toBe(400);
+        params.set('sha256', 'invalid');
+        expect((await fetch(url + params)).status).toBe(400);
+        await expect(client.openReviewFile({ ...review.ref }, relative)).rejects.toMatchObject({
+          kind: 'usage',
+        });
+        params.set('sha256', digest);
         expect((await fetch(f.url + `/api/jobs/${id}/review/file?${params}`)).status).toBe(409);
         await expect(client.openReviewFile(review.ref, relative)).rejects.toMatchObject({
           status: 409,
@@ -411,6 +418,12 @@ it('previews legacy review files without an exact receipt and preserves UI appro
     expect(review.receipt).toBeNull();
     expect(review.summary).toBe('Legacy review');
     expect(review.files).toEqual([{ path: 'report.html', bytes: 6 }]);
+    const file = await fetch(
+      f.url +
+        `/api/jobs/${id}/review/file?task=validate&sequence=${review.ref.reviewSequence}&path=report.html`,
+    );
+    expect(file.status).toBe(200);
+    expect(await file.text()).toBe('legacy');
     await expect(client.approveExact(review.ref, 'placeholder', false)).rejects.toMatchObject({
       status: 409,
     });
@@ -436,12 +449,15 @@ it('opens the requested review bytes and refuses a stale reference or invalid pa
       stream.close();
     }
     await expect(
-      client.openReviewFile({ ...review.ref, attempt: 2 }, 'report.html'),
+      client.openReviewFile({ ...review.ref, attempt: 2 }, 'report.html', {
+        sha256: review.fileHashes!['report.html'],
+      }),
     ).rejects.toMatchObject({ status: 409 });
     await expect(
       client.openReviewFile(
         { ...review.ref, reviewSequence: review.ref.reviewSequence + 1 },
         'report.html',
+        { sha256: review.fileHashes!['report.html'] },
       ),
     ).rejects.toMatchObject({ status: 409 });
     await expect(client.openReviewFile(review.ref, '../report.html')).rejects.toMatchObject({

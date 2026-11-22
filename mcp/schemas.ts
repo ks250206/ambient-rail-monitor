@@ -676,7 +676,7 @@ export const toolSchemas = {
     ),
   ),
   railflow_review_read: tool(
-    object({ ...reviewRefFields, path: rel, sha256: hash, ...window }, [...windowKeys, 'sha256']),
+    object({ ...reviewRefFields, path: rel, sha256: hash, ...window }, windowKeys),
     object({ ref: reviewRef, file: fileHead, preview }),
   ),
   railflow_review_approve: tool(

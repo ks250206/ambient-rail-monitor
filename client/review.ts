@@ -154,18 +154,9 @@ export function createReviewOperations(client: RailflowHttpClient) {
         jobId,
         message: 'Invalid relative review file path',
       });
-    const current = await inspectReview(jobId, stageKey, { signal });
-    if (current.ref.attempt !== attempt || current.ref.reviewSequence !== reviewSequence)
-      throw new RailflowError({
-        kind: 'http',
-        status: 409,
-        operation,
-        jobId,
-        message: 'The review target has changed',
-      });
     if (sha256 !== undefined && !/^[a-f0-9]{64}$/.test(sha256))
       throw new RailflowError({ kind: 'usage', operation, jobId, message: 'Invalid file SHA-256' });
-    const hashes = inspectedHashes.get(ref) ?? current.fileHashes;
+    const hashes = inspectedHashes.get(ref);
     if (hashes && !Object.hasOwn(hashes, relPath))
       throw new RailflowError({
         kind: 'http',
@@ -184,12 +175,29 @@ export function createReviewOperations(client: RailflowHttpClient) {
         message: 'The inspected review file has changed',
       });
     const digest = sha256 ?? inspected;
+    if (digest === undefined)
+      throw new RailflowError({
+        kind: 'usage',
+        operation,
+        jobId,
+        message: 'Pass the file SHA-256 from the original review inspection.',
+      });
+    const current = await inspectReview(jobId, stageKey, { signal });
+    if (current.ref.attempt !== attempt || current.ref.reviewSequence !== reviewSequence)
+      throw new RailflowError({
+        kind: 'http',
+        status: 409,
+        operation,
+        jobId,
+        message: 'The review target has changed',
+      });
+
     const params = new URLSearchParams({
       task: stageKey,
       sequence: String(reviewSequence),
       path: relPath,
+      sha256: digest,
     });
-    if (digest !== undefined) params.set('sha256', digest);
     return client.openBytes(`/api/jobs/${encodeURIComponent(jobId)}/review/file?${params}`, {
       operation,
       signal,

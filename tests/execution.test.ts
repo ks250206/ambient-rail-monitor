@@ -202,9 +202,12 @@ process.on('SIGTERM',()=>{});setInterval(()=>{},100);
         attempt: review.attempts,
         reviewSequence: review.reviewSequence,
       };
+      const inspection = await (
+        await fetch(f.url + `/api/jobs/${job.id}/review?task=${review.key}`)
+      ).json();
       const output = await fetch(
         f.url +
-          `/api/jobs/${job.id}/review/file?path=report.html&sequence=${review.reviewSequence}`,
+          `/api/jobs/${job.id}/review/file?path=report.html&sequence=${review.reviewSequence}&sha256=${inspection.fileHashes['report.html']}`,
       );
       expect(await output.text()).toBe('reviewable first');
       expect(output.headers.get('content-security-policy')).toContain('sandbox');
