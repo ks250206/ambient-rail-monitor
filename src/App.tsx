@@ -1,7 +1,6 @@
 import { useMutation } from '@tanstack/react-query';
 import {
-  request,
-  jsonRequest,
+  approveReviewedOutput,
   queryClient,
   useProjects,
   useProjectJobs,
@@ -11,7 +10,7 @@ import {
 } from './api.ts';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
-import type { JobStage, ProjectSpec, StageKey } from '../shared/types.ts';
+import type { ProjectSpec, StageKey } from '../shared/types.ts';
 import { ActionsSection } from './components/ActionsSection.tsx';
 import { AppHeader } from './components/AppHeader.tsx';
 import { BottomGrid } from './components/BottomGrid.tsx';
@@ -126,16 +125,8 @@ function Monitor({ project }: { project: ProjectSpec }) {
     window.dispatchEvent(new Event('popstate'));
   };
   const approve = useMutation({
-    mutationFn: ({ jobId, stage }: { jobId: string; stage: JobStage }) => {
-      return request(
-        `/api/jobs/${jobId}/approve`,
-        jsonRequest('POST', {
-          stage: stage.key,
-          attempt: stage.attempts,
-          reviewSequence: stage.reviewSequence,
-        }),
-      );
-    },
+    mutationFn: approveReviewedOutput,
+    retry: false,
     onSuccess: () => {
       showToast(pick('レビューを承認しました。', 'Review approved.'));
       return queryClient.invalidateQueries({ queryKey: ['monitor', project.id] });
@@ -204,9 +195,7 @@ function Monitor({ project }: { project: ProjectSpec }) {
               approving={approve.isPending}
               onSelectStage={handleSelectStage}
               onShowAllLogs={() => setShowAllLogs(true)}
-              onApproveReview={(jobId, stage) => {
-                if (!approve.isPending) approve.mutate({ jobId, stage });
-              }}
+              onApproveReview={approve.mutateAsync}
             />
 
             <TraceSection job={selectedJob} nowMs={nowMs} onSelectStage={handleSelectStage} />

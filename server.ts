@@ -76,6 +76,7 @@ import {
   templateOrigin,
   type WorkflowTemplate,
 } from './shared/templates.ts';
+import { QC_FILENAME, QC_MAX_BYTES, parseQcV1Bytes } from './shared/qc.ts';
 import { STARTER_WORKFLOWS } from './shared/starter-templates.ts';
 import { ResultCache, cacheIdentity } from './shared/result-cache.ts';
 import { parseRuntime, runtimeIssues } from './shared/reuse.ts';
@@ -1310,6 +1311,40 @@ function jobWorkspace(job: WorkflowJob): string {
   const legacy = path.join(LEGACY_WORK, job.id);
   if (!job.events[0].projectId && existsSync(legacy)) return legacy;
   return path.join(projectWorkPath(job.projectId), job.id);
+}
+
+/** Read and authenticate the same bounded buffer that will be decoded for the response. */
+function readRecordedQcBytes(job: WorkflowJob, stage: JobStage) {
+  const entry = stage.output?.files.find((file) => file.path === QC_FILENAME);
+  if (!entry || !stage.workspace) throw new HttpError(404, 'No recorded QC output.');
+  if (entry.bytes > QC_MAX_BYTES) throw new HttpError(422, 'qc.json exceeds 2 MiB.');
+  let fd: number | undefined;
+  let bytes: Buffer;
+  try {
+    const relative = path.relative(HOME, jobWorkspace(job)).split(path.sep).join('/');
+    const filename = safeFile(HOME, relative + '/' + stage.workspace + '/' + QC_FILENAME);
+    fd = openSync(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1) throw new Error();
+    if (stat.size > QC_MAX_BYTES) throw new HttpError(422, 'qc.json exceeds 2 MiB.');
+    if (stat.size !== entry.bytes) throw new Error();
+    const buffer = Buffer.alloc(entry.bytes + 1);
+    let size = 0;
+    while (size < buffer.length) {
+      const n = readSync(fd, buffer, size, buffer.length - size, null);
+      if (!n) break;
+      size += n;
+    }
+    bytes = buffer.subarray(0, size);
+    if (size !== entry.bytes || createHash('sha256').update(bytes).digest('hex') !== entry.hash)
+      throw new Error();
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(409, 'The recorded QC output has changed.');
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+  return bytes;
 }
 
 function inputSnapshot(id: string, file: string): string {
@@ -3104,6 +3139,51 @@ const server = http.createServer(async (req, res) => {
       return deliverJSON(res, { ok: true, event });
     }
 
+    const baselineMatch = pathname.match(/^\/api\/jobs\/(run_[a-f0-9]{8})\/qc-baseline$/);
+    if (baselineMatch && req.method === 'GET') {
+      const query = url.searchParams;
+      const baselineId = query.get('baselineJobId');
+      const sequence = Number(query.get('sequence'));
+      if (
+        query.size !== 3 ||
+        query.get('task') !== 'qc' ||
+        !baselineId ||
+        !Number.isSafeInteger(sequence) ||
+        sequence <= 0 ||
+        baselineId === baselineMatch[1]
+      )
+        throw new HttpError(
+          400,
+          'Expected task=qc, a review sequence and a distinct baselineJobId.',
+        );
+      const job = jobs.get(baselineMatch[1]);
+      const baseline = jobs.get(baselineId);
+      if (!job || !baseline || job.projectId !== baseline.projectId)
+        throw new HttpError(404, 'Job not found.');
+      const stage = job.stages.find((s) => s.key === 'qc');
+      if (job.workflow?.version !== 2 || !stage) throw new HttpError(404, 'No QC task.');
+      if (!allowsStageReview(job) || stage.status !== 'review' || stage.reviewSequence !== sequence)
+        throw new HttpError(409, 'The review target has changed.');
+      const qcStage = baseline.stages.find((s) => s.key === 'qc');
+      if (baseline.workflow?.version !== 2 || !qcStage)
+        throw new HttpError(404, 'No baseline QC task.');
+      if (baseline.status !== 'done' || qcStage.status !== 'success')
+        throw new HttpError(409, 'Baseline job or QC task is incomplete.');
+      const raw = readRecordedQcBytes(baseline, qcStage);
+      let qc;
+      try {
+        qc = parseQcV1Bytes(raw);
+      } catch (error) {
+        throw new HttpError(422, (error as Error).message);
+      }
+      return deliverJSON(res, {
+        baselineJobId: baseline.id,
+        stageKey: qcStage.key,
+        outputHash: qcStage.output!.hash,
+        qc,
+      });
+    }
+
     const previewMatch = pathname.match(/^\/api\/jobs\/(run_[a-f0-9]{8})\/review(?:\/(file))?$/);
     if (previewMatch && req.method === 'GET') {
       const job = jobs.get(previewMatch[1]);
@@ -3143,6 +3223,20 @@ const server = http.createServer(async (req, res) => {
       const relative = url.searchParams.get('path') ?? '';
       if (!list.files.some((file) => file.path === relative))
         throw new HttpError(404, '出力が見つかりません。');
+      if (
+        job.workflow?.version === 2 &&
+        stage.key === 'qc' &&
+        relative === QC_FILENAME &&
+        req.headers.accept === 'application/json'
+      ) {
+        const bytes = readRecordedQcBytes(job, stage);
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'content-length': bytes.length,
+          'cache-control': 'no-store',
+        });
+        return res.end(bytes);
+      }
       return serveFile(
         res,
         safeFile(root, relative),
