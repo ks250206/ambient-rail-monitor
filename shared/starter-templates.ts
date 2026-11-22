@@ -1,3 +1,5 @@
+import { LINEAR_FIT_TEMPLATE } from './linear-fit-template.ts';
+
 export const STARTER_WORKFLOWS = [
   {
     name: 'CSVの一括点検',
@@ -89,4 +91,5 @@ Path('report.html').write_text('<!doctype html><html lang="ja"><meta charset="ut
       },
     ],
   },
+  LINEAR_FIT_TEMPLATE,
 ];

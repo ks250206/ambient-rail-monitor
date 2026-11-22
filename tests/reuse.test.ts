@@ -125,7 +125,24 @@ it('round-trips versioned templates without storage paths and keeps catalog, clo
       builtins: WorkflowTemplate[];
     };
     expect(catalog.saved[0].definition.name).toBe('Cache');
-    expect(catalog.builtins).toHaveLength(2);
+    expect(catalog.builtins).toHaveLength(3);
+    expect(catalog.builtins.slice(0, 2).map((entry) => entry.template)).toEqual([
+      {
+        name: 'CSVの一括点検',
+        revision: '1',
+        hash: '553f0874badd4f902984a9e245c6d9a45c694fb95bcc265320cf454a69b7032d',
+      },
+      {
+        name: 'AI解析と人間の確認',
+        revision: '1',
+        hash: '8c425430b55660df4ccd4da7bff495ba5db2877bc58cf784ff910dec7d483547',
+      },
+    ]);
+    expect(catalog.builtins[2].definition.stages.map((stage) => stage.key)).toEqual([
+      'fit',
+      'qc',
+      'publish',
+    ]);
     const invalid = structuredClone(template) as unknown as {
       definition: Record<string, unknown>;
       template: { hash: string };
