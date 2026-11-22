@@ -15,7 +15,7 @@ import {
 import path from 'node:path';
 import { evaluateCondition, referencedPaths, validRelativePath } from './conditions.ts';
 import type { Condition, ConditionFacts, ConditionResult } from './conditions.ts';
-import type { DatasetManifest } from './types.ts';
+import type { DatasetManifest, DryRunResult } from './types.ts';
 import { INPUT_LIMITS } from './input-limits.ts';
 export { INPUT_LIMITS } from './input-limits.ts';
 
@@ -210,6 +210,16 @@ export function snapshotDataset(
 }
 
 export function verifyDataset(root: string, manifest: DatasetManifest): boolean {
+  return readVerifiedTexts(root, manifest, []) !== null;
+}
+
+// Predicate evidence must come from the same bytes that passed hash verification.
+function readVerifiedTexts(
+  root: string,
+  manifest: DatasetManifest,
+  paths: string[],
+): ConditionFacts['texts'] | null {
+  const texts: ConditionFacts['texts'] = Object.create(null);
   try {
     const list = inventory(root);
     if (
@@ -218,7 +228,7 @@ export function verifyDataset(root: string, manifest: DatasetManifest): boolean 
       list.files.length !== manifest.files.length ||
       list.bytes !== manifest.bytes
     )
-      return false;
+      return null;
     const hash =
       manifest.kind === 'file' && manifest.files.length === 1
         ? manifest.files[0].hash
@@ -227,8 +237,8 @@ export function verifyDataset(root: string, manifest: DatasetManifest): boolean 
       hash !== manifest.hash ||
       !list.files.every((file, index) => file.path === manifest.files[index].path)
     )
-      return false;
-    return manifest.files.every((file) => {
+      return null;
+    const valid = manifest.files.every((file) => {
       const filename = safeFile(root, file.path);
       const fd = openSync(
         filename,
@@ -239,13 +249,25 @@ export function verifyDataset(root: string, manifest: DatasetManifest): boolean 
         if (!before.isFile() || before.nlink !== 1 || before.size !== file.bytes) return false;
         const digest = createHash('sha256');
         const buffer = Buffer.alloc(256 * 1024);
+        const referenced = paths.includes(file.path);
+        const content = referenced && file.bytes <= TEXT_LIMIT ? Buffer.alloc(file.bytes) : null;
         let size = 0;
         while (true) {
           const n = readSync(fd, buffer, 0, buffer.length, null);
           if (!n) break;
           size += n;
           if (size > file.bytes) return false;
-          digest.update(buffer.subarray(0, n));
+          const chunk = buffer.subarray(0, n);
+          digest.update(chunk);
+          content?.set(chunk, size - n);
+        }
+        if (referenced) {
+          texts[file.path] = content
+            ? { text: content.toString('utf8') }
+            : {
+                error: `テキスト判定は2MB以下の通常ファイルが対象です: ${file.path}`,
+                code: 'text_too_large',
+              };
         }
         const after = fstatSync(fd);
         return (
@@ -258,7 +280,40 @@ export function verifyDataset(root: string, manifest: DatasetManifest): boolean 
         closeSync(fd);
       }
     });
+    return valid ? texts : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+function includesQuiet(condition: Condition | null): boolean {
+  if (condition?.op === 'all' || condition?.op === 'any')
+    return condition.children.some(includesQuiet);
+  if (condition?.op === 'not') return includesQuiet(condition.child);
+  return condition?.op === 'quiet';
+}
+
+/** Null means the snapshot failed verification, independently of the trigger verdict. */
+export function checkFrozenTrigger(
+  root: string,
+  manifest: DatasetManifest,
+  condition: Condition | null,
+): DryRunResult['trigger'] | null {
+  const manual = isManualInput(manifest.source);
+  const unknown = !manual && includesQuiet(condition);
+  const texts = readVerifiedTexts(root, manifest, unknown ? [] : referencedPaths(condition));
+  if (!texts) return null;
+  if (unknown)
+    return { status: 'unknown', message: '監視時の無変更時間は固定入力から復元できません。' };
+  const result = evaluateCondition(condition, {
+    name: manifest.name,
+    files: manifest.files,
+    quietMs: manual ? Infinity : 0,
+    texts,
+  });
+  return { status: result.status, message: result.message, evidence: { condition, result } };
+}
+
+export function isManualInput(source: string): boolean {
+  return source.startsWith('upload:') || source.startsWith('demo:');
 }

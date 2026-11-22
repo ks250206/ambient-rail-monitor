@@ -908,6 +908,9 @@
 .evidence-error > div > strong {
   @apply text-st-red-dark;
 }
+.evidence-unknown > div > strong {
+  @apply text-st-orange-dark;
+}
 .evidence-children {
   @apply mt-2 border-l-2 border-line pl-2;
 }

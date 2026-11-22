@@ -120,6 +120,22 @@ export interface DatasetManifest {
   source: string;
 }
 
+export interface DryRunResult {
+  sourceJobId: string;
+  datasetHash: string;
+  tasks: PlannedTask[];
+  taskCount: number;
+  maxParallelTasks: number;
+  publishStage: string;
+  reviewTaskKeys: string[];
+  runtimeRequirements: RuntimeProfile;
+  trigger: {
+    status: ConditionResult['status'] | 'unknown';
+    message: string;
+    evidence?: { condition: Condition | null; result: ConditionResult };
+  };
+}
+
 export interface WorkflowSnapshot {
   version: 1 | 2;
   hash: string;

@@ -18,6 +18,7 @@ import { DEFAULT_RUNTIME, packageRecord, packageRowsError } from '../../shared/r
 import { RuntimeFields, type PackageRow } from './RuntimeFields.tsx';
 import { ContractFields } from './ContractFields.tsx';
 import { StageRunnerFields } from './StageRunnerFields.tsx';
+import { DryRunPanel } from './DryRunPanel.tsx';
 import { WorkflowGraph } from './WorkflowGraph.tsx';
 import { ArrowDown, ArrowUp, ChevronDown, Plus, RotateCcw, Save, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
@@ -822,6 +823,15 @@ export function WorkflowSpecSection({
             )}
           </p>
         </details>
+        {graph && (
+          <DryRunPanel
+            key={project.id}
+            projectId={project.id}
+            draft={payload}
+            valid={!validation}
+            jobs={monitor.data?.jobs ?? []}
+          />
+        )}
         {graph && <WorkflowGraph project={{ ...project, ...payload }} />}
         <div className="wf-section-title">
           <h2>
