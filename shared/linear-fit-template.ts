@@ -170,7 +170,7 @@ qc = json.loads(upstream_bytes('qc', '${QC_FILENAME}', ${QC_MAX_BYTES}).decode('
                 parse_constant=reject_constant)
 if not isinstance(qc, dict) or set(qc) != set(${JSON.stringify(QC_V1_SCHEMA.required)}):
     raise ValueError('Invalid QC fields')
-if (qc['format'] != 'railflow.qc' or type(qc['formatVersion']) is not int or qc['formatVersion'] != 1
+if (qc['format'] != 'railflow.qc' or not finite(qc['formatVersion']) or qc['formatVersion'] != 1
         or qc['metricId'] != 'rmse' or qc['validatorVersion'] != '${QC_VALIDATOR_VERSION}'
         or qc['unit'] not in ('mV', 'V') or not identifier(qc['sampleId'])):
     raise ValueError('Invalid QC version, metric, sample or unit')

@@ -182,6 +182,37 @@ it('leaves no partial predictions on overflow or failed replacement', () => {
   }
 });
 
+it.each([
+  ['1', true],
+  ['1.0', true],
+  ['1e0', true],
+  ['true', false],
+  ['"1"', false],
+  ['2', false],
+  ['1.5', false],
+] as const)(
+  'checks formatVersion %s against the same QC file in TypeScript and Python',
+  (token, accepted) => {
+    const f = pythonFixture();
+    try {
+      const raw = JSON.stringify(qcFixture()).replace(
+        '"formatVersion":1',
+        '"formatVersion":' + token,
+      );
+      f.upstream('qc', 'qc.json', raw);
+      const bytes = readFileSync(path.join(f.root, 'qc', 'qc.json'));
+      if (accepted) expect(parseQcV1Bytes(bytes).formatVersion).toBe(1);
+      else expect(() => parseQcV1Bytes(bytes)).toThrow();
+
+      const result = f.run('publish');
+      expect(result.status, result.stderr).toBe(accepted ? 0 : 1);
+      expect(existsSync(path.join(f.root, 'report.html'))).toBe(accepted);
+    } finally {
+      f.close();
+    }
+  },
+);
+
 it('stops publication on missing, malformed or internally inconsistent evidence', () => {
   const f = pythonFixture();
   try {
@@ -198,11 +229,8 @@ it('stops publication on missing, malformed or internally inconsistent evidence'
     }
     for (const data of [
       '{',
-      serialized.replace('"formatVersion":1', '"formatVersion":1.0'),
       ' '.repeat(QC_MAX_BYTES + 1),
       ...[
-        { formatVersion: 2 },
-        { formatVersion: true },
         { extra: false },
         { value: 0.49 },
         { value: '0.5' },
